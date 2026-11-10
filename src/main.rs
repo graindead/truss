@@ -26,6 +26,7 @@ mod zip_ranges;
 mod scenes;
 mod scenes_ui;
 mod settings;
+mod updater;
 mod setlists;
 mod sng;
 mod textures;
@@ -81,6 +82,19 @@ fn main() -> iced::Result {
         })
         .antialiasing(false)
         .run()
+}
+
+/// Where the GitHub update is at.
+#[derive(Debug, Clone)]
+enum UpdateState {
+    Idle,
+    Checking { manual: bool },
+    UpToDate,
+    Available(updater::Release),
+    Installing(updater::Release, f32),
+    /// Installed; takes effect on restart.
+    Ready(String),
+    Failed(String),
 }
 
 // ---------- Filter option wrappers for pick lists ----------
@@ -244,6 +258,7 @@ struct App {
     show_downloads: bool,
 
     preview: Option<preview_panel::Panel>,
+    update: UpdateState,
     ui: variants::UiVariant,
 }
 
@@ -264,6 +279,12 @@ enum Message {
     ClearChecked,
     /// A result's tick box was clicked.
     ToggleChecked(usize),
+    CheckUpdates,
+    UpdateChecked(Result<Option<updater::Release>, String>),
+    InstallUpdate,
+    UpdateEvent(updater::InstallEvent),
+    RestartForUpdate,
+    ToggleCheckUpdates(bool),
     /// The tick box in the list header: tick every result, or none.
     CheckAll(bool),
     RetryDownload(u64),
@@ -450,13 +471,21 @@ impl App {
             next_dl_id: 0,
             show_downloads: false,
             preview: None,
+            update: UpdateState::Idle,
             ui: variants::UiVariant::Default,
         };
         app.ui = variants::UiVariant::from_key(&app.settings.layout);
         // Clear preview temp files left by a crash, off the UI thread.
         std::thread::spawn(preview::cleanup_temp_files);
+        updater::cleanup_old();
+        let update_check = if app.settings.check_updates {
+            app.update = UpdateState::Checking { manual: false };
+            Task::perform(updater::check(), Message::UpdateChecked)
+        } else {
+            Task::none()
+        };
         let icon_list = Task::perform(icons::fetch_list(), Message::IconList);
-        let task = Task::batch([app.search(false), icon_list, app.scan_library()]);
+        let task = Task::batch([app.search(false), icon_list, app.scan_library(), update_check]);
         #[cfg(feature = "rhythmverse")]
         let task = Task::batch([task, app.rv_auto_sync()]);
         (app, Task::batch([task, iced::widget::operation::focus(SEARCH_ID)]))
@@ -1097,6 +1126,53 @@ impl App {
                 self.checked.clear();
                 self.list_rev += 1;
                 Task::none()
+            }
+            Message::CheckUpdates => {
+                self.update = UpdateState::Checking { manual: true };
+                Task::perform(updater::check(), Message::UpdateChecked)
+            }
+            Message::UpdateChecked(r) => {
+                let manual = matches!(self.update, UpdateState::Checking { manual: true });
+                self.update = match r {
+                    Ok(Some(rel)) => UpdateState::Available(rel),
+                    Ok(None) => UpdateState::UpToDate,
+                    // A failed check on start isn't worth bothering anyone about.
+                    Err(e) if manual => UpdateState::Failed(e),
+                    Err(_) => UpdateState::Idle,
+                };
+                Task::none()
+            }
+            Message::InstallUpdate => {
+                let UpdateState::Available(rel) = &self.update else { return Task::none() };
+                let rel = rel.clone();
+                self.update = UpdateState::Installing(rel.clone(), 0.0);
+                Task::run(updater::install(rel), Message::UpdateEvent)
+            }
+            Message::UpdateEvent(e) => {
+                match e {
+                    updater::InstallEvent::Progress(p) => {
+                        if let UpdateState::Installing(_, f) = &mut self.update {
+                            *f = p;
+                        }
+                    }
+                    updater::InstallEvent::Done(r) => {
+                        let version = match &self.update {
+                            UpdateState::Installing(rel, _) => rel.version.clone(),
+                            _ => String::new(),
+                        };
+                        self.update = match r {
+                            Ok(()) => UpdateState::Ready(version),
+                            Err(e) => UpdateState::Failed(e),
+                        };
+                    }
+                }
+                Task::none()
+            }
+            // Settings are saved as they change, so there's nothing to flush first.
+            Message::RestartForUpdate => updater::restart(),
+            Message::ToggleCheckUpdates(b) => {
+                self.settings.check_updates = b;
+                self.save_settings()
             }
             Message::ToggleChecked(i) => {
                 if !self.checked.remove(&i) {
@@ -1981,11 +2057,63 @@ impl App {
                 .spacing(12)
                 .into(),
             ),
+            section("Updates", self.update_section()),
         ].map(Element::from))
         .spacing(14)
         .max_width(720);
 
         scrollable(container(content).padding(24).center_x(Length::Fill)).height(Length::Fill).into()
+    }
+
+    fn update_section(&self) -> Element<'static, Message> {
+        let current = updater::current_version();
+        let (status, action): (String, Option<Element<'static, Message>>) = match &self.update {
+            UpdateState::Idle => (format!("Truss {current}"), None),
+            UpdateState::Checking { .. } => (format!("Truss {current}. Checking for updates…"), None),
+            UpdateState::UpToDate => (format!("Truss {current} is up to date."), None),
+            UpdateState::Available(rel) => (
+                format!("Truss {} is available (you have {current}).", rel.version),
+                Some(
+                    row![
+                        button(text("What's new ↗").size(13))
+                            .padding([6, 12])
+                            .style(button::secondary)
+                            .on_press(Message::OpenUrl(rel.page_url.clone())),
+                        button(text(format!("Update to {}", rel.version)).size(13)).padding([6, 12]).on_press(Message::InstallUpdate),
+                    ]
+                    .spacing(8)
+                    .into(),
+                ),
+            ),
+            UpdateState::Installing(rel, p) => (
+                format!("Downloading Truss {}… {:.0}%", rel.version, p * 100.0),
+                Some(progress_bar(0.0..=1.0, *p).length(160).girth(8).into()),
+            ),
+            UpdateState::Ready(v) => (
+                format!("Truss {v} is installed. Restart to start using it."),
+                Some(button(text("Restart now").size(13)).padding([6, 12]).on_press(Message::RestartForUpdate).into()),
+            ),
+            UpdateState::Failed(e) => (format!("Update failed: {e}"), None),
+        };
+        let busy = matches!(self.update, UpdateState::Checking { .. } | UpdateState::Installing(..));
+        let mut r = row![text(status).size(13).width(Length::Fill)].spacing(10).align_y(Alignment::Center);
+        if let Some(a) = action {
+            r = r.push(a);
+        }
+        if !matches!(self.update, UpdateState::Available(_) | UpdateState::Ready(_) | UpdateState::Installing(..)) {
+            r = r.push(
+                button(text("Check now").size(13))
+                    .padding([6, 12])
+                    .style(button::secondary)
+                    .on_press_maybe((!busy).then_some(Message::CheckUpdates)),
+            );
+        }
+        column![
+            r,
+            toggler(self.settings.check_updates).label("Check for updates when Truss starts").on_toggle(Message::ToggleCheckUpdates),
+        ]
+        .spacing(10)
+        .into()
     }
 
     fn view_downloads(&self) -> Element<'_, Message> {
@@ -2026,6 +2154,19 @@ impl App {
             .align_y(Alignment::Center)
             .into()
         }))
+        .push(match &self.update {
+            UpdateState::Available(rel) => Some(
+                button(text(format!("Update to {}", rel.version)).size(12))
+                    .padding([4, 10])
+                    .style(button::primary)
+                    .on_press(Message::InstallUpdate),
+            ),
+            UpdateState::Installing(_, p) => Some(button(text(format!("Updating… {:.0}%", p * 100.0)).size(12)).padding([4, 10])),
+            UpdateState::Ready(_) => Some(
+                button(text("Restart to update").size(12)).padding([4, 10]).style(button::primary).on_press(Message::RestartForUpdate),
+            ),
+            _ => None,
+        })
         .push(
             button(text("Clear finished").size(12)).style(button::subtle).padding([4, 10]).on_press(Message::ClearFinished),
         )

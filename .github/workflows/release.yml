@@ -1,0 +1,52 @@
+# Builds truss.exe and publishes it as a GitHub release when a version tag is pushed.
+# Truss's updater downloads truss.exe from the latest release and checks it against
+# truss.exe.sha256.
+#
+# To release: set `version` in Cargo.toml (e.g. 0.2.0), commit, then
+#   git tag v0.2.0
+#   git push origin main v0.2.0
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($tag -ne $ver) { Write-Error "Tag v$tag doesn't match Cargo.toml version $ver"; exit 1 }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          Copy-Item target/release/truss.exe truss.exe
+          $hash = (Get-FileHash truss.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  truss.exe" | Out-File -Encoding ascii -NoNewline truss.exe.sha256
+          Get-Content truss.exe.sha256
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" truss.exe truss.exe.sha256 --title "Truss ${{ github.ref_name }}" --generate-notes

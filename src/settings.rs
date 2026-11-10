@@ -38,6 +38,8 @@ pub struct Settings {
     pub layout: String,
     /// Chart preview frame-rate cap; 0 = match the display's refresh rate.
     pub preview_fps: u32,
+    /// Look for a new version on GitHub when Truss starts.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             preview_volume: 0.5,
             layout: "list".into(),
             preview_fps: 60,
+            check_updates: true,
         }
     }
 }

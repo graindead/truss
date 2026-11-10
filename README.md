@@ -54,6 +54,21 @@ The binary is `target/release/truss.exe` (single file, ~20 MB). To build without
 - `src/main.rs`: iced UI (click column headers to sort; Ctrl/Shift-click to select several, then
   download them through the queue, 2 at a time)
 
+## Updates and releases
+
+Truss checks this repo's latest GitHub release when it starts (Settings > Updates), and can
+download it, verify its SHA-256 and restart into it.
+
+To publish a release, set `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```
+git tag v0.2.0
+git push origin main v0.2.0
+```
+
+GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds `truss.exe` and publishes
+it with `truss.exe.sha256`.
+
 ## Tests
 
 ```
