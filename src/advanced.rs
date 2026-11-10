@@ -241,9 +241,9 @@ impl AdvancedForm {
                                     .into(),
                             );
                             st.text_color = p.background.base.text;
-                            st.border = Border::default().rounded(12).width(1).color(p.background.strong.color);
+                            st.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 }).width(1).color(p.background.strong.color);
                         } else {
-                            st.border = st.border.rounded(12);
+                            st.border = st.border.rounded(if crate::style::refined() { 5 } else { 12 });
                         }
                         st
                     }),
@@ -261,10 +261,10 @@ impl AdvancedForm {
             footer = footer.push(text(e.clone()).size(12).style(text::danger));
         }
         footer = footer.push(iced::widget::space().width(Length::Fill)).push(
-            button(text("Reset").size(13)).padding([6, 14]).style(button::secondary).on_press(Msg::Reset),
+            button(text("Reset").size(13)).padding([6, 14]).style(crate::style::secondary).on_press(Msg::Reset),
         );
         footer = footer
-            .push(button(text("Close").size(13)).padding([6, 14]).style(button::secondary).on_press(Msg::Close))
+            .push(button(text("Close").size(13)).padding([6, 14]).style(crate::style::secondary).on_press(Msg::Close))
             .push(button(text("Search").size(13)).padding([6, 18]).style(button::primary).on_press(Msg::Search));
 
         container(

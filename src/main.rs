@@ -26,6 +26,7 @@ mod zip_ranges;
 mod scenes;
 mod scenes_ui;
 mod settings;
+mod style;
 mod updater;
 mod setlists;
 mod sng;
@@ -285,6 +286,7 @@ enum Message {
     UpdateEvent(updater::InstallEvent),
     RestartForUpdate,
     ToggleCheckUpdates(bool),
+    ToggleRefined(bool),
     /// The tick box in the list header: tick every result, or none.
     CheckAll(bool),
     RetryDownload(u64),
@@ -409,6 +411,7 @@ fn theme_by_name(name: &str) -> Theme {
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let settings = Settings::load();
+        style::set_refined(settings.refined_ui);
         let instrument_opts = instrument_opts();
         let difficulty_opts = difficulty_opts();
         let drum_type_opts = drum_type_opts();
@@ -834,7 +837,7 @@ impl App {
         let Some(icon) = self.icon_for(chart) else { return art };
         let badge = iced::widget::tooltip(
             image(icon).width(size).height(size),
-            container(text(icons::tooltip(chart)).size(12)).padding([4, 8]).style(container::rounded_box),
+            container(text(icons::tooltip(chart)).size(12)).padding([4, 8]).style(crate::style::panel),
             iced::widget::tooltip::Position::Top,
         );
         iced::widget::stack![
@@ -1170,6 +1173,12 @@ impl App {
             }
             // Settings are saved as they change, so there's nothing to flush first.
             Message::RestartForUpdate => updater::restart(),
+            Message::ToggleRefined(b) => {
+                self.settings.refined_ui = b;
+                style::set_refined(b);
+                self.list_rev += 1;
+                self.save_settings()
+            }
             Message::ToggleCheckUpdates(b) => {
                 self.settings.check_updates = b;
                 self.save_settings()
@@ -1569,6 +1578,9 @@ impl App {
     }
 
     fn view_topbar(&self) -> Element<'_, Message> {
+        if style::refined() {
+            return self.view_topbar_refined();
+        }
         let placeholder = if self.active_advanced.is_some() {
             "Showing advanced search results — type here to go back to quick search"
         } else {
@@ -1637,10 +1649,69 @@ impl App {
         )
         .padding([10, 14])
         .style(|t: &Theme| container::Style {
-            background: Some(t.extended_palette().background.weak.color.into()),
+            background: Some(crate::style::weak(t).into()),
             ..Default::default()
         })
         .into()
+    }
+
+    fn view_topbar_refined(&self) -> Element<'_, Message> {
+        let placeholder = if self.active_advanced.is_some() {
+            "Showing advanced search results — type here to go back to quick search"
+        } else {
+            "Search songs, artists, albums, charters"
+        };
+        let search = text_input(placeholder, &self.query)
+            .id(SEARCH_ID)
+            .on_input(Message::QueryChanged)
+            .on_submit(Message::SubmitSearch)
+            .padding([7, 12])
+            .size(14)
+            .style(style::search_input);
+
+        // Text tabs; the current page gets a thin accent line under it.
+        let nav = |label: &'static str, screen: Screen| -> Element<'_, Message> {
+            let active = self.screen == screen;
+            column![
+                button(text(label).size(14)).padding([6, 2]).style(style::nav_button(active)).on_press(Message::ShowScreen(screen)),
+                container(space()).height(2).width(Length::Fill).style(move |t: &Theme| container::Style {
+                    background: active.then(|| style::accent(t).into()),
+                    ..Default::default()
+                }),
+            ]
+            .width(Length::Shrink)
+            .into()
+        };
+        fn pick<'a>(p: iced::widget::PickList<'a, Opt, &'a [Opt], &'a Opt, Message>) -> iced::widget::PickList<'a, Opt, &'a [Opt], &'a Opt, Message> {
+            p.padding([6, 10]).text_size(13).style(style::quiet_pick_list)
+        }
+        let advanced = {
+            let n = self.advanced.active_count();
+            let label = if n > 0 { format!("Advanced ({n})") } else { "Advanced".to_string() };
+            let highlighted = self.advanced_open || self.active_advanced.is_some();
+            button(text(label).size(13)).padding([6, 12]).style(style::quiet_button(highlighted)).on_press(Message::ToggleAdvanced)
+        };
+        let mut bar = row![
+            text("Truss").font(Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }).size(17),
+            space().width(10),
+            nav("Browse", Screen::Browse),
+            nav("Library", Screen::Library),
+            nav("Tools", Screen::Tools),
+            nav("Settings", Screen::Settings),
+            space().width(14),
+            search,
+            advanced,
+            pick(pick_list(self.instrument_opts.as_slice(), Some(&self.instrument), Message::InstrumentPicked)),
+            pick(pick_list(self.difficulty_opts.as_slice(), Some(&self.difficulty), Message::DifficultyPicked)),
+        ]
+        .spacing(14)
+        .align_y(Alignment::Center);
+        if self.instrument.key == Some("drums") {
+            bar = bar
+                .push(pick(pick_list(self.drum_type_opts.as_slice(), Some(&self.drum_type), Message::DrumTypePicked)))
+                .push(pick(pick_list(self.reviewed_opts.as_slice(), Some(&self.drums_reviewed), Message::DrumsReviewedPicked)));
+        }
+        column![container(bar).padding([8, 18]).width(Length::Fill), style::divider(false)].into()
     }
 
     fn view_browse(&self) -> Element<'_, Message> {
@@ -1651,12 +1722,16 @@ impl App {
             variants::UiVariant::Default => {}
         }
         let expanded = self.preview.as_ref().is_some_and(|p| p.expanded());
+        if style::refined() {
+            let sidebar = container(self.view_sidebar()).width(if expanded { 720 } else { 360 }).height(Length::Fill).padding([18, 20]);
+            return row![self.lazy_results(), style::divider(true), sidebar].height(Length::Fill).into();
+        }
         let sidebar = container(self.view_sidebar())
             .width(if expanded { 720 } else { 360 })
             .height(Length::Fill)
             .padding(16)
             .style(|t: &Theme| container::Style {
-                background: Some(t.extended_palette().background.weakest.color.into()),
+                background: Some(crate::style::weakest(t).into()),
                 ..Default::default()
             });
         row![self.lazy_results(), sidebar].height(Length::Fill).into()
@@ -1665,6 +1740,9 @@ impl App {
     /// Default layout's results list (header + rows), built with owned data for `lazy`.
     fn list_results(&self) -> Element<'static, Message> {
         use api::{SortDir, SortKey};
+        if style::refined() {
+            return self.list_results_refined();
+        }
         let col = |label: &'static str, key: SortKey, width: Length| {
             let arrow = match self.sort {
                 Some(s) if s.key == key && s.direction == SortDir::Asc => " ▲",
@@ -1720,25 +1798,149 @@ impl App {
 
         column![
             header,
-            rule::horizontal(1),
+            rule::horizontal(1).style(crate::style::rule),
             scrollable(list).on_scroll(Message::Scrolled).height(Length::Fill).width(Length::Fill),
         ]
         .width(Length::Fill)
         .into()
     }
 
+    fn list_results_refined(&self) -> Element<'static, Message> {
+        use api::{SortDir, SortKey};
+        let col = |label: &'static str, key: SortKey, width: Length, right: bool| -> Element<'static, Message> {
+            let sorted = self.sort.filter(|s| s.key == key);
+            let arrow = match sorted {
+                Some(s) if s.direction == SortDir::Asc => " ↑",
+                Some(_) => " ↓",
+                None => "",
+            };
+            let t = text(format!("{label}{arrow}")).size(12);
+            let t = if right { t.width(Length::Fill).align_x(iced::alignment::Horizontal::Right) } else { t };
+            button(t)
+                .padding(0)
+                .width(width)
+                .style(move |th: &Theme, s| button::Style {
+                    text_color: if sorted.is_some() || matches!(s, button::Status::Hovered) { style::fg(th) } else { style::muted(th) },
+                    ..Default::default()
+                })
+                .on_press(Message::SortBy(key))
+                .into()
+        };
+        let header = row![
+            space().width(3),
+            container(self.check_all_box()).width(20).center_x(20),
+            space().width(40),
+            col("Title", SortKey::Name, Length::FillPortion(4), false),
+            col("Artist", SortKey::Artist, Length::FillPortion(3), false),
+            col("Album", SortKey::Album, Length::FillPortion(3), false),
+            col("Charter", SortKey::Charter, Length::FillPortion(2), false),
+            col("Length", SortKey::Length, Length::Fixed(56.0), true),
+        ]
+        .spacing(12)
+        // Right padding: the rows' own 16 px plus the scrollbar beside them (10 + 4 gap).
+        .padding(iced::Padding { top: 8.0, bottom: 8.0, left: 16.0, right: 30.0 })
+        .align_y(Alignment::Center);
+
+        let rows = self.results.iter().enumerate().map(|(i, c)| self.view_row(i, c));
+        let mut list = column(rows).spacing(1).padding([4, 6]);
+        let status: Option<String> = if let Some(e) = &self.error {
+            Some(if e.starts_with("No chart sources") { e.clone() } else { format!("Error: {e}") })
+        } else if self.searching() {
+            Some("Searching…".into())
+        } else if self.results.is_empty() {
+            Some("No charts found".into())
+        } else if !self.more_available() {
+            let n = self.results.len();
+            Some(format!("{n} chart{}", if n == 1 { "" } else { "s" }))
+        } else {
+            None
+        };
+        if let Some(s) = status {
+            list = list.push(
+                container(text(s).size(12).style(|t: &Theme| text::Style { color: Some(style::muted(t)) }))
+                    .padding(16)
+                    .center_x(Length::Fill),
+            );
+        }
+        column![
+            header,
+            style::divider(false),
+            scrollable(list).on_scroll(Message::Scrolled).spacing(4).height(Length::Fill).width(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .into()
+    }
+
+    fn view_row_refined(&self, i: usize, c: &Chart) -> Element<'static, Message> {
+        let selected = self.selected == Some(i);
+        let checked = self.checked.contains(&i);
+        let owned = self.in_library(c);
+        let cell = |s: String, w: Length, quiet: bool| {
+            let t = text(s).size(if quiet { 13 } else { 14 }).wrapping(text::Wrapping::None);
+            let t = if quiet { t.style(|th: &Theme| text::Style { color: Some(style::muted(th)) }) } else { t };
+            container(t).width(w).clip(true)
+        };
+        let s = |o: &Option<String>| o.as_deref().map(strip_tags).unwrap_or_default();
+        let thumb: Element<_> = match c.album_art_md5.as_ref().and_then(|m| self.art.get(m)) {
+            Some(Art::Ready { thumb, .. }) => image(thumb.clone()).width(40).height(40).into(),
+            _ => container(space())
+                .width(40)
+                .height(40)
+                .style(|t: &Theme| container::Style { background: Some(style::raised(t).into()), ..Default::default() })
+                .into(),
+        };
+        let name: Element<_> = row![]
+            .push(owned.then(library_mark))
+            .push(c.is_rv().then(rv_tag))
+            .push(cell(s(&c.name), Length::Fill, false))
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .width(Length::FillPortion(4))
+            .into();
+        // A slim accent bar marks the selected row.
+        let bar = container(space()).width(3).height(28).style(move |t: &Theme| container::Style {
+            background: selected.then(|| style::accent(t).into()),
+            border: Border::default().rounded(2),
+            ..Default::default()
+        });
+        button(
+            row![
+                bar,
+                container(self.check_box(i)).width(20).center_x(20),
+                thumb,
+                name,
+                cell(s(&c.artist), Length::FillPortion(3), false),
+                cell(s(&c.album), Length::FillPortion(3), true),
+                cell(s(&c.charter), Length::FillPortion(2), true),
+                container(text(c.length_str()).size(13).style(|th: &Theme| text::Style { color: Some(style::muted(th)) }))
+                    .width(56)
+                    .align_x(iced::alignment::Horizontal::Right),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([5, 10])
+        .on_press(Message::Select(i))
+        .style(style::row_button(selected, checked))
+        .into()
+    }
+
     /// The tick box that marks a result for "Download N".
     pub fn check_box(&self, i: usize) -> Element<'static, Message> {
-        checkbox(self.checked.contains(&i)).size(16).on_toggle(move |_| Message::ToggleChecked(i)).into()
+        checkbox(self.checked.contains(&i)).size(if style::refined() { 14 } else { 16 }).on_toggle(move |_| Message::ToggleChecked(i)).into()
     }
 
     /// The header tick box: ticks every loaded result, or clears them all.
     pub fn check_all_box(&self) -> Element<'static, Message> {
         let all = !self.results.is_empty() && self.checked.len() == self.results.len();
-        checkbox(all).size(16).on_toggle(Message::CheckAll).into()
+        checkbox(all).size(if style::refined() { 14 } else { 16 }).on_toggle(Message::CheckAll).into()
     }
 
     fn view_row(&self, i: usize, c: &Chart) -> Element<'static, Message> {
+        if style::refined() {
+            return self.view_row_refined(i, c);
+        }
         let selected = self.selected == Some(i);
         let checked = self.checked.contains(&i);
         let owned = self.in_library(c);
@@ -1754,7 +1956,7 @@ impl App {
                 .width(44)
                 .height(44)
                 .style(|t: &Theme| container::Style {
-                    background: Some(t.extended_palette().background.strong.color.into()),
+                    background: Some(crate::style::strong(t).into()),
                     border: Border::default().rounded(4),
                     ..Default::default()
                 })
@@ -1791,14 +1993,14 @@ impl App {
         .style(move |t: &Theme, s| {
             let p = t.extended_palette();
             let bg = match (selected, s) {
-                (true, _) => Some(p.primary.weak.color),
-                (false, _) if checked => Some(p.primary.weak.color.scale_alpha(0.45)),
-                (false, button::Status::Hovered) => Some(p.background.weak.color),
+                (true, _) => Some(crate::style::selected(t)),
+                (false, _) if checked => Some(crate::style::selected(t).scale_alpha(0.45)),
+                (false, button::Status::Hovered) => Some(crate::style::weak(t)),
                 _ => None,
             };
             button::Style {
                 background: bg.map(Background::Color),
-                text_color: if selected { p.primary.weak.text } else { p.background.base.text },
+                text_color: if selected { crate::style::selected_text(t) } else { p.background.base.text },
                 border: Border::default().rounded(6),
                 ..Default::default()
             }
@@ -1826,7 +2028,7 @@ impl App {
             _ => container(center(text("No album art").size(13)))
                 .height(328)
                 .width(Length::Fill)
-                .style(container::rounded_box)
+                .style(crate::style::panel)
                 .into(),
         };
 
@@ -1835,7 +2037,12 @@ impl App {
             if v.is_empty() {
                 space().into()
             } else {
-                row![text(label).size(13).width(70).color(Color { a: 0.6, ..Color::WHITE }), text(v).size(13)]
+                row![
+                    text(label).size(13).width(70).style(|t: &Theme| text::Style {
+                        color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
+                    }),
+                    text(v).size(13)
+                ]
                     .spacing(8)
                     .into()
             }
@@ -1857,16 +2064,25 @@ impl App {
         ];
         for (key, label) in instruments {
             if let Some(d) = c.diff_for(key) {
-                let pips = (0..6).fold(row![].spacing(3), |r, n| {
+                let refined = style::refined();
+                let pips = (0..6).fold(row![].spacing(if refined { 2 } else { 3 }), |r, n| {
                     let on = n < d.min(6);
-                    r.push(container(space()).width(14).height(8).style(move |t: &Theme| container::Style {
-                        background: Some(
-                            if on { t.extended_palette().primary.base.color } else { t.extended_palette().background.strong.color }
+                    r.push(container(space()).width(if refined { 12 } else { 14 }).height(if refined { 5 } else { 8 }).style(
+                        move |t: &Theme| container::Style {
+                            background: Some(
+                                if on {
+                                    t.extended_palette().primary.base.color
+                                } else if refined {
+                                    style::hairline(t)
+                                } else {
+                                    crate::style::strong(t)
+                                }
                                 .into(),
-                        ),
-                        border: Border::default().rounded(2),
-                        ..Default::default()
-                    }))
+                            ),
+                            border: Border::default().rounded(if refined { 1 } else { 2 }),
+                            ..Default::default()
+                        },
+                    ))
                 });
                 diffs = diffs.push(
                     row![text(*label).size(13).width(84), pips, text(d.to_string()).size(12)]
@@ -1887,10 +2103,16 @@ impl App {
         if c.has_video_background { tags.push("Video"); }
         if c.modchart { tags.push("Modchart"); }
         let tag_row = tags.into_iter().fold(row![].spacing(6), |r, t| {
-            r.push(container(text(t).size(11)).padding([2, 8]).style(|th: &Theme| container::Style {
-                background: Some(th.extended_palette().background.strong.color.into()),
-                border: Border::default().rounded(10),
-                ..Default::default()
+            r.push(container(text(t).size(11)).padding([2, 8]).style(|th: &Theme| {
+                if style::refined() {
+                    style::outline_tag(th)
+                } else {
+                    container::Style {
+                        background: Some(crate::style::strong(th).into()),
+                        border: Border::default().rounded(10),
+                        ..Default::default()
+                    }
+                }
             }))
         });
 
@@ -1917,7 +2139,7 @@ impl App {
         let previewing = self.preview.as_ref().is_some_and(|p| p.md5 == c.md5);
         let preview_button = button(text(if previewing { "Stop preview" } else { "Preview" }).size(15).center())
             .padding([10, 16])
-            .style(button::secondary)
+            .style(crate::style::secondary)
             .on_press_maybe(self.can_preview(c).then_some(if previewing {
                 Message::Preview(preview_panel::Msg::Close)
             } else {
@@ -1928,8 +2150,8 @@ impl App {
         scrollable(
             column![
                 art,
-                text(s(&c.name)).font(BOLD).size(20),
-                text(s(&c.artist)).size(15),
+                text(s(&c.name)).font(if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }).size(20),
+                text(s(&c.artist)).size(15).style(|t: &Theme| text::Style { color: style::refined().then(|| style::muted(t)) }),
                 meta_line("Album", s(&c.album)),
                 meta_line("Year", s(&c.year)),
                 meta_line("Genre", s(&c.genre)),
@@ -1938,7 +2160,7 @@ impl App {
                 tag_row,
                 self.chart_extras(i, c),
                 dl_button,
-                rule::horizontal(1),
+                rule::horizontal(1).style(crate::style::rule),
                 diffs,
             ]
             .spacing(8),
@@ -1955,15 +2177,15 @@ impl App {
         }
         for (idx, f) in folders.iter().enumerate() {
             let default: Element<_> = if idx == 0 {
-                container(text("Downloads go here").size(12)).padding([4, 10]).style(container::rounded_box).into()
+                container(text("Downloads go here").size(12)).padding([4, 10]).style(crate::style::panel).into()
             } else {
-                button(text("Make default").size(12)).padding([4, 10]).style(button::secondary).on_press(Message::MakeDefaultLibrary(idx)).into()
+                button(text("Make default").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::MakeDefaultLibrary(idx)).into()
             };
             lib_col = lib_col.push(
                 row![
                     text(f.display().to_string()).size(14).width(Length::Fill).wrapping(text::Wrapping::WordOrGlyph),
                     default,
-                    button(text("Remove").size(12)).padding([4, 10]).style(button::subtle).on_press(Message::RemoveLibraryFolder(idx)),
+                    button(text("Remove").size(12)).padding([4, 10]).style(crate::style::subtle).on_press(Message::RemoveLibraryFolder(idx)),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -1979,7 +2201,7 @@ impl App {
         lib_col = lib_col.push(
             row![
                 text(lib_status).size(12).width(Length::Fill),
-                button(text("Rescan").size(13)).padding([6, 12]).style(button::secondary).on_press(Message::RescanLibrary),
+                button(text("Rescan").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Message::RescanLibrary),
                 button(text("Add folder…").size(13)).padding([6, 12]).on_press(Message::AddLibraryFolder),
             ]
             .spacing(10)
@@ -1990,7 +2212,7 @@ impl App {
             container(column![text(title).font(BOLD).size(15), content].spacing(10))
                 .padding(16)
                 .width(Length::Fill)
-                .style(container::rounded_box)
+                .style(crate::style::panel)
         };
 
         let themes = all_themes();
@@ -2050,6 +2272,9 @@ impl App {
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
+                    toggler(self.settings.refined_ui)
+                        .label("Beta UI")
+                        .on_toggle(Message::ToggleRefined),
                     toggler(self.settings.cpu_rendering)
                         .label("Low memory mode: render on the CPU (~60 MB instead of ~140 MB; applies after restart)")
                         .on_toggle(Message::ToggleCpuRendering),
@@ -2077,7 +2302,7 @@ impl App {
                     row![
                         button(text("What's new ↗").size(13))
                             .padding([6, 12])
-                            .style(button::secondary)
+                            .style(crate::style::secondary)
                             .on_press(Message::OpenUrl(rel.page_url.clone())),
                         button(text(format!("Update to {}", rel.version)).size(13)).padding([6, 12]).on_press(Message::InstallUpdate),
                     ]
@@ -2104,7 +2329,7 @@ impl App {
             r = r.push(
                 button(text("Check now").size(13))
                     .padding([6, 12])
-                    .style(button::secondary)
+                    .style(crate::style::secondary)
                     .on_press_maybe((!busy).then_some(Message::CheckUpdates)),
             );
         }
@@ -2148,7 +2373,7 @@ impl App {
                     .padding([4, 12])
                     .style(button::primary)
                     .on_press(Message::DownloadChecked),
-                button(text("Clear selection").size(12)).padding([4, 10]).style(button::secondary).on_press(Message::ClearChecked),
+                button(text("Clear selection").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::ClearChecked),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -2168,7 +2393,7 @@ impl App {
             _ => None,
         })
         .push(
-            button(text("Clear finished").size(12)).style(button::subtle).padding([4, 10]).on_press(Message::ClearFinished),
+            button(text("Clear finished").size(12)).style(crate::style::subtle).padding([4, 10]).on_press(Message::ClearFinished),
         )
         .spacing(10)
         .align_y(Alignment::Center);
@@ -2207,9 +2432,9 @@ impl App {
                     .width(Length::Fill),
                 ]
                 .extend(matches!(d.status, DlStatus::Failed(_)).then(|| -> Element<'_, Message> {
-                    button(text("Retry").size(12)).style(button::secondary).padding([4, 10]).on_press(Message::RetryDownload(d.id)).into()
+                    button(text("Retry").size(12)).style(crate::style::secondary).padding([4, 10]).on_press(Message::RetryDownload(d.id)).into()
                 }))
-                .push(button(text("✕").size(12)).style(button::subtle).padding([4, 8]).on_press(Message::CancelDownload(d.id)))
+                .push(button(text("✕").size(12)).style(crate::style::subtle).padding([4, 8]).on_press(Message::CancelDownload(d.id)))
                 .spacing(10)
                 .align_y(Alignment::Center)
                 .into()
@@ -2217,11 +2442,14 @@ impl App {
             col = col.push(container(scrollable(column(items).spacing(10).padding([0, 12]))).max_height(180));
         }
 
+        if style::refined() {
+            return column![style::divider(false), container(col).padding([5, 18]).width(Length::Fill)].into();
+        }
         container(col)
             .padding([6, 14])
             .width(Length::Fill)
             .style(|t: &Theme| container::Style {
-                background: Some(t.extended_palette().background.weak.color.into()),
+                background: Some(crate::style::weak(t).into()),
                 ..Default::default()
             })
             .into()

@@ -279,8 +279,8 @@ impl App {
         column![
             row![
                 text(status).size(12).width(Length::Fill),
-                button(text("Update now").size(12)).padding([4, 10]).style(button::secondary).on_press_maybe((!busy).then_some(Message::RvSyncNow)),
-                button(text("Rebuild").size(12)).padding([4, 10]).style(button::secondary).on_press_maybe((!busy).then_some(Message::RvRebuild)),
+                button(text("Update now").size(12)).padding([4, 10]).style(crate::style::secondary).on_press_maybe((!busy).then_some(Message::RvSyncNow)),
+                button(text("Rebuild").size(12)).padding([4, 10]).style(crate::style::secondary).on_press_maybe((!busy).then_some(Message::RvRebuild)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -311,7 +311,7 @@ impl App {
             button(text(format!("Open on {host} ↗")).size(size).width(Length::Fill).center())
                 .width(Length::Fill)
                 .padding(pad)
-                .style(button::secondary)
+                .style(crate::style::secondary)
                 .on_press(Message::OpenUrl(link))
                 .into()
         };
@@ -323,15 +323,15 @@ impl App {
         let rv = c.rv.as_ref()?;
         let mut col = column![text("From RhythmVerse").size(11)].spacing(6);
         let mut links = iced::widget::row![
-            button(text("RhythmVerse page ↗").size(12)).padding([4, 10]).style(button::secondary).on_press(Message::OpenUrl(rv.page_url.clone())),
-            button(text("Copy link").size(12)).padding([4, 10]).style(button::secondary).on_press(Message::CopyText(rv.page_url.clone())),
+            button(text("RhythmVerse page ↗").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::OpenUrl(rv.page_url.clone())),
+            button(text("Copy link").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::CopyText(rv.page_url.clone())),
         ]
         .spacing(6);
         if let Some(ext) = &rv.external_url {
             links = links.push(
                 button(text(format!("{} ↗", rhythmverse::host_name(ext))).size(12))
                     .padding([4, 10])
-                    .style(button::secondary)
+                    .style(crate::style::secondary)
                     .on_press(Message::OpenUrl(ext.clone())),
             );
         }

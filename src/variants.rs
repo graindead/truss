@@ -98,7 +98,7 @@ impl App {
                 .width(size)
                 .height(size)
                 .style(|t: &Theme| container::Style {
-                    background: Some(t.extended_palette().background.strong.color.into()),
+                    background: Some(crate::style::strong(t).into()),
                     border: Border::default().rounded(6),
                     ..Default::default()
                 })
@@ -121,7 +121,7 @@ impl App {
         let previewing = self.preview.as_ref().is_some_and(|p| p.md5 == c.md5);
         let pv = button(text(if previewing { "Stop preview" } else { "Preview" }).size(14))
             .padding([9, 18])
-            .style(button::secondary)
+            .style(crate::style::secondary)
             .on_press_maybe(
                 self.can_preview(c).then_some(if previewing { Message::Preview(preview_panel::Msg::Close) } else { Message::OpenPreview(i) }),
             );
@@ -140,6 +140,9 @@ impl App {
             button(text(format!("{label}{arrow}")).size(12))
                 .padding([4, 12])
                 .style(move |t: &Theme, st| {
+                    if crate::style::refined() {
+                        return crate::style::quiet_button(active)(t, st);
+                    }
                     let mut b = if active { button::primary(t, st) } else { button::secondary(t, st) };
                     b.border = b.border.rounded(14);
                     b
@@ -171,7 +174,7 @@ impl App {
             .height(Length::Fill)
             .padding(16)
             .style(|t: &Theme| container::Style {
-                background: Some(t.extended_palette().background.weakest.color.into()),
+                background: Some(crate::style::weakest(t).into()),
                 ..Default::default()
             })
             .into()
@@ -215,12 +218,12 @@ impl App {
                     let p = t.extended_palette();
                     button::Style {
                         background: match (selected, st) {
-                            (true, _) => Some(Background::Color(p.primary.weak.color)),
-                            (false, _) if checked => Some(Background::Color(p.primary.weak.color.scale_alpha(0.45))),
-                            (false, button::Status::Hovered) => Some(Background::Color(p.background.weak.color)),
+                            (true, _) => Some(Background::Color(crate::style::selected(t))),
+                            (false, _) if checked => Some(Background::Color(crate::style::selected(t).scale_alpha(0.45))),
+                            (false, button::Status::Hovered) => Some(Background::Color(crate::style::weak(t))),
                             _ => None,
                         },
-                        text_color: if selected { p.primary.weak.text } else { p.background.base.text },
+                        text_color: if selected { crate::style::selected_text(t) } else { p.background.base.text },
                         border: Border::default().rounded(10),
                         ..Default::default()
                     }
@@ -230,7 +233,7 @@ impl App {
         let g = grid(tiles).fluid(200).spacing(6).height(grid::aspect_ratio(184, 262));
         let results = column![
             self.sort_chips(),
-            rule::horizontal(1),
+            rule::horizontal(1).style(crate::style::rule),
             scrollable(container(g).padding([8, 10])).on_scroll(Message::Scrolled).height(Length::Fill),
         ]
         .width(Length::Fill);
@@ -290,10 +293,9 @@ impl App {
                         .width(26)
                         .padding([1, 0])
                         .style(move |t: &Theme| {
-                            let p = t.extended_palette();
                             container::Style {
-                                background: Some(if d.is_some() { p.primary.weak.color } else { p.background.weak.color }.into()),
-                                text_color: Some(if d.is_some() { p.primary.weak.text } else { dim(t) }),
+                                background: Some(if d.is_some() { crate::style::selected(t) } else { crate::style::weak(t) }.into()),
+                                text_color: Some(if d.is_some() { crate::style::selected_text(t) } else { dim(t) }),
                                 border: Border::default().rounded(4),
                                 ..Default::default()
                             }
@@ -332,16 +334,16 @@ impl App {
             .on_press(Message::Select(i))
             .style(move |t: &Theme, st| {
                 let p = t.extended_palette();
-                let stripe = if i % 2 == 1 { Some(p.background.weakest.color) } else { None };
+                let stripe = if i % 2 == 1 { Some(crate::style::weakest(t)) } else { None };
                 button::Style {
                     background: match (selected, st) {
-                        (true, _) => Some(p.primary.weak.color),
-                        (false, _) if checked => Some(p.primary.weak.color.scale_alpha(0.45)),
-                        (false, button::Status::Hovered) => Some(p.background.weak.color),
+                        (true, _) => Some(crate::style::selected(t)),
+                        (false, _) if checked => Some(crate::style::selected(t).scale_alpha(0.45)),
+                        (false, button::Status::Hovered) => Some(crate::style::weak(t)),
                         _ => stripe,
                     }
                     .map(Background::Color),
-                    text_color: if selected { p.primary.weak.text } else { p.background.base.text },
+                    text_color: if selected { crate::style::selected_text(t) } else { p.background.base.text },
                     ..Default::default()
                 }
             })
@@ -353,7 +355,7 @@ impl App {
         }
         let results = column![
             header,
-            rule::horizontal(1),
+            rule::horizontal(1).style(crate::style::rule),
             scrollable(list).on_scroll(Message::Scrolled).height(Length::Fill),
         ]
         .width(Length::Fill);
@@ -393,7 +395,7 @@ impl App {
                         let pips = (0..6).fold(row![].spacing(2), |pr, n| {
                             pr.push(container(space()).width(10).height(6).style(move |t: &Theme| container::Style {
                                 background: Some(
-                                    if n < d { t.extended_palette().primary.base.color } else { t.extended_palette().background.strong.color }
+                                    if n < d { t.extended_palette().primary.base.color } else { crate::style::strong(t) }
                                         .into(),
                                 ),
                                 border: Border::default().rounded(2),
@@ -420,12 +422,11 @@ impl App {
                     .padding(20)
                     .width(Length::Fill)
                     .style(|t: &Theme| {
-                        let p = t.extended_palette();
                         container::Style {
                             background: Some(Background::Gradient(iced::Gradient::Linear(
                                 iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
-                                    .add_stop(0.0, p.primary.weak.color.scale_alpha(0.35))
-                                    .add_stop(1.0, p.background.weakest.color),
+                                    .add_stop(0.0, crate::style::selected(t).scale_alpha(0.35))
+                                    .add_stop(1.0, crate::style::weakest(t)),
                             ))),
                             ..Default::default()
                         }
@@ -434,7 +435,7 @@ impl App {
             }
         };
 
-        column![hero, rule::horizontal(1), self.lazy_results()].height(Length::Fill).into()
+        column![hero, rule::horizontal(1).style(crate::style::rule), self.lazy_results()].height(Length::Fill).into()
     }
 
     fn hero_results(&self) -> Element<'static, Message> {
@@ -464,7 +465,7 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            self.list_rev,
+            (self.list_rev, crate::style::refined()),
         )
     }
 

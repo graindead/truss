@@ -40,6 +40,8 @@ pub struct Settings {
     pub preview_fps: u32,
     /// Look for a new version on GitHub when Truss starts.
     pub check_updates: bool,
+    /// The quieter "Refined look" (see style.rs).
+    pub refined_ui: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             layout: "list".into(),
             preview_fps: 60,
             check_updates: true,
+            refined_ui: false,
         }
     }
 }

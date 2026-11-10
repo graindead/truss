@@ -1,6 +1,6 @@
 [package]
 name = "truss"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A fast native rhythm game chart search and download tool (Chorus Encore client)"
 license = "GPL-3.0"

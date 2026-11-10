@@ -308,7 +308,7 @@ impl Panel {
             .style(|_: &Theme| container::Style { background: Some(Color::BLACK.into()), ..Default::default() });
 
         let small = |label: &'static str, msg: Msg| {
-            button(text(label).size(12)).padding([4, 8]).style(button::secondary).on_press(msg)
+            button(text(label).size(12)).padding([4, 8]).style(crate::style::secondary).on_press(msg)
         };
         let window_buttons = row![
             small(if self.expanded { "Shrink" } else { "Expand" }, Msg::ToggleExpand),

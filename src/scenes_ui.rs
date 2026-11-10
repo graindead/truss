@@ -346,7 +346,15 @@ impl ScenesTool {
             button(text(label).size(13))
                 .width(Length::Fill)
                 .padding([7, 12])
-                .style(move |t: &Theme, st| if active { button::primary(t, st) } else { button::subtle(t, st) })
+                .style(move |t: &Theme, st| {
+                    if crate::style::refined() {
+                        crate::style::row_button(active, false)(t, st)
+                    } else if active {
+                        button::primary(t, st)
+                    } else {
+                        button::subtle(t, st)
+                    }
+                })
                 .on_press(Msg::Sub(s))
         };
         let left = container(
@@ -356,15 +364,15 @@ impl ScenesTool {
         )
         .width(160)
         .height(Length::Fill)
-        .style(|t: &Theme| container::Style { background: Some(t.extended_palette().background.weakest.color.into()), ..Default::default() });
+        .style(|t: &Theme| container::Style { background: Some(crate::style::weakest(t).into()), ..Default::default() });
 
         let body: Element<'_, Msg> = match self.sub {
             Sub::Requests => self.requests_view(),
             Sub::Single | Sub::Multi => self.mode_view(),
             Sub::Settings => self.settings_view(),
         };
-        let right = column![container(body).height(Length::Fill).padding(20), rule::horizontal(1), self.status_row()];
-        row![left, rule::vertical(1), right].height(Length::Fill).into()
+        let right = column![container(body).height(Length::Fill).padding(20), rule::horizontal(1).style(crate::style::rule), self.status_row()];
+        row![left, rule::vertical(1).style(crate::style::rule), right].height(Length::Fill).into()
     }
 
     fn status_row(&self) -> Element<'_, Msg> {
@@ -372,7 +380,7 @@ impl ScenesTool {
             Conn::Connected => (|t| t.extended_palette().success.base.color, if self.status.is_empty() { "Connected" } else { &self.status }),
             Conn::Connecting => (|t| t.extended_palette().warning.base.color, "Connecting…"),
             Conn::Failed => (|t| t.extended_palette().danger.base.color, "Can't connect"),
-            Conn::Off => (|t| t.extended_palette().background.strong.color, "Not connected"),
+            Conn::Off => (|t| crate::style::strong(t), "Not connected"),
         };
         let mode = if self.cfg.mode == 0 { "Singleplayer" } else { "Multiplayer" };
         // A drawn circle rather than a "●" character, so it sits centred on the text.
@@ -456,7 +464,7 @@ impl ScenesTool {
         let label = |s: &'static str| text(s).size(12);
         let connected = matches!(self.conn, Conn::Connected | Conn::Connecting);
         let connect = if connected {
-            button(text("Disconnect").size(13)).padding([6, 14]).style(button::secondary).on_press(Msg::Disconnect)
+            button(text("Disconnect").size(13)).padding([6, 14]).style(crate::style::secondary).on_press(Msg::Disconnect)
         } else {
             button(text("Connect").size(13)).padding([6, 14]).on_press(Msg::Connect)
         };
@@ -490,7 +498,7 @@ impl ScenesTool {
             label("Current song file"),
             row![
                 text_input("currentsong.txt", &self.cfg.song_file).on_input(Msg::File).padding(6).width(Length::Fill),
-                button(text("Browse…").size(13)).padding([6, 12]).style(button::secondary).on_press(Msg::Browse),
+                button(text("Browse…").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::Browse),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -513,7 +521,7 @@ impl ScenesTool {
             text_input("", &self.cfg.ouvert_private_key).secure(true).on_input(Msg::OuvertPrivate).padding(6).into(),
             row![
                 text(self.tw_msg.clone()).size(12).width(Length::Fill),
-                button(text(tw_label).size(13)).padding([6, 12]).style(button::secondary).on_press_maybe((!self.tw_busy).then_some(Msg::TwButton)),
+                button(text(tw_label).size(13)).padding([6, 12]).style(crate::style::secondary).on_press_maybe((!self.tw_busy).then_some(Msg::TwButton)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)

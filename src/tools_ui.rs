@@ -130,11 +130,11 @@ impl Picker {
                     let p = t.extended_palette();
                     button::Style {
                         background: match (sel, s) {
-                            (true, _) => Some(Background::Color(p.primary.weak.color)),
-                            (false, button::Status::Hovered) => Some(Background::Color(p.background.weak.color)),
+                            (true, _) => Some(Background::Color(crate::style::selected(t))),
+                            (false, button::Status::Hovered) => Some(Background::Color(crate::style::weak(t))),
                             _ => None,
                         },
-                        text_color: if sel { p.primary.weak.text } else { p.background.base.text },
+                        text_color: if sel { crate::style::selected_text(t) } else { p.background.base.text },
                         ..Default::default()
                     }
                 })
@@ -142,11 +142,11 @@ impl Picker {
             },
             move |vp| on(PickMsg::Scrolled(vp)),
         );
-        container(column![head, rule::horizontal(1), list])
+        container(column![head, rule::horizontal(1).style(crate::style::rule), list])
             .width(330)
             .height(Length::Fill)
             .style(|t: &Theme| container::Style {
-                background: Some(t.extended_palette().background.weakest.color.into()),
+                background: Some(crate::style::weakest(t).into()),
                 ..Default::default()
             })
             .into()
@@ -183,8 +183,11 @@ fn toggle_chip<'a, M: Clone + 'a>(label: &'static str, active: bool, msg: M) -> 
     button(text(label).size(12))
         .padding([3, 10])
         .style(move |t: &Theme, s| {
+            if crate::style::refined() {
+                return crate::style::quiet_button(active)(t, s);
+            }
             let mut b = if active { button::primary(t, s) } else { button::secondary(t, s) };
-            b.border = Border::default().rounded(12);
+            b.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 });
             b
         })
         .on_press(msg)
@@ -493,7 +496,7 @@ impl ArtTool {
                     for r in self.results.iter().take(12) {
                         let thumb: Element<_> = match self.thumbs.get(&r.thumb_url) {
                             Some(h) => image(h.clone()).width(100).height(100).into(),
-                            None => container(space()).width(100).height(100).style(container::rounded_box).into(),
+                            None => container(space()).width(100).height(100).style(crate::style::panel).into(),
                         };
                         let tile = column![
                             thumb,
@@ -537,7 +540,7 @@ impl ArtTool {
                                     .on_press_maybe((!self.busy).then_some(ArtMsg::Generate)),
                                 button(text("Remove background").size(13))
                                     .padding([7, 14])
-                                    .style(button::secondary)
+                                    .style(crate::style::secondary)
                                     .on_press_maybe((c.has_background && !self.busy).then_some(ArtMsg::DeleteBg)),
                             ]
                             .spacing(8),
@@ -560,7 +563,7 @@ fn batch_view<'a, M: Clone + 'a>(b: &'a Batch, cancel: M) -> Element<'a, M> {
         ]
         .spacing(4)
         .width(Length::Fill),
-        button(text("Stop").size(13)).padding([6, 12]).style(button::secondary).on_press(cancel),
+        button(text("Stop").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(cancel),
     ]
     .spacing(10)
     .align_y(Alignment::Center)
@@ -967,10 +970,10 @@ impl LyricsTool {
             .spacing(10)
             .align_y(Alignment::Center),
             row![
-                button(text("−1 s").size(12)).padding([4, 8]).style(button::secondary).on_press(LyricsMsg::Nudge(-1000.0)),
-                button(text("−0.1 s").size(12)).padding([4, 8]).style(button::secondary).on_press(LyricsMsg::Nudge(-100.0)),
-                button(text("+0.1 s").size(12)).padding([4, 8]).style(button::secondary).on_press(LyricsMsg::Nudge(100.0)),
-                button(text("+1 s").size(12)).padding([4, 8]).style(button::secondary).on_press(LyricsMsg::Nudge(1000.0)),
+                button(text("−1 s").size(12)).padding([4, 8]).style(crate::style::secondary).on_press(LyricsMsg::Nudge(-1000.0)),
+                button(text("−0.1 s").size(12)).padding([4, 8]).style(crate::style::secondary).on_press(LyricsMsg::Nudge(-100.0)),
+                button(text("+0.1 s").size(12)).padding([4, 8]).style(crate::style::secondary).on_press(LyricsMsg::Nudge(100.0)),
+                button(text("+1 s").size(12)).padding([4, 8]).style(crate::style::secondary).on_press(LyricsMsg::Nudge(1000.0)),
                 text(format!("offset {:+.2} s", offset / 1000.0)).size(12),
             ]
             .spacing(6)
@@ -978,9 +981,9 @@ impl LyricsTool {
             row![
                 button(text(if self.loading_audio { "Loading…" } else { "Preview from 3 s before" }).size(13))
                     .padding([7, 12])
-                    .style(button::secondary)
+                    .style(crate::style::secondary)
                     .on_press_maybe((!self.loading_audio).then_some(LyricsMsg::Preview)),
-                button(text("Stop").size(13)).padding([7, 12]).style(button::secondary).on_press_maybe(playing.then_some(LyricsMsg::Stop)),
+                button(text("Stop").size(13)).padding([7, 12]).style(crate::style::secondary).on_press_maybe(playing.then_some(LyricsMsg::Stop)),
                 text(if playing { format!("{}   {current}", fmt(self.position_ms)) } else { String::new() }).size(15),
             ]
             .spacing(8)
@@ -1210,7 +1213,7 @@ impl VideoTool {
                             r = r.push(button(text(label).size(12)).padding([4, 12]).on_press(VideoMsg::Install));
                         }
                         r = r.push(
-                            button(text("Check again").size(12)).padding([4, 10]).style(button::secondary).on_press(VideoMsg::Recheck),
+                            button(text("Check again").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(VideoMsg::Recheck),
                         );
                     }
                     body = body.push(r);
@@ -1249,7 +1252,7 @@ impl VideoTool {
                                 column![text(format!("{s} {pct:.0}%")).size(13), progress_bar(0.0..=100.0, *pct).girth(6)]
                                     .spacing(4)
                                     .width(Length::Fill),
-                                button(text("Cancel").size(13)).padding([6, 12]).style(button::secondary).on_press(VideoMsg::Cancel),
+                                button(text("Cancel").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(VideoMsg::Cancel),
                             ]
                             .spacing(10)
                             .align_y(Alignment::Center),
@@ -1312,7 +1315,7 @@ impl VideoTool {
                     body = body.push(
                         row![
                             heading("Local file"),
-                            button(text("Choose video file…").size(13)).padding([7, 12]).style(button::secondary).on_press(VideoMsg::ChooseFile),
+                            button(text("Choose video file…").size(13)).padding([7, 12]).style(crate::style::secondary).on_press(VideoMsg::ChooseFile),
                         ]
                         .spacing(10)
                         .align_y(Alignment::Center),
@@ -1505,7 +1508,7 @@ impl IssueTool {
                         .wrapping(text::Wrapping::WordOrGlyph),
                 )
                 .width(Length::Fill),
-                button(text("Choose…").size(13)).padding([6, 12]).style(button::secondary).on_press(msg),
+                button(text("Choose…").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(msg),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -1527,7 +1530,7 @@ impl IssueTool {
                     column![text(label).size(13), progress_bar(0.0..=(*total).max(1) as f32, *done as f32).girth(6)]
                         .spacing(4)
                         .width(Length::Fill),
-                    button(text("Stop").size(13)).padding([6, 12]).style(button::secondary).on_press(IssueMsg::Cancel),
+                    button(text("Stop").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(IssueMsg::Cancel),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -1543,7 +1546,7 @@ impl IssueTool {
                         row![
                             text(p.display().to_string()).size(12).width(Length::Fill).wrapping(text::Wrapping::WordOrGlyph),
                             button(text("Open spreadsheet").size(13)).padding([6, 12]).on_press(IssueMsg::OpenReport(p.clone())),
-                            button(text("Show in folder").size(13)).padding([6, 12]).style(button::secondary).on_press(IssueMsg::OpenReport(folder)),
+                            button(text("Show in folder").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(IssueMsg::OpenReport(folder)),
                         ]
                         .spacing(10)
                         .align_y(Alignment::Center),
@@ -1557,7 +1560,7 @@ impl IssueTool {
                             .padding([3, 10])
                             .style(move |t: &Theme, s| {
                                 let mut b = if active { button::primary(t, s) } else { button::secondary(t, s) };
-                                b.border = Border::default().rounded(12);
+                                b.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 });
                                 b
                             })
                             .on_press(IssueMsg::Only(Some(k.clone()))),
@@ -1575,7 +1578,7 @@ impl IssueTool {
                         ]
                         .spacing(10)
                         .padding([6, 20]),
-                        rule::horizontal(1),
+                        rule::horizontal(1).style(crate::style::rule),
                         self.list.view(
                             self.shown.len(),
                             move |r| {
@@ -1602,7 +1605,7 @@ impl IssueTool {
                                 .height(Length::Fill)
                                 .align_y(Alignment::Center)
                                 .style(move |t: &Theme| container::Style {
-                                    background: (r % 2 == 1).then(|| t.extended_palette().background.weakest.color.into()),
+                                    background: (r % 2 == 1).then(|| crate::style::weakest(t).into()),
                                     ..Default::default()
                                 })
                                 .into()
@@ -1789,10 +1792,7 @@ impl Page {
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| {
             let active = self.tab == t;
-            button(text(label).size(14))
-                .padding([7, 14])
-                .style(move |th: &Theme, s| if active { button::primary(th, s) } else { button::subtle(th, s) })
-                .on_press(Msg::Tab(t))
+            crate::style::tab(label, active, 14, Msg::Tab(t))
         };
         let mut tab_row = row![tab("Art Studio", Tab::Art), tab("Lyrics", Tab::Lyrics), tab("Video Sync", Tab::Video), tab("Scene Switcher", Tab::Scenes)];
         if ISSUE_SCANNER_ENABLED {
@@ -1820,6 +1820,6 @@ impl Page {
                 Tab::Scenes => self.scenes.view().map(Msg::Scenes),
             }
         };
-        column![tabs, rule::horizontal(1), body].height(Length::Fill).into()
+        column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }
 }

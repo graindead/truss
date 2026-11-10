@@ -227,10 +227,25 @@ impl Page {
         let dups = cat.iter().filter(|c| self.dup_keys.contains(&c.key)).count();
         let tile = |label: &'static str, n: String, f: Filter| {
             let active = self.filter.unwrap_or(Filter::All) == f;
-            button(column![text(n).size(20), text(label).size(11)].align_x(Alignment::Center).width(Length::Fill))
+            let refined = crate::style::refined();
+            let number = text(n).size(20).style(move |t: &Theme| text::Style {
+                color: (refined && active).then(|| crate::style::accent(t)),
+            });
+            let caption = text(label).size(11).style(move |t: &Theme| text::Style {
+                color: refined.then(|| crate::style::muted(t)),
+            });
+            button(column![number, caption].align_x(Alignment::Center).width(Length::Fill))
                 .width(Length::Fill)
                 .padding([8, 6])
                 .style(move |t: &Theme, s| {
+                    if refined {
+                        // Outlined; the current filter gets an accent outline and number.
+                        let mut st = crate::style::quiet_button(false)(t, s);
+                        if active {
+                            st.border.color = crate::style::accent(t);
+                        }
+                        return st;
+                    }
                     let mut st = if active { button::primary(t, s) } else { button::secondary(t, s) };
                     st.border = Border::default().rounded(8);
                     st
@@ -276,10 +291,10 @@ impl Page {
                         .style(move |t: &Theme, s| if self.confirm_delete { button::danger(t, s) } else { button::secondary(t, s) })
                         .on_press(Msg::Delete),
                 )
-                .push(button(text("Clear").size(13)).padding([6, 12]).style(button::secondary).on_press(Msg::ClearSelection));
+                .push(button(text("Clear").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::ClearSelection));
         } else {
             bar = bar.push(
-                button(text("Select all shown").size(13)).padding([6, 12]).style(button::secondary).on_press(Msg::SelectAllShown),
+                button(text("Select all shown").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::SelectAllShown),
             );
         }
         bar = bar.push(button(text("Rescan").size(13)).padding([6, 12]).on_press(Msg::Rescan));
@@ -395,9 +410,9 @@ impl Page {
                     let p = t.extended_palette();
                     button::Style {
                         background: match (sel, s) {
-                            (true, _) => Some(Background::Color(p.primary.weak.color.scale_alpha(0.5))),
-                            (false, button::Status::Hovered) => Some(Background::Color(p.background.weak.color)),
-                            _ if r % 2 == 1 => Some(Background::Color(p.background.weakest.color)),
+                            (true, _) => Some(Background::Color(crate::style::selected(t).scale_alpha(0.5))),
+                            (false, button::Status::Hovered) => Some(Background::Color(crate::style::weak(t))),
+                            _ if r % 2 == 1 => Some(Background::Color(crate::style::weakest(t))),
                             _ => None,
                         },
                         text_color: p.background.base.text,
@@ -412,7 +427,7 @@ impl Page {
         column![
             container(column![tiles, bar].spacing(10)).padding([12, 14]),
             head,
-            rule::horizontal(1),
+            rule::horizontal(1).style(crate::style::rule),
             list,
         ]
         .height(Length::Fill)
