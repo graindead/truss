@@ -37,20 +37,69 @@ fn is_corrupt(e: &rusqlite::Error) -> bool {
         if matches!(f.code, rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase))
 }
 
-/// Opens the database, replacing it with an empty one if it's damaged (it's only a copy of
-/// RhythmVerse's list, so it can always be fetched again).
+/// How long to wait when another copy of Truss is using the database.
+#[cfg(not(test))]
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The backup made after each successful update (`backup`).
+fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
+    path.with_extension("backup.sqlite")
+}
+
+fn connect(path: &std::path::Path) -> rusqlite::Result<Connection> {
+    let c = Connection::open(path)?;
+    c.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(c)
+}
+
+/// Whether a database file opens and passes SQLite's own check. Err = couldn't tell (for
+/// example another copy of Truss has it locked), which is never treated as damage.
+fn check(c: &Connection) -> Result<bool, rusqlite::Error> {
+    match c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)) {
+        Ok(v) => Ok(v == "ok"),
+        Err(e) if is_corrupt(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Opens the database. Only if SQLite itself reports damage is it replaced: with the backup
+/// from the last successful update when there is one (then an update fetches just what's new),
+/// otherwise with an empty one (it's only a copy of RhythmVerse's list).
 fn open(path: &std::path::Path) -> Result<Connection, String> {
-    let healthy = Connection::open(path).ok().filter(|c| {
-        c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)).is_ok_and(|v| v == "ok")
-    });
-    let conn = match healthy {
-        Some(c) => c,
-        None => {
-            delete_files(path);
-            Connection::open(path).map_err(|e| e.to_string())?
-        }
-    };
-    Ok(conn)
+    let conn = connect(path).map_err(|e| format!("Couldn't open the local chart list: {e}"))?;
+    match check(&conn) {
+        Ok(true) => return Ok(conn),
+        Ok(false) => {}
+        Err(e) => return Err(format!("The local chart list is busy ({e}). Try again in a moment.")),
+    }
+    drop(conn);
+    restore(path)
+}
+
+/// Replaces a damaged database with the backup (or nothing).
+fn restore(path: &std::path::Path) -> Result<Connection, String> {
+    delete_files(path);
+    let backup = backup_path(path);
+    let backup_ok = backup.is_file() && connect(&backup).ok().is_some_and(|c| check(&c).is_ok_and(|ok| ok));
+    if backup_ok {
+        std::fs::copy(&backup, path).map_err(|e| format!("Couldn't restore the chart list backup: {e}"))?;
+    } else {
+        let _ = std::fs::remove_file(&backup);
+    }
+    connect(path).map_err(|e| e.to_string())
+}
+
+/// Saves a compact copy of the database to restore from if it's ever damaged. Written to a
+/// temporary file first, so a crash part-way can't spoil the previous backup.
+fn backup() -> Result<(), String> {
+    let path = db_path().ok_or("No cache folder available")?;
+    let target = backup_path(&path);
+    let tmp = path.with_extension("backup.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    with_db(|c| c.execute("VACUUM INTO ?1", [tmp.to_string_lossy()]).map(|_| ()))?;
+    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
 }
 
 fn with_db<T>(f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, String> {
@@ -63,7 +112,7 @@ fn with_db<T>(f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, S
         let conn = open(&path)?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
+             PRAGMA synchronous=FULL;
              CREATE TABLE IF NOT EXISTS charts (
                 uid TEXT PRIMARY KEY, modified TEXT NOT NULL,
                 name TEXT, artist TEXT, album TEXT, genre TEXT, year TEXT, charter TEXT,
@@ -80,10 +129,10 @@ fn with_db<T>(f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, S
     match f(guard.as_ref().unwrap()) {
         Ok(v) => Ok(v),
         Err(e) if is_corrupt(&e) => {
-            // Damaged while open: start over with an empty copy.
+            // Damaged while open: put the backup (or an empty copy) in its place.
             *guard = None;
             if let Some(path) = db_path() {
-                delete_files(&path);
+                let _ = restore(&path);
             }
             Err(CORRUPT.into())
         }
@@ -91,7 +140,7 @@ fn with_db<T>(f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, S
     }
 }
 
-const CORRUPT: &str = "The local chart list was damaged, so it was cleared";
+const CORRUPT: &str = "The local chart list was damaged, so it was replaced with its backup";
 
 fn get_meta(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()
@@ -144,8 +193,12 @@ pub enum SyncEvent {
 pub async fn sync(mut tx: Sender<SyncEvent>) {
     let mut result = run_sync(&mut tx).await;
     if result.as_ref().is_err_and(|e| e == CORRUPT) {
-        // Cleared: copy the whole list again.
+        // Restored from the backup (or cleared): update again from there.
         result = run_sync(&mut tx).await;
+    }
+    if result.is_ok() {
+        // Off the UI thread: it rewrites ~40 MB.
+        let _ = tokio::task::spawn_blocking(backup).await;
     }
     let _ = tx.send(SyncEvent::Finished(result)).await;
 }
@@ -351,6 +404,7 @@ pub fn reset() -> Result<(), String> {
     *guard = None; // close it first, or Windows won't delete the files
     let path = db_path().ok_or("No cache folder available")?;
     delete_files(&path);
+    let _ = std::fs::remove_file(backup_path(&path));
     if path.exists() {
         return Err("Couldn't delete the local chart list (is another copy of Truss open?)".into());
     }
@@ -360,6 +414,45 @@ pub fn reset() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A database another copy of Truss has locked is left alone, not treated as damaged.
+    #[test]
+    fn locked_database_is_not_deleted() {
+        let dir = std::env::temp_dir().join(format!("truss-rvlock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rhythmverse.sqlite");
+        let a = Connection::open(&path).unwrap();
+        a.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1); BEGIN EXCLUSIVE;").unwrap();
+        assert!(open(&path).is_err(), "busy, so it isn't opened");
+        a.execute_batch("COMMIT;").unwrap();
+        let n: i64 = open(&path).unwrap().query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the data survived");
+        drop(a);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A damaged database is replaced by the backup, keeping its data.
+    #[test]
+    fn restores_from_backup() {
+        let dir = std::env::temp_dir().join(format!("truss-rvbak-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rhythmverse.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(42);").unwrap();
+            c.execute("VACUUM INTO ?1", [backup_path(&path).to_string_lossy()]).unwrap();
+        }
+        let mut b = std::fs::read(&path).unwrap();
+        for v in b.iter_mut().skip(100).take(3000) {
+            *v = 0xAB;
+        }
+        std::fs::write(&path, &b).unwrap();
+        let c = open(&path).unwrap();
+        let x: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 42);
+        drop(c);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// A damaged database file is replaced with an empty, working one.
     #[test]
