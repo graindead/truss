@@ -1,8 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod advanced;
-mod art;
-mod backup;
 mod api;
 mod audio;
 mod chart;
@@ -37,7 +35,6 @@ mod trackhash;
 mod fretwork;
 mod tools_ui;
 mod variants;
-mod video;
 mod vlist;
 
 use api::{Chart, DecodedImage, DIFFICULTIES, DRUM_TYPES, INSTRUMENTS, strip_tags};
@@ -82,7 +79,8 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(1280.0, 800.0),
-            icon: iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok(),
+            icon: app_icon(&theme_by_name(&settings.theme))
+                .or_else(|| iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok()),
             ..Default::default()
         })
         .antialiasing(false)
@@ -334,7 +332,6 @@ enum Message {
     LibraryPage(library_ui::Msg),
     ToolsPage(tools_ui::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
-    ChartReread(PathBuf, Option<Arc<library::LocalChart>>),
     LibraryDeleted(Result<(), String>),
     RescanLibrary,
     AddLibraryFolder,
@@ -423,8 +420,75 @@ fn rust_theme() -> Theme {
     )
 }
 
+/// Deep navy with a clear blue accent.
+fn kusha_theme() -> Theme {
+    Theme::custom(
+        "Kusha",
+        iced::theme::Palette {
+            background: color!(0x131924),
+            text: color!(0xe2e9f4),
+            primary: color!(0x3b8ef0),
+            success: color!(0x5cc89c),
+            warning: color!(0xf2c14e),
+            danger: color!(0xeb5a6b),
+        },
+    )
+}
+
+/// Deep plum with a vivid purple accent.
+fn nick_theme() -> Theme {
+    Theme::custom(
+        "Nick",
+        iced::theme::Palette {
+            background: color!(0x19141f),
+            text: color!(0xece4f4),
+            primary: color!(0x9d5cf0),
+            success: color!(0x6cc79a),
+            warning: color!(0xf2c14e),
+            danger: color!(0xeb5a72),
+        },
+    )
+}
+
 fn all_themes() -> Vec<ThemeChoice> {
-    [rust_theme(), bridge_dark()].into_iter().chain(Theme::ALL.iter().cloned()).map(ThemeChoice).collect()
+    [rust_theme(), kusha_theme(), nick_theme(), bridge_dark()].into_iter().chain(Theme::ALL.iter().cloned()).map(ThemeChoice).collect()
+}
+
+/// The app icon in a theme's colours: the orange truss becomes the theme's accent and the dark
+/// tile its background, keeping the tile's shading and the smoothed edges.
+fn app_icon(theme: &Theme) -> Option<iced::window::Icon> {
+    let (rgba, w, h) = app_icon_rgba(theme)?;
+    iced::window::icon::from_rgba(rgba, w, h).ok()
+}
+
+fn app_icon_rgba(theme: &Theme) -> Option<(Vec<u8>, u32, u32)> {
+    let img = ::image::load_from_memory(include_bytes!("../assets/truss-256.png")).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    let p = theme.palette();
+    let to = |c: Color| [c.r * 255.0, c.g * 255.0, c.b * 255.0];
+    let (accent, bg) = (to(p.primary), to(p.background));
+    // The original's colours: Rust orange on Rust's background.
+    let (o, b) = ([226.0, 98.0, 42.0], [27.0, 23.0, 21.0]);
+    let lum = |c: [f32; 3]| 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+    let mut out = img.into_raw();
+    for px in out.chunks_exact_mut(4) {
+        let c = [px[0] as f32, px[1] as f32, px[2] as f32];
+        // How much of the pixel is orange: red minus blue is ~8 on the tile, 184 on the truss.
+        // Past 1 it's one of the truss's lighter highlights, so the accent brightens too.
+        let raw = (c[0] - c[2] - 8.0) / (o[0] - o[2] - 8.0);
+        let a = raw.clamp(0.0, 1.0);
+        let lift = raw.clamp(1.0, 1.3);
+        // The tile part's shade relative to the darkest tile colour (the tile is a gradient).
+        let tile = [0, 1, 2].map(|i| if a < 1.0 { (c[i] - a * o[i]) / (1.0 - a) } else { b[i] });
+        let shade = (lum(tile) / lum(b)).clamp(0.5, 2.0);
+        // On a light background a gentle shade the other way (darker at the top) keeps it subtle.
+        let shade = if lum(bg) < 128.0 { shade } else { 1.0 - (shade - 1.0) * 0.12 };
+        for i in 0..3 {
+            let base = bg[i] * shade;
+            px[i] = (base * (1.0 - a) + (accent[i] * lift).min(255.0) * a).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    Some((out, w, h))
 }
 
 fn theme_by_name(name: &str) -> Theme {
@@ -555,17 +619,14 @@ impl App {
     }
 
     fn tools_ctx(&self) -> tools_ui::Ctx<'_> {
-        tools_ui::Ctx { catalog: &self.catalog, lyrics: &self.lyrics_map, settings: &self.settings }
+        tools_ui::Ctx { settings: &self.settings }
     }
 
-    /// Re-filters the Library and Tools lists after the catalog or lyrics data changed.
+    /// Re-filters the Library list after the catalog or lyrics data changed.
     fn refresh_pages(&mut self) {
         let mut lp = std::mem::take(&mut self.library_page);
         lp.refresh(&self.library_ctx());
         self.library_page = lp;
-        let mut tp = std::mem::take(&mut self.tools_page);
-        tp.refresh(&self.tools_ctx());
-        self.tools_page = tp;
     }
 
     /// Starts the (cached) check for which charts have lyrics, once.
@@ -1474,23 +1535,6 @@ impl App {
                 let task = task.map(Message::ToolsPage);
                 let extra = match out {
                     tools_ui::Out::None => Task::none(),
-                    tools_ui::Out::ChartChanged(p) => {
-                        let path = p.clone();
-                        Task::perform(
-                            async move {
-                                tokio::task::spawn_blocking(move || library::read_chart(&path).map(Arc::new))
-                                    .await
-                                    .ok()
-                                    .flatten()
-                            },
-                            move |c| Message::ChartReread(p.clone(), c),
-                        )
-                    }
-                    tools_ui::Out::LyricsChanged(p, has) => {
-                        self.lyrics_map.insert(p, has);
-                        self.refresh_pages();
-                        Task::none()
-                    }
                     tools_ui::Out::Open(p) => {
                         let _ = open::that_detached(p);
                         Task::none()
@@ -1502,15 +1546,6 @@ impl App {
                     }
                 };
                 Task::batch([task, extra])
-            }
-            Message::ChartReread(p, c) => {
-                if let Some(c) = c
-                    && let Some(slot) = self.catalog.iter_mut().find(|x| x.path == p)
-                {
-                    *slot = c;
-                    self.refresh_pages();
-                }
-                Task::none()
             }
             Message::RescanLibrary => self.scan_library(),
             Message::AddLibraryFolder => Task::perform(
@@ -1556,20 +1591,14 @@ impl App {
                 self.save_settings()
             }
             Message::ShowScreen(s) => {
-                if self.screen == Screen::Tools && s != Screen::Tools {
-                    self.tools_page.pause_audio();
-                }
                 self.screen = s;
                 let mut tasks = Vec::new();
-                if matches!(s, Screen::Library | Screen::Tools) {
+                if s == Screen::Library {
                     if self.catalog_stale && !self.library_scanning {
                         tasks.push(self.scan_library());
                     } else if self.lyrics_map.is_empty() {
                         tasks.push(self.scan_lyrics());
                     }
-                }
-                if s == Screen::Tools {
-                    tasks.push(self.tools_page.on_open().map(Message::ToolsPage));
                 }
                 Task::batch(tasks)
             }
@@ -1605,8 +1634,12 @@ impl App {
             }
             Message::ThemePicked(t) => {
                 self.settings.theme = t.0.to_string();
+                let icon = match app_icon(&t.0) {
+                    Some(icon) => iced::window::oldest().and_then(move |id| iced::window::set_icon(id, icon.clone())),
+                    None => Task::none(),
+                };
                 self.theme = t.0;
-                self.save_settings()
+                Task::batch([self.save_settings(), icon])
             }
             Message::ToggleCpuRendering(b) => {
                 self.settings.cpu_rendering = b;
@@ -2671,13 +2704,11 @@ fn credits_section() -> Element<'static, Message> {
         entry("chart-preview", "https://github.com/Geomitron/chart-preview", "by Geomitron (MIT). The note highway preview."),
         entry("Fretwork", "https://github.com/Staycation44/fretwork", "by Staycation (MIT). The Fretwork difficulty tiers."),
         entry("SngFileFormat", "https://github.com/mdsitton/SngFileFormat", "by mdsitton. The .sng file format."),
-        heading("Uses"),
-        entry("yt-dlp", "https://github.com/yt-dlp/yt-dlp", "Downloads videos for Video Sync (installed separately)."),
-        entry("FFmpeg", "https://github.com/FFmpeg/FFmpeg", "Used by yt-dlp to merge video and audio streams (installed separately)."),
+        heading("Related"),
         entry("CH Scene Switcher", "https://github.com/graindead/chswitcher", "Shares its settings with the Scene Switcher tool."),
         heading("Built with"),
         libs,
-        text("Charts and scores come from Chorus Encore, RhythmVerse and the Clone Hero leaderboards; lyrics from LRCLIB; album art search from iTunes; song requests from Ouvert.")
+        text("Charts and scores come from Chorus Encore, RhythmVerse and the Clone Hero leaderboards; song requests from Ouvert.")
             .size(12)
             .style(muted),
     ]
@@ -2703,4 +2734,25 @@ fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
         })
         .on_press(Message::SearchFor(v))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TRUSS_TEST_ICON_DIR=<dir>: write the app icon in a few themes as PNGs to look at.
+    #[test]
+    fn themed_icons() {
+        let rust = app_icon_rgba(&rust_theme()).unwrap();
+        let orig = ::image::load_from_memory(include_bytes!("../assets/truss-256.png")).unwrap().to_rgba8().into_raw();
+        // The Rust theme gives back (nearly) the original icon.
+        // (Only pixels you can see: the corners' near-transparent pixels hold junk colours.)
+        let worst = rust.0.chunks(4).zip(orig.chunks(4)).filter(|(_, o)| o[3] >= 200).map(|(a, b)| (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap()).max().unwrap();
+        assert!(worst <= 12, "Rust icon differs by {worst}");
+        let Ok(dir) = std::env::var("TRUSS_TEST_ICON_DIR") else { return };
+        for t in [rust_theme(), kusha_theme(), nick_theme(), bridge_dark(), Theme::Light, Theme::Dracula] {
+            let (px, w, h) = app_icon_rgba(&t).unwrap();
+            ::image::RgbaImage::from_raw(w, h, px).unwrap().save(format!("{dir}/icon-{t}.png")).unwrap();
+        }
+    }
 }

@@ -11,10 +11,9 @@ On top of Bridge:
   RhythmVerse, Google Drive or MediaFire (.zip, .7z, .rar, .sng). Truss keeps a local copy of
   RhythmVerse's chart list for instant search. RhythmVerse has no public API, so this may stop
   working if the site changes.
-- **Tools**: Art Studio, Lyrics, Video Sync, and a **Scene Switcher** for OBS (switches scenes when
-  Clone Hero starts and ends a song, shows the Ouvert request queue, Next song via Ouvert or a
-  Twitch chat command; settings shared with the standalone
-  [CH Scene Switcher](https://github.com/graindead/chswitcher)).
+- **Scene Switcher** for OBS (Tools tab): switches scenes when Clone Hero starts and ends a song,
+  shows the Ouvert request queue, Next song via Ouvert or a Twitch chat command; settings shared
+  with the standalone [CH Scene Switcher](https://github.com/graindead/chswitcher).
 - **Leaderboards**: the top 50 Clone Hero scores for a chart, including RhythmVerse charts and
   Encore charts whose listed hashes are out of date (Truss reads the chart and works them out).
 - **Fretwork tiers**: hover a difficulty to see where the chart lands on Fretwork's scale, or turn
@@ -44,15 +43,12 @@ The binary is `target/release/truss.exe` (single file, ~20 MB). To build without
 - `src/advanced.rs`: advanced search form (text/exact/exclude filters, ranges, feature flags)
 - `src/library.rs`: scans library folders (song.ini / .sng metadata): the local chart catalog and "Already in your library"
 - `src/library_ui.rs`: Library page (missing art/background/video/lyrics, duplicates, search, delete to Recycle Bin)
-- `src/tools_ui.rs`: Tools page (Art Studio, Lyrics, Video Sync, Scene Switcher; the Issue scanner is hidden for now)
+- `src/tools_ui.rs`: Tools page (Scene Switcher; the Issue scanner is hidden for now)
 - `src/scenes.rs`, `src/scenes_ui.rs`: OBS scene switcher (OBS WebSocket 5), Ouvert queue, Twitch sign-in
 - `src/rhythmverse.rs`, `src/rv_catalog.rs`, `src/rv_ui.rs`: RhythmVerse search, local chart list (SQLite), downloads
 - `src/zip_ranges.rs`: fetches only the needed files from a remote .zip (skips videos) with HTTP range requests
-- `src/art.rs`: iTunes album art search, 512x512 album.jpg, blurred 1920x1080 backgrounds
-- `src/lyrics.rs`: LRCLIB synced lyrics written into .chart/.mid with the full tempo map; cached lyrics detection
-- `src/video.rs`: background videos via yt-dlp (needs yt-dlp + ffmpeg installed) or a local file
+- `src/lyrics.rs`: which library charts have lyrics (cached)
 - `src/issues.rs`: chart issue scanner (port of scan-chart's checks) and the Excel report
-- `src/backup.rs`: every file a tool changes is copied to `%LOCALAPPDATA%\truss\data\backups\<date>` first
 - `src/vlist.rs`: virtualized list for 30k+ row tables
 - `src/extras.rs`: chart details: library badge, detected issues, version picker, Google Drive link
 - `src/main.rs`: iced UI (click column headers to sort; Ctrl/Shift-click to select several, then

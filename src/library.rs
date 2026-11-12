@@ -120,19 +120,6 @@ pub fn scan_blocking(folders: &[PathBuf]) -> Library {
     lib
 }
 
-/// Re-reads one chart (after a tool changed it).
-pub fn read_chart(path: &Path) -> Option<LocalChart> {
-    let mut subdirs = Vec::new();
-    let mut charts = Vec::new();
-    if path.is_file() {
-        let dir = path.parent()?;
-        visit(dir, &mut subdirs, &mut charts);
-    } else {
-        visit(path, &mut subdirs, &mut charts);
-    }
-    charts.into_iter().find(|c| c.path == path)
-}
-
 fn ext_of(name: &str) -> String {
     name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default()
 }
