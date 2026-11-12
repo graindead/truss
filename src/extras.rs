@@ -189,7 +189,7 @@ impl App {
         let mut links = row![].spacing(6).align_y(Alignment::Center);
         if let Some((label, url)) = c.drive_location() {
             links = links.push(
-                button(text("Google Drive ↗").size(12))
+                button(text("Google Drive ↗").size(12).wrapping(text::Wrapping::None))
                     .padding([4, 10])
                     .style(crate::style::secondary)
                     .on_press(Message::OpenUrl(url)),
@@ -200,17 +200,17 @@ impl App {
         }
         links = links
             .push(
-                button(text("Copy link").size(12))
+                button(text("Copy link").size(12).wrapping(text::Wrapping::None))
                     .padding([4, 10])
                     .style(crate::style::secondary)
                     .on_press(Message::CopyText(format!("https://enchor.us/chart/{}", c.md5))),
             )
             .push(
-                button(text("Copy hash").size(12))
+                button(text("Copy hash").size(12).wrapping(text::Wrapping::None))
                     .padding([4, 10])
                     .style(crate::style::secondary)
                     .on_press(Message::CopyText(c.md5.clone())),
             );
-        col.push(links).into()
+        col.push(links.wrap().vertical_spacing(6)).into()
     }
 }

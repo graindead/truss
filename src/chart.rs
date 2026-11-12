@@ -1722,93 +1722,8 @@ fn drum_accent_type(t: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
-    /// Port of scan-chart's `calculateTrackHash` (track-hasher.ts). Encore stores this hash for
-    /// every track, so matching it proves the parser produces identical notes.
-    pub fn track_hash(chart: &ParsedChart, t: &Track, type_offset: u32, wide_lengths: bool) -> String {
-        fn dedup_last<T: Copy>(v: &[T], tick: impl Fn(&T) -> i64) -> Vec<T> {
-            let mut s: Vec<T> = v.to_vec();
-            s.sort_by_key(|x| tick(x)); // stable
-            let mut out: Vec<T> = Vec::new();
-            for x in s {
-                match out.last_mut() {
-                    Some(l) if tick(l) == tick(&x) => *l = x,
-                    _ => out.push(x),
-                }
-            }
-            out
-        }
-        fn prune<T: Copy>(phrases: &[T], span: impl Fn(&T) -> (i64, i64), groups: &[Vec<Note>]) -> Vec<T> {
-            let mut out = Vec::new();
-            let mut i = 0;
-            for p in phrases {
-                let (tick, len) = span(p);
-                while i < groups.len() && groups[i][0].tick < tick {
-                    i += 1;
-                }
-                if i < groups.len() && groups[i][0].tick < tick + if len == 0 { 1 } else { len } {
-                    out.push(*p);
-                }
-            }
-            out
-        }
-        let tempos = dedup_last(&chart.tempos, |t| t.0);
-        let tss = dedup_last(&chart.time_sigs, |t| t.0);
-        let sp = prune(&t.star_power, |s| (s.tick, s.length), &t.note_groups);
-        let solo = prune(&t.solo, |s| (s.tick, s.length), &t.note_groups);
-        let flex = prune(&t.flex, |s| (s.0.tick, s.0.length), &t.note_groups);
-
-        let mut b: Vec<u8> = Vec::new();
-        b.extend(0x43484e46u32.to_be_bytes());
-        b.extend(20240320u32.to_le_bytes());
-        b.extend((chart.resolution as u32).to_le_bytes());
-        b.extend((tempos.len() as u32).to_le_bytes());
-        for (tick, bpm) in &tempos {
-            b.extend(tick.to_le_bytes());
-            b.extend(bpm.to_le_bytes());
-        }
-        b.extend((tss.len() as u32).to_le_bytes());
-        for (tick, n, d) in &tss {
-            b.extend(tick.to_le_bytes());
-            b.extend(n.to_le_bytes());
-            b.extend(d.to_le_bytes());
-        }
-        // Lengths were u32 before scan-chart's Aug 2025 hasher update, i64 after.
-        let len = |b: &mut Vec<u8>, l: i64| {
-            if wide_lengths {
-                b.extend(l.to_le_bytes())
-            } else {
-                b.extend((l as u32).to_le_bytes())
-            }
-        };
-        for list in [&sp, &solo] {
-            b.extend((list.len() as u32).to_le_bytes());
-            for s in list.iter() {
-                b.extend(s.tick.to_le_bytes());
-                len(&mut b, s.length);
-            }
-        }
-        b.extend((flex.len() as u32).to_le_bytes());
-        for (s, double) in &flex {
-            b.extend(s.tick.to_le_bytes());
-            len(&mut b, s.length);
-            b.push(*double as u8);
-        }
-        b.extend((t.freestyle.len() as u32).to_le_bytes());
-        for (s, coda) in &t.freestyle {
-            b.extend(s.tick.to_le_bytes());
-            len(&mut b, s.length);
-            b.push(*coda as u8);
-        }
-        let notes: Vec<&Note> = t.note_groups.iter().flatten().collect();
-        b.extend((notes.len() as u32).to_le_bytes());
-        for n in notes {
-            b.extend(n.tick.to_le_bytes());
-            len(&mut b, n.length);
-            b.extend((n.ty as u32 - type_offset).to_le_bytes());
-            b.extend(n.flags.to_le_bytes());
-        }
-        use base64::Engine;
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(blake3::hash(&b).as_bytes())
+    fn track_hash(chart: &ParsedChart, t: &Track, type_offset: u32, wide_lengths: bool) -> String {
+        crate::trackhash::track_hash(chart, t, crate::trackhash::Layout { type_offset, wide_lengths })
     }
 
     fn ini_modifiers(sng: &crate::sng::SngContents) -> Modifiers {
@@ -1886,6 +1801,16 @@ mod tests {
                         .into_iter()
                         .find(|(o, w)| track_hash(&parsed, t, *o, *w) == want);
                     if let Some((offset, wide)) = variant {
+                        if std::env::var("TRUSS_PRINT_HASHES").is_ok() && th.difficulty == "expert" {
+                            println!(
+                                "HASH {} {} {} {} {}",
+                                c.md5,
+                                th.instrument,
+                                if offset == 0 { "current" } else { "legacy" },
+                                track_hash(&parsed, t, 0, true),
+                                track_hash(&parsed, t, 1, false)
+                            );
+                        }
                         ok += 1;
                         *versions.entry((offset, wide)).or_insert(0) += 1;
                     } else {

@@ -148,6 +148,51 @@ pub fn read_sng(data: &[u8], keep: impl Fn(&str) -> bool) -> Result<SngContents,
     Ok(SngContents { metadata, files: out })
 }
 
+/// Byte range `start..end` of a remote file. A server that ignores ranges sends the whole file,
+/// which is sliced here.
+async fn get_range(url: &str, start: u64, end: u64) -> Result<Vec<u8>, String> {
+    let resp = crate::api::CLIENT
+        .get(url)
+        .header("Range", format!("bytes={start}-{}", end.saturating_sub(1)))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("Couldn't read the chart: {e}"))?;
+    let whole = resp.status() == reqwest::StatusCode::OK;
+    let bytes = resp.bytes().await.map_err(|e| format!("Couldn't read the chart: {e}"))?;
+    Ok(if whole { bytes.get(start as usize..(end as usize).min(bytes.len())).unwrap_or_default().to_vec() } else { bytes.to_vec() })
+}
+
+/// The metadata and chart files (notes.chart / notes.mid) of a remote .sng, fetched by byte
+/// range: only the header and the chart itself come down, not the audio.
+pub async fn fetch_remote_notes(url: &str) -> Result<(Vec<(String, String)>, Vec<(String, Vec<u8>)>), String> {
+    let mut want = 64 * 1024;
+    let (files, mask, metadata) = loop {
+        let head = get_range(url, 0, want).await?;
+        if let Some((files, mask, _, metadata)) = try_parse_header(&head)? {
+            break (files, mask, metadata);
+        }
+        if (head.len() as u64) < want || want >= 16 << 20 {
+            return Err("Incomplete .sng file".into());
+        }
+        want *= 4;
+    };
+    let mut out = Vec::new();
+    for f in files {
+        let lower = f.name.to_ascii_lowercase();
+        if !(lower.ends_with(".chart") || lower.ends_with(".mid")) {
+            continue;
+        }
+        let mut bytes = get_range(url, f.index, f.index + f.len).await?;
+        if bytes.len() as u64 != f.len {
+            return Err("Truncated .sng file".into());
+        }
+        unmask(&mut bytes, &mask, 0);
+        out.push((f.name, bytes));
+    }
+    Ok((metadata, out))
+}
+
 // ---------- Reading a .sng file on disk without extracting it ----------
 
 /// A file that is deleted when the last handle to this guard is dropped.

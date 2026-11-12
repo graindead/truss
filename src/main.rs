@@ -10,6 +10,8 @@ mod download;
 mod extras;
 mod icons;
 mod issues;
+mod leaderboard;
+mod leaderboard_ui;
 mod library;
 mod library_ui;
 mod lyrics;
@@ -31,6 +33,8 @@ mod updater;
 mod setlists;
 mod sng;
 mod textures;
+mod trackhash;
+mod fretwork;
 mod tools_ui;
 mod variants;
 mod video;
@@ -210,6 +214,8 @@ struct App {
     /// Where the last click was, for Shift-click ranges.
     anchor: Option<usize>,
     modifiers: iced::keyboard::Modifiers,
+    /// Window size, for fitting the layout to small windows.
+    win: iced::Size,
     /// Bumped when row contents change without the list length changing (lazy list key).
     list_rev: u64,
     drum_type: Opt,
@@ -218,6 +224,12 @@ struct App {
     reviewed_opts: Vec<Opt>,
     show_issues: bool,
     show_versions: bool,
+    /// Leaderboards fetched this session, by track.
+    boards: HashMap<leaderboard::Track, Result<leaderboard::Board, String>>,
+    /// The leaderboard last picked (instrument, difficulty), kept as you move between charts.
+    board_pick: Option<(String, String)>,
+    /// Leaderboard hashes Truss worked out from charts' notes, by chart md5.
+    hashes: HashMap<String, leaderboard::Hashes>,
 
     /// Charts already in the library folders (see `library::Library`).
     library: HashMap<String, Vec<PathBuf>>,
@@ -268,13 +280,23 @@ enum Message {
     QueryChanged(String),
     Debounced(u64),
     SubmitSearch,
+    /// Clicked an artist, charter, genre… in the details: search for it.
+    SearchFor(String),
     InstrumentPicked(Opt),
     DifficultyPicked(Opt),
     DrumTypePicked(Opt),
     DrumsReviewedPicked(Opt),
     ModifiersChanged(iced::keyboard::Modifiers),
+    WindowResized(iced::Size),
     PickVersion(usize, usize),
     ToggleIssues,
+    ToggleLeaderboard,
+    /// (instrument, difficulty)
+    PickLeaderboard(String, String),
+    LeaderboardLoaded(leaderboard::Track, Result<leaderboard::Board, String>),
+    /// Read this chart (md5) to work out its leaderboard hashes.
+    FindScores(String),
+    HashesFound(String, Result<trackhash::Computed, String>),
     ToggleVersions,
     DownloadChecked,
     ClearChecked,
@@ -287,6 +309,7 @@ enum Message {
     RestartForUpdate,
     ToggleCheckUpdates(bool),
     ToggleRefined(bool),
+    ToggleFretwork(bool),
     /// The tick box in the list header: tick every result, or none.
     CheckAll(bool),
     RetryDownload(u64),
@@ -425,9 +448,13 @@ impl App {
             checked: BTreeSet::new(),
             anchor: None,
             modifiers: Default::default(),
+            win: iced::Size::new(1280.0, 800.0),
             list_rev: 0,
             show_issues: false,
             show_versions: false,
+            boards: HashMap::new(),
+            board_pick: None,
+            hashes: HashMap::new(),
             library: HashMap::new(),
             confirm_delete: None,
             delete_error: None,
@@ -501,6 +528,7 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         let modifiers = iced::event::listen_with(|e, _, _| match e {
             iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) => Some(Message::ModifiersChanged(m)),
+            iced::Event::Window(iced::window::Event::Resized(size)) => Some(Message::WindowResized(size)),
             _ => None,
         });
         let tools = Subscription::batch([
@@ -837,7 +865,7 @@ impl App {
         let Some(icon) = self.icon_for(chart) else { return art };
         let badge = iced::widget::tooltip(
             image(icon).width(size).height(size),
-            container(text(icons::tooltip(chart)).size(12)).padding([4, 8]).style(crate::style::panel),
+            container(text(icons::tooltip(chart)).size(12)).padding([4, 8]).style(crate::style::panel_solid),
             iced::widget::tooltip::Position::Top,
         );
         iced::widget::stack![
@@ -936,6 +964,13 @@ impl App {
             Message::Debounced(_) => Task::none(),
             Message::SubmitSearch => {
                 self.active_advanced = None;
+                self.search(false)
+            }
+            Message::SearchFor(q) => {
+                self.query = q;
+                self.screen = Screen::Browse;
+                self.active_advanced = None;
+                self.generation += 1;
                 self.search(false)
             }
             Message::InstrumentPicked(o) => {
@@ -1042,7 +1077,7 @@ impl App {
                     Some(c) => self.load_icon(&c),
                     None => Task::none(),
                 };
-                Task::batch([close, self.ensure_full_art(md5.as_ref()), icon])
+                Task::batch([close, self.ensure_full_art(md5.as_ref()), icon, self.load_board()])
             }
             Message::IconList(r) => {
                 let Ok(list) = r else { return Task::none() };
@@ -1173,6 +1208,10 @@ impl App {
             }
             // Settings are saved as they change, so there's nothing to flush first.
             Message::RestartForUpdate => updater::restart(),
+            Message::ToggleFretwork(b) => {
+                self.settings.show_fretwork = b;
+                self.save_settings()
+            }
             Message::ToggleRefined(b) => {
                 self.settings.refined_ui = b;
                 style::set_refined(b);
@@ -1295,6 +1334,10 @@ impl App {
                 self.drums_reviewed = o;
                 Task::batch([self.search(false), self.save_settings()])
             }
+            Message::WindowResized(size) => {
+                self.win = size;
+                Task::none()
+            }
             Message::ModifiersChanged(m) => {
                 self.modifiers = m;
                 Task::none()
@@ -1309,7 +1352,24 @@ impl App {
                 if let Some(m) = &art {
                     self.remember_full_art(m);
                 }
-                Task::batch([close, self.ensure_full_art(art.as_ref()), self.load_icon(&chart)])
+                Task::batch([close, self.ensure_full_art(art.as_ref()), self.load_icon(&chart), self.load_board()])
+            }
+            Message::ToggleLeaderboard => {
+                self.settings.show_leaderboard = !self.settings.show_leaderboard;
+                Task::batch([self.load_board(), self.save_settings()])
+            }
+            Message::PickLeaderboard(inst, diff) => {
+                self.board_pick = Some((inst, diff));
+                self.load_board()
+            }
+            Message::LeaderboardLoaded(track, result) => {
+                self.boards.insert(track, result);
+                Task::none()
+            }
+            Message::FindScores(md5) => self.find_scores(md5),
+            Message::HashesFound(md5, result) => {
+                self.hashes.insert(md5, leaderboard::Hashes::Done(result));
+                self.load_board()
             }
             Message::ToggleIssues => {
                 self.show_issues = !self.show_issues;
@@ -1606,14 +1666,7 @@ impl App {
                 .on_press(Message::ShowScreen(screen))
         };
 
-        container(
-            row![
-                text("Truss").font(BOLD).size(20),
-                nav("Browse", Screen::Browse),
-                nav("Library", Screen::Library),
-                nav("Tools", Screen::Tools),
-                nav("Settings", Screen::Settings),
-                search,
+        let filters = row![
                 {
                     let n = self.advanced.active_count();
                     let label = if n > 0 { format!("Advanced ({n})") } else { "Advanced".to_string() };
@@ -1645,8 +1698,23 @@ impl App {
                     .into()
             }))
             .spacing(10)
-            .align_y(Alignment::Center),
-        )
+            .align_y(Alignment::Center);
+        let main = row![
+            text("Truss").font(BOLD).size(20),
+            nav("Browse", Screen::Browse),
+            nav("Library", Screen::Library),
+            nav("Tools", Screen::Tools),
+            nav("Settings", Screen::Settings),
+            search,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let bar: Element<'_, Message> = if self.narrow_topbar() {
+            column![main, filters].spacing(8).into()
+        } else {
+            main.push(filters).into()
+        };
+        container(bar)
         .padding([10, 14])
         .style(|t: &Theme| container::Style {
             background: Some(crate::style::weak(t).into()),
@@ -1691,7 +1759,7 @@ impl App {
             let highlighted = self.advanced_open || self.active_advanced.is_some();
             button(text(label).size(13)).padding([6, 12]).style(style::quiet_button(highlighted)).on_press(Message::ToggleAdvanced)
         };
-        let mut bar = row![
+        let bar = row![
             text("Truss").font(Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }).size(17),
             space().width(10),
             nav("Browse", Screen::Browse),
@@ -1700,6 +1768,10 @@ impl App {
             nav("Settings", Screen::Settings),
             space().width(14),
             search,
+        ]
+        .spacing(14)
+        .align_y(Alignment::Center);
+        let mut filters = row![
             advanced,
             pick(pick_list(self.instrument_opts.as_slice(), Some(&self.instrument), Message::InstrumentPicked)),
             pick(pick_list(self.difficulty_opts.as_slice(), Some(&self.difficulty), Message::DifficultyPicked)),
@@ -1707,11 +1779,33 @@ impl App {
         .spacing(14)
         .align_y(Alignment::Center);
         if self.instrument.key == Some("drums") {
-            bar = bar
+            filters = filters
                 .push(pick(pick_list(self.drum_type_opts.as_slice(), Some(&self.drum_type), Message::DrumTypePicked)))
                 .push(pick(pick_list(self.reviewed_opts.as_slice(), Some(&self.drums_reviewed), Message::DrumsReviewedPicked)));
         }
+        let bar: Element<'_, Message> = if self.narrow_topbar() {
+            column![bar, filters].spacing(8).into()
+        } else {
+            bar.push(filters).into()
+        };
         column![container(bar).padding([8, 18]).width(Length::Fill), style::divider(false)].into()
+    }
+
+    /// Width of the details sidebar: narrower in small windows.
+    fn sidebar_width(&self) -> f32 {
+        let w = self.win.width;
+        if w >= 1200.0 { 360.0 } else if w >= 950.0 { 320.0 } else { 280.0 }
+    }
+
+    /// Which results columns fit: 0 all, 1 without Album, 2 without Album and Charter.
+    pub fn list_cols(&self) -> u8 {
+        let list = self.win.width - self.sidebar_width();
+        if list >= 640.0 { 0 } else if list >= 500.0 { 1 } else { 2 }
+    }
+
+    /// Put the search filters on their own row so the search box keeps its room.
+    fn narrow_topbar(&self) -> bool {
+        self.win.width < if self.instrument.key == Some("drums") { 1400.0 } else { 1150.0 }
     }
 
     fn view_browse(&self) -> Element<'_, Message> {
@@ -1723,11 +1817,11 @@ impl App {
         }
         let expanded = self.preview.as_ref().is_some_and(|p| p.expanded());
         if style::refined() {
-            let sidebar = container(self.view_sidebar()).width(if expanded { 720 } else { 360 }).height(Length::Fill).padding([18, 20]);
+            let sidebar = container(self.view_sidebar()).width(if expanded { 720.0_f32.min(self.win.width * 0.6) } else { self.sidebar_width() }).height(Length::Fill).padding([18, 20]);
             return row![self.lazy_results(), style::divider(true), sidebar].height(Length::Fill).into();
         }
         let sidebar = container(self.view_sidebar())
-            .width(if expanded { 720 } else { 360 })
+            .width(if expanded { 720.0_f32.min(self.win.width * 0.6) } else { self.sidebar_width() })
             .height(Length::Fill)
             .padding(16)
             .style(|t: &Theme| container::Style {
@@ -1765,15 +1859,16 @@ impl App {
                 })
                 .on_press(Message::SortBy(key))
         };
+        let cols = self.list_cols();
         let header = row![
             self.check_all_box(),
             space().width(44),
             col("Name", SortKey::Name, Length::FillPortion(4)),
             col("Artist", SortKey::Artist, Length::FillPortion(3)),
-            col("Album", SortKey::Album, Length::FillPortion(3)),
-            col("Charter", SortKey::Charter, Length::FillPortion(2)),
-            col("Length", SortKey::Length, Length::Fixed(72.0)),
         ]
+        .push((cols < 1).then(|| col("Album", SortKey::Album, Length::FillPortion(3))))
+        .push((cols < 2).then(|| col("Charter", SortKey::Charter, Length::FillPortion(2))))
+        .push(col("Length", SortKey::Length, Length::Fixed(72.0)))
         .spacing(12)
         .padding([6, 12]);
 
@@ -1832,10 +1927,10 @@ impl App {
             space().width(40),
             col("Title", SortKey::Name, Length::FillPortion(4), false),
             col("Artist", SortKey::Artist, Length::FillPortion(3), false),
-            col("Album", SortKey::Album, Length::FillPortion(3), false),
-            col("Charter", SortKey::Charter, Length::FillPortion(2), false),
-            col("Length", SortKey::Length, Length::Fixed(56.0), true),
         ]
+        .push((self.list_cols() < 1).then(|| col("Album", SortKey::Album, Length::FillPortion(3), false)))
+        .push((self.list_cols() < 2).then(|| col("Charter", SortKey::Charter, Length::FillPortion(2), false)))
+        .push(col("Length", SortKey::Length, Length::Fixed(56.0), true))
         .spacing(12)
         // Right padding: the rows' own 16 px plus the scrollbar beside them (10 + 4 gap).
         .padding(iced::Padding { top: 8.0, bottom: 8.0, left: 16.0, right: 30.0 })
@@ -1910,12 +2005,14 @@ impl App {
                 thumb,
                 name,
                 cell(s(&c.artist), Length::FillPortion(3), false),
-                cell(s(&c.album), Length::FillPortion(3), true),
-                cell(s(&c.charter), Length::FillPortion(2), true),
+            ]
+            .push((self.list_cols() < 1).then(|| cell(s(&c.album), Length::FillPortion(3), true)))
+            .push((self.list_cols() < 2).then(|| cell(s(&c.charter), Length::FillPortion(2), true)))
+            .push(
                 container(text(c.length_str()).size(13).style(|th: &Theme| text::Style { color: Some(style::muted(th)) }))
                     .width(56)
                     .align_x(iced::alignment::Horizontal::Right),
-            ]
+            )
             .spacing(12)
             .align_y(Alignment::Center),
         )
@@ -1980,10 +2077,10 @@ impl App {
                 thumb,
                 name,
                 cell(&c.artist, 3),
-                cell(&c.album, 3),
-                cell(&c.charter, 2),
-                text(c.length_str()).size(14).width(72),
             ]
+            .push((self.list_cols() < 1).then(|| cell(&c.album, 3)))
+            .push((self.list_cols() < 2).then(|| cell(&c.charter, 2)))
+            .push(text(c.length_str()).size(14).width(72))
             .spacing(12)
             .align_y(Alignment::Center),
         )
@@ -2013,42 +2110,46 @@ impl App {
             return center(text("Select a chart to see details").size(14)).into();
         };
 
+        // Album art fills the sidebar width at most, and shrinks in short windows.
+        let inner = self.sidebar_width() - if style::refined() { 40.0 } else { 32.0 } - 16.0;
+        let art_size = inner.min((self.win.height * 0.38).max(120.0));
+        let icon_size = (art_size * 0.2).clamp(36.0, 64.0);
+        let sized_art = |h: iced::widget::image::Handle| -> Element<'static, Message> {
+            let art = self.with_icon(image(h).width(art_size).height(art_size).into(), c, icon_size, icon_size * 0.19);
+            container(art).center_x(Length::Fill).into()
+        };
         let art: Element<_> = match (&self.preview, c.album_art_md5.as_ref().and_then(|m| self.art.get(m))) {
             // The preview replaces the album art while it's open.
             (Some(p), _) if p.md5 == c.md5 => {
                 p.view(if p.expanded() { 500.0 } else { 328.0 }).map(Message::Preview)
             }
-            (_, Some(Art::Ready { full: Some(full), .. })) => {
-                self.with_icon(image(full.clone()).width(Length::Fill).into(), c, 64.0, 12.0)
-            }
-            (_, Some(Art::Ready { thumb, .. })) => {
-                self.with_icon(image(thumb.clone()).width(Length::Fill).into(), c, 64.0, 12.0)
-            }
-            (_, Some(Art::Loading)) => container(center(text("Loading art…").size(13))).height(328).into(),
+            (_, Some(Art::Ready { full: Some(full), .. })) => sized_art(full.clone()),
+            (_, Some(Art::Ready { thumb, .. })) => sized_art(thumb.clone()),
+            (_, Some(Art::Loading)) => container(center(text("Loading art…").size(13))).height(art_size).into(),
             _ => container(center(text("No album art").size(13)))
-                .height(328)
+                .height(art_size)
                 .width(Length::Fill)
                 .style(crate::style::panel)
                 .into(),
         };
 
         let s = |o: &Option<String>| o.as_deref().map(strip_tags).unwrap_or_default();
-        let meta_line = |label: &'static str, v: String| -> Element<'_, Message> {
+        let meta_line = |label: &'static str, v: String, link: bool| -> Element<'_, Message> {
             if v.is_empty() {
                 space().into()
             } else {
                 row![
-                    text(label).size(13).width(70).style(|t: &Theme| text::Style {
+                    text(label).size(13).width(58).style(|t: &Theme| text::Style {
                         color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
                     }),
-                    text(v).size(13)
+                    if link { search_link(v, 13) } else { text(v).size(13).into() },
                 ]
                     .spacing(8)
                     .into()
             }
         };
 
-        let mut diffs = column![].spacing(4);
+        let mut diff_items: Vec<Element<'_, Message>> = Vec::new();
         let instruments: &[(&str, &str)] = &[
             ("guitar", "Guitar"),
             ("guitarcoop", "Co-op"),
@@ -2062,12 +2163,19 @@ impl App {
             ("rhythmghl", "GHL Rhythm"),
             ("bassghl", "GHL Bass"),
         ];
+        let shown = instruments.iter().filter(|(k, _)| c.diff_for(k).is_some()).count();
+        // Two per row only when half the panel still fits a label, five-pixel pips and the number.
+        // The Fretwork tier, when shown inline, takes a little more room after the number.
+        let fw_w = if self.settings.show_fretwork { 30.0 } else { 0.0 };
+        let two_cols = shown > 1 && (inner - 10.0) / 2.0 >= 62.0 + 12.0 + fw_w + 14.0 + 10.0 + 6.0 * 5.0;
+        // Pip width that fits half the panel (label 62, number 12, gaps).
+        let pip_w = if two_cols { (((inner - 10.0) / 2.0 - 62.0 - 12.0 - fw_w - 14.0 - 10.0) / 6.0).clamp(5.0, 12.0) } else { 0.0 };
         for (key, label) in instruments {
             if let Some(d) = c.diff_for(key) {
                 let refined = style::refined();
                 let pips = (0..6).fold(row![].spacing(if refined { 2 } else { 3 }), |r, n| {
                     let on = n < d.min(6);
-                    r.push(container(space()).width(if refined { 12 } else { 14 }).height(if refined { 5 } else { 8 }).style(
+                    r.push(container(space()).width(if two_cols { pip_w } else if refined { 12.0 } else { 14.0 }).height(if refined { 5 } else { 7 }).style(
                         move |t: &Theme| container::Style {
                             background: Some(
                                 if on {
@@ -2084,12 +2192,38 @@ impl App {
                         },
                     ))
                 });
-                diffs = diffs.push(
-                    row![text(*label).size(13).width(84), pips, text(d.to_string()).size(12)]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
+                let (rating, tip) = self.fretwork_tip(c, key);
+                let mut line = row![text(*label).size(12).width(if two_cols { 62 } else { 84 }).wrapping(text::Wrapping::None), pips, text(d.to_string()).size(12)]
+                    .spacing(7)
+                    .align_y(Alignment::Center);
+                if self.settings.show_fretwork {
+                    line = line.push(
+                        text(rating.map(|r| format!("FW {}", r.tier)).unwrap_or_default())
+                            .size(11)
+                            .wrapping(text::Wrapping::None)
+                            .style(|t: &Theme| text::Style { color: Some(style::muted(t)) }),
+                    );
+                }
+                diff_items.push(
+                    iced::widget::tooltip(
+                        line,
+                        container(text(tip).size(12)).padding([4, 8]).style(crate::style::panel_solid),
+                        iced::widget::tooltip::Position::Top,
+                    )
+                    .into(),
                 );
             }
+        }
+
+        let mut diffs = column![].spacing(5);
+        let mut items = diff_items.into_iter();
+        while let Some(a) = items.next() {
+            diffs = diffs.push(if two_cols {
+                let b: Element<'_, Message> = items.next().unwrap_or_else(|| space().into());
+                Element::from(row![container(a).width(Length::Fill), container(b).width(Length::Fill)].spacing(10))
+            } else {
+                a
+            });
         }
 
         let mut tags = Vec::new();
@@ -2121,6 +2255,13 @@ impl App {
         let rv_dl = if dl_state.is_none() && !self.in_library(c) { self.rv_buttons(i, c, 15, 10) } else { None };
         #[cfg(not(feature = "rhythmverse"))]
         let rv_dl: Option<Element<'static, Message>> = None;
+        // Redownload + Delete, or a long "Open on <host>" label, leave no room for Preview beside them.
+        let busy = matches!(dl_state, Some(DlStatus::Queued) | Some(DlStatus::Active { .. }));
+        #[cfg(feature = "rhythmverse")]
+        let opens_link = rv_dl.is_some() && c.rv.as_ref().is_some_and(|rv| !rhythmverse::can_download(rv));
+        #[cfg(not(feature = "rhythmverse"))]
+        let opens_link = false;
+        let crowded = (!busy && self.in_library(c)) || opens_link;
         let dl_button: Element<_> = if let Some(b) = rv_dl { b } else { match dl_state {
             Some(DlStatus::Queued) => {
                 button(text("Queued…").size(15).width(Length::Fill).center()).width(Length::Fill).padding(10).into()
@@ -2137,33 +2278,54 @@ impl App {
                 .into(),
         } };
         let previewing = self.preview.as_ref().is_some_and(|p| p.md5 == c.md5);
-        let preview_button = button(text(if previewing { "Stop preview" } else { "Preview" }).size(15).center())
-            .padding([10, 16])
-            .style(crate::style::secondary)
-            .on_press_maybe(self.can_preview(c).then_some(if previewing {
-                Message::Preview(preview_panel::Msg::Close)
-            } else {
-                Message::OpenPreview(i)
-            }));
-        let dl_button = row![dl_button, preview_button].spacing(8);
+        let preview_button = button(
+            text(if previewing { "Stop preview" } else { "Preview" })
+                .size(15)
+                .width(if crowded { Length::Fill } else { Length::Shrink })
+                .center()
+                .wrapping(text::Wrapping::None),
+        )
+        .width(if crowded { Length::Fill } else { Length::Shrink })
+        .padding([10, 16])
+        .style(crate::style::secondary)
+        .on_press_maybe(self.can_preview(c).then_some(if previewing {
+            Message::Preview(preview_panel::Msg::Close)
+        } else {
+            Message::OpenPreview(i)
+        }));
+        let dl_button: Element<_> = if crowded {
+            column![dl_button, preview_button].spacing(6).into()
+        } else {
+            row![dl_button, preview_button].spacing(8).into()
+        };
 
         scrollable(
             column![
                 art,
-                text(s(&c.name)).font(if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }).size(20),
-                text(s(&c.artist)).size(15).style(|t: &Theme| text::Style { color: style::refined().then(|| style::muted(t)) }),
-                meta_line("Album", s(&c.album)),
-                meta_line("Year", s(&c.year)),
-                meta_line("Genre", s(&c.genre)),
-                meta_line("Charter", s(&c.charter)),
-                meta_line("Length", c.length_str()),
+                column![
+                    text(s(&c.name)).font(if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }).size(19),
+                    search_link(s(&c.artist), 15),
+                ]
+                .spacing(2),
+                column![
+                    meta_line("Album", s(&c.album), true),
+                    meta_line("Genre", s(&c.genre), true),
+                    meta_line("Charter", s(&c.charter), true),
+                    row![
+                        container(meta_line("Year", s(&c.year), true)).width(Length::Fill),
+                        container(meta_line("Length", c.length_str(), false)).width(Length::Fill),
+                    ]
+                    .spacing(10),
+                ]
+                .spacing(4),
+                diffs,
                 tag_row,
                 self.chart_extras(i, c),
                 dl_button,
                 rule::horizontal(1).style(crate::style::rule),
-                diffs,
+                self.leaderboard_section(c),
             ]
-            .spacing(8),
+            .spacing(10),
         )
         .spacing(6) // keep the scrollbar beside the content instead of over it
         .into()
@@ -2278,11 +2440,15 @@ impl App {
                     toggler(self.settings.cpu_rendering)
                         .label("Low memory mode: render on the CPU (~60 MB instead of ~140 MB; applies after restart)")
                         .on_toggle(Message::ToggleCpuRendering),
+                    toggler(self.settings.show_fretwork)
+                        .label("Show Fretwork difficulty tiers next to difficulties (otherwise hover a difficulty to see them)")
+                        .on_toggle(Message::ToggleFretwork),
                 ]
                 .spacing(12)
                 .into(),
             ),
             section("Updates", self.update_section()),
+            section("Credits", credits_section()),
         ].map(Element::from))
         .spacing(14)
         .max_width(720);
@@ -2454,4 +2620,87 @@ impl App {
             })
             .into()
     }
+}
+
+/// Settings > Credits: the projects Truss is ported from, uses, or is built with.
+fn credits_section() -> Element<'static, Message> {
+    let link = |name: &'static str, url: &'static str| {
+        button(text(format!("{name} ↗")).size(13).wrapping(text::Wrapping::None))
+            .padding(0)
+            .style(|t: &Theme, st| button::Style {
+                background: None,
+                text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) { style::fg(t) } else { style::accent(t) },
+                ..Default::default()
+            })
+            .on_press(Message::OpenUrl(url.to_string()))
+    };
+    let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+    let entry = |name: &'static str, url: &'static str, what: &'static str| -> Element<'static, Message> {
+        column![link(name, url), text(what).size(12).style(muted)].spacing(1).into()
+    };
+    let heading = |s: &'static str| -> Element<'static, Message> {
+        container(text(s).size(12).font(BOLD)).padding(iced::Padding { top: 6.0, ..Default::default() }).into()
+    };
+
+    let libraries: &[(&str, &str)] = &[
+        ("iced", "https://github.com/iced-rs/iced"),
+        ("tokio", "https://github.com/tokio-rs/tokio"),
+        ("reqwest", "https://github.com/seanmonstar/reqwest"),
+        ("rustls", "https://github.com/rustls/rustls"),
+        ("serde", "https://github.com/serde-rs/serde"),
+        ("Symphonia", "https://github.com/pdeljanov/Symphonia"),
+        ("cpal", "https://github.com/RustAudio/cpal"),
+        ("midly", "https://github.com/kovaxis/midly"),
+        ("image", "https://github.com/image-rs/image"),
+        ("zip", "https://github.com/zip-rs/zip2"),
+        ("sevenz-rust2", "https://github.com/hasenbanck/sevenz-rust2"),
+        ("unrar", "https://github.com/muja/unrar.rs"),
+        ("rusqlite", "https://github.com/rusqlite/rusqlite"),
+        ("BLAKE3", "https://github.com/BLAKE3-team/BLAKE3"),
+        ("rfd", "https://github.com/PolyMeilex/rfd"),
+        ("trash", "https://github.com/Byron/trash-rs"),
+        ("rust_xlsxwriter", "https://github.com/jmcnamara/rust_xlsxwriter"),
+        ("tokio-tungstenite", "https://github.com/snapview/tokio-tungstenite"),
+    ];
+    let libs = libraries.iter().fold(row![].spacing(12), |r, (n, u)| r.push(link(n, u))).wrap().vertical_spacing(6);
+
+    column![
+        heading("Ported from"),
+        entry("Bridge", "https://github.com/Geomitron/Bridge", "by Geomitron (GPL-3.0). Truss is a rewrite of Bridge; its search, downloads and folder naming follow it."),
+        entry("scan-chart", "https://github.com/Geomitron/scan-chart", "by Geomitron (MIT). Chart reading, the issue checks, and the track hashes leaderboards use."),
+        entry("chart-preview", "https://github.com/Geomitron/chart-preview", "by Geomitron (MIT). The note highway preview."),
+        entry("Fretwork", "https://github.com/Staycation44/fretwork", "by Staycation (MIT). The Fretwork difficulty tiers."),
+        entry("SngFileFormat", "https://github.com/mdsitton/SngFileFormat", "by mdsitton. The .sng file format."),
+        heading("Uses"),
+        entry("yt-dlp", "https://github.com/yt-dlp/yt-dlp", "Downloads videos for Video Sync (installed separately)."),
+        entry("FFmpeg", "https://github.com/FFmpeg/FFmpeg", "Used by yt-dlp to merge video and audio streams (installed separately)."),
+        entry("CH Scene Switcher", "https://github.com/graindead/chswitcher", "Shares its settings with the Scene Switcher tool."),
+        heading("Built with"),
+        libs,
+        text("Charts and scores come from Chorus Encore, RhythmVerse and the Clone Hero leaderboards; lyrics from LRCLIB; album art search from iTunes; song requests from Ouvert.")
+            .size(12)
+            .style(muted),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// Text in the details that searches for itself when clicked (artist, charter, genre…).
+fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
+    let refined = style::refined();
+    button(text(v.clone()).size(size))
+        .padding(0)
+        .style(move |t: &Theme, st| button::Style {
+            background: None,
+            text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) {
+                style::accent(t)
+            } else if refined && size > 13 {
+                style::muted(t)
+            } else {
+                style::fg(t)
+            },
+            ..Default::default()
+        })
+        .on_press(Message::SearchFor(v))
+        .into()
 }

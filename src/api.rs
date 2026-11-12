@@ -184,6 +184,8 @@ pub struct NotesData {
     pub has_2x_kick: bool,
     pub note_counts: Vec<NoteCount>,
     pub track_hashes: Vec<TrackHash>,
+    /// 0 four lane, 1 four lane pro, 2 five lane.
+    pub drum_type: Option<u8>,
     pub chart_issues: Vec<ChartIssue>,
 }
 

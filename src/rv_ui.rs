@@ -322,20 +322,30 @@ impl App {
     pub fn rv_links(&self, c: &Chart) -> Option<Element<'static, Message>> {
         let rv = c.rv.as_ref()?;
         let mut col = column![text("From RhythmVerse").size(11)].spacing(6);
+        let link_text = |s: String| text(s).size(12).wrapping(text::Wrapping::None);
         let mut links = iced::widget::row![
-            button(text("RhythmVerse page ↗").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::OpenUrl(rv.page_url.clone())),
-            button(text("Copy link").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::CopyText(rv.page_url.clone())),
+            button(link_text("RhythmVerse page ↗".into())).padding([4, 10]).style(crate::style::secondary).on_press(Message::OpenUrl(rv.page_url.clone())),
+            button(link_text("Copy link".into())).padding([4, 10]).style(crate::style::secondary).on_press(Message::CopyText(rv.page_url.clone())),
         ]
         .spacing(6);
         if let Some(ext) = &rv.external_url {
+            // Friendly names for the common hosts, the bare domain otherwise.
+            let host = rhythmverse::host_name(ext);
+            let label = match host.as_str() {
+                "drive.google.com" | "docs.google.com" => "Google Drive".to_string(),
+                "mediafire.com" => "MediaFire".to_string(),
+                "mega.nz" | "mega.co.nz" => "MEGA".to_string(),
+                "dropbox.com" | "dl.dropboxusercontent.com" => "Dropbox".to_string(),
+                _ => host,
+            };
             links = links.push(
-                button(text(format!("{} ↗", rhythmverse::host_name(ext))).size(12))
+                button(link_text(format!("{label} ↗")))
                     .padding([4, 10])
                     .style(crate::style::secondary)
                     .on_press(Message::OpenUrl(ext.clone())),
             );
         }
-        col = col.push(links);
+        col = col.push(links.wrap().vertical_spacing(6));
         Some(col.into())
     }
 }

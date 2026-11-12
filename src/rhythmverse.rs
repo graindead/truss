@@ -328,7 +328,7 @@ pub async fn download(
         (None, Some((u, Host::DriveFolder))) => {
             let id = drive_id(u).ok_or("Couldn't read the Google Drive link")?;
             let _ = tx.send(Progress::Status("Reading the Google Drive folder...".into())).await;
-            download_drive_folder(&id, &unpacked, keep_video, 0, tx).await?;
+            download_drive_folder(&id, &unpacked, keep_video, 0, any_file, tx).await?;
             // Some folders hold an archive rather than loose chart files.
             if find_chart_folder(&unpacked).is_none()
                 && let Some(archive) = first_archive(&unpacked)
@@ -353,6 +353,77 @@ pub async fn download(
     let folder = find_chart_folder(&unpacked).ok_or("No Clone Hero chart was found in the download.")?;
     let _ = tx.send(Progress::Status("Moving into library...".into())).await;
     crate::download::move_path(&folder, staged)
+}
+
+fn any_file(_: &str) -> bool {
+    true
+}
+
+/// Files a chart's leaderboard hashes come from (lowercase file name).
+fn is_note_file(name: &str) -> bool {
+    let f = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    f.ends_with(".chart") || f.ends_with(".mid") || f.ends_with(".ini")
+}
+
+fn is_archive(name: &str) -> bool {
+    [".zip", ".7z", ".sng", ".rar"].iter().any(|e| name.ends_with(e))
+}
+
+/// Gets just a chart's note files (notes.chart / notes.mid and song.ini) from wherever it's
+/// hosted, for working out its leaderboard hashes. Zips are read by byte range and Drive
+/// folders file by file, so usually only a few hundred KB are fetched; other archives have to
+/// come down whole. Nothing is kept on disk.
+pub async fn fetch_note_files(rv: &RvFile) -> Result<Vec<(String, Vec<u8>)>, String> {
+    use crate::download::TempGuard;
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!("truss-notes-{}-{n}", std::process::id()));
+    let _guard = TempGuard(Some(work.clone()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let unpacked = work.join("chart");
+    // Progress goes nowhere: dropping the receiver makes every send a no-op.
+    let (mut tx, _) = futures::channel::mpsc::channel(1);
+
+    let archive = async |url: &str, tx: &mut Sender<crate::download::Progress>| -> Result<(), String> {
+        let keep = |n: &str| safe_rel(n, false).filter(|r| is_note_file(&r.to_string_lossy().to_ascii_lowercase()));
+        if crate::zip_ranges::fetch_selected(url, &unpacked, keep, tx).await? {
+            return Ok(());
+        }
+        let file = fetch_to_dir(url, &work, "chart.bin", tx).await?;
+        unpack_any(file, &unpacked, false).await
+    };
+    match (&rv.download_url, rv.external_url.as_deref().map(|u| (u, host_kind(u)))) {
+        (Some(url), _) => archive(&encode_url(url), &mut tx).await?,
+        (None, Some((u, Host::DriveFile))) => {
+            let id = drive_id(u).ok_or("Couldn't read the Google Drive link")?;
+            archive(&format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t"), &mut tx).await?
+        }
+        (None, Some((u, Host::DriveFolder))) => {
+            let id = drive_id(u).ok_or("Couldn't read the Google Drive link")?;
+            download_drive_folder(&id, &unpacked, false, 0, is_note_file, &mut tx).await?;
+            // Some folders hold an archive rather than loose chart files.
+            if find_chart_folder(&unpacked).is_none() {
+                let _ = std::fs::remove_dir_all(&unpacked);
+                let stash = work.join("archive");
+                download_drive_folder(&id, &stash, false, 0, is_archive, &mut tx).await?;
+                let a = first_archive(&stash).ok_or("No Clone Hero chart was found in the Google Drive folder.")?;
+                unpack_any(a, &unpacked, false).await?;
+            }
+        }
+        (None, Some((u, Host::MediaFire))) => archive(&mediafire_link(u).await?, &mut tx).await?,
+        (None, Some((u, Host::Other))) => return Err(format!("This chart is hosted on {}, which Truss can't read.", host_name(u))),
+        (None, None) => return Err("RhythmVerse has no download for this chart.".into()),
+    }
+    let folder = find_chart_folder(&unpacked).ok_or("No Clone Hero chart was found in the download.")?;
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(&folder).map_err(|e| e.to_string())?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if e.file_type().is_ok_and(|t| t.is_file()) && is_note_file(&name.to_ascii_lowercase()) {
+            files.push((name, std::fs::read(e.path()).map_err(|e| e.to_string())?));
+        }
+    }
+    Ok(files)
 }
 
 /// Gets a chart archive into `unpacked`. With videos off, a .zip is fetched without its video
@@ -533,6 +604,7 @@ fn download_drive_folder<'a>(
     dest: &'a Path,
     keep_video: bool,
     depth: u32,
+    want: fn(&str) -> bool,
     tx: &'a mut Sender<crate::download::Progress>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
@@ -545,7 +617,7 @@ fn download_drive_folder<'a>(
         let files: Vec<_> = entries.iter().filter(|e| !e.2).collect();
         for (n, (fid, name, _)) in files.iter().enumerate() {
             let lower = name.to_ascii_lowercase();
-            if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) {
+            if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) || !want(&lower) {
                 continue;
             }
             let _ = tx.send(Progress::Status(format!("Downloading {name} ({}/{})", n + 1, files.len()))).await;
@@ -558,7 +630,7 @@ fn download_drive_folder<'a>(
             }
         }
         for (fid, name, _) in entries.iter().filter(|e| e.2) {
-            download_drive_folder(fid, &dest.join(name), keep_video, depth + 1, tx).await?;
+            download_drive_folder(fid, &dest.join(name), keep_video, depth + 1, want, tx).await?;
         }
         Ok(())
     })
@@ -867,6 +939,20 @@ mod tests {
     }
 
     /// Network test: TRUSS_TEST_RV=1 runs one real search.
+    /// TRUSS_TEST_RV_DRIVE=<drive url>: fetch just the note files and print their hashes.
+    #[test]
+    fn live_note_files() {
+        let Ok(url) = std::env::var("TRUSS_TEST_RV_DRIVE") else { return };
+        let rv = RvFile { external_url: Some(url), ..Default::default() };
+        let files = tokio::runtime::Runtime::new().unwrap().block_on(fetch_note_files(&rv)).unwrap();
+        for (n, d) in &files {
+            println!("{n}: {} bytes", d.len());
+        }
+        for (i, d, h) in crate::trackhash::hash_files(&files, None).unwrap().tracks {
+            println!("{i} {d}: {h}");
+        }
+    }
+
     #[test]
     fn live_search() {
         if std::env::var("TRUSS_TEST_RV").is_err() {

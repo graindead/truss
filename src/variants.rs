@@ -465,7 +465,7 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            (self.list_rev, crate::style::refined()),
+            (self.list_rev, crate::style::refined(), self.list_cols()),
         )
     }
 

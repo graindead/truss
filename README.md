@@ -15,6 +15,10 @@ On top of Bridge:
   Clone Hero starts and ends a song, shows the Ouvert request queue, Next song via Ouvert or a
   Twitch chat command; settings shared with the standalone
   [CH Scene Switcher](https://github.com/graindead/chswitcher)).
+- **Leaderboards**: the top 50 Clone Hero scores for a chart, including RhythmVerse charts and
+  Encore charts whose listed hashes are out of date (Truss reads the chart and works them out).
+- **Fretwork tiers**: hover a difficulty to see where the chart lands on Fretwork's scale, or turn
+  them on next to every difficulty in Settings.
 - **Library** page for the charts you already have, with tick boxes and a ✓ on search results
   you already own.
 
@@ -90,4 +94,6 @@ Report issue, UI zoom, custom themes, update checker.
 Licensed GPL-3.0 (see `LICENSE`), like [Bridge](https://github.com/Geomitron/Bridge), which it
 is a port of. The chart parser, issue checks and preview are ported from Geomitron's
 [scan-chart](https://github.com/Geomitron/scan-chart) and
-[chart-preview](https://github.com/Geomitron/chart-preview) (MIT).
+[chart-preview](https://github.com/Geomitron/chart-preview) (MIT). Fretwork difficulty tiers are
+ported from Staycation's [Fretwork](https://github.com/Staycation44/fretwork) (MIT). The full list,
+including the libraries Truss is built with, is under Settings > Credits.

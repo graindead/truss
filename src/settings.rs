@@ -42,6 +42,10 @@ pub struct Settings {
     pub check_updates: bool,
     /// The quieter "Refined look" (see style.rs).
     pub refined_ui: bool,
+    /// The Leaderboard section in the details is open.
+    pub show_leaderboard: bool,
+    /// Show Fretwork tiers beside the difficulties (they're always on hover).
+    pub show_fretwork: bool,
 }
 
 impl Default for Settings {
@@ -67,6 +71,8 @@ impl Default for Settings {
             preview_fps: 60,
             check_updates: true,
             refined_ui: false,
+            show_leaderboard: false,
+            show_fretwork: false,
         }
     }
 }
