@@ -521,7 +521,7 @@ impl App {
             lyrics_scanning: false,
             catalog_stale: false,
             library_error: None,
-            library_page: Default::default(),
+            library_page: library_ui::Page::with_sort(&settings.library_sort),
             tools_page: Default::default(),
             cleared_generation: 0,
             encore_seen: 0,
@@ -1673,6 +1673,10 @@ impl App {
                 self.library_page = page;
                 let task = match out {
                     library_ui::Out::None => Task::none(),
+                    library_ui::Out::Sorted(key) => {
+                        self.settings.library_sort = key;
+                        self.save_settings()
+                    }
                     library_ui::Out::Rescan => {
                         self.lyrics_map.clear();
                         self.scan_library()

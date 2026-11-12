@@ -42,6 +42,42 @@ pub enum SortBy {
     Artist,
     Song,
     Charter,
+    Newest,
+    Oldest,
+}
+
+impl SortBy {
+    const ALL: [SortBy; 5] = [SortBy::Artist, SortBy::Song, SortBy::Charter, SortBy::Newest, SortBy::Oldest];
+
+    /// How it's saved in the settings.
+    fn key(self) -> &'static str {
+        match self {
+            SortBy::Artist => "artist",
+            SortBy::Song => "song",
+            SortBy::Charter => "charter",
+            SortBy::Newest => "newest",
+            SortBy::Oldest => "oldest",
+        }
+    }
+}
+
+impl std::fmt::Display for SortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SortBy::Artist => "Artist A–Z",
+            SortBy::Song => "Song A–Z",
+            SortBy::Charter => "Charter A–Z",
+            SortBy::Newest => "Recently added",
+            SortBy::Oldest => "Oldest added",
+        })
+    }
+}
+
+/// A chart's date added, as shown in the list.
+fn added_date(secs: u64) -> String {
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +86,8 @@ pub enum Msg {
     Filter(Filter),
     Kind(KindOpt),
     Sort(SortBy),
+    /// Picked from the Sort menu (a header click toggles instead).
+    SortPicked(SortBy),
     Toggle(usize),
     SelectAllShown,
     ClearSelection,
@@ -62,6 +100,8 @@ pub enum Msg {
 /// Requests for the app.
 pub enum Out {
     None,
+    /// The sort order changed (its settings key), to remember it.
+    Sorted(String),
     Rescan,
     Delete(Vec<PathBuf>),
     Open(PathBuf),
@@ -95,6 +135,16 @@ pub struct Page {
 }
 
 impl Page {
+    /// A page that starts in the sort order saved in the settings.
+    pub fn with_sort(key: &str) -> Self {
+        let sort = SortBy::ALL.into_iter().find(|s| s.key() == key).filter(|s| *s != SortBy::Artist);
+        Page { sort, ..Default::default() }
+    }
+
+    fn sorted(&self) -> Out {
+        Out::Sorted(self.sort.map(|s| s.key()).unwrap_or("").to_string())
+    }
+
     /// Call when the catalog or lyrics data changed.
     pub fn refresh(&mut self, cx: &Ctx) {
         self.hay = cx
@@ -141,17 +191,18 @@ impl Page {
                     && words.iter().all(|w| self.hay.get(i).is_some_and(|h| h.contains(w)))
             })
             .collect();
-        let key = |c: &LocalChart| match self.sort {
-            Some(SortBy::Song) => (c.name.to_lowercase(), c.artist.to_lowercase()),
-            Some(SortBy::Charter) => (c.charter.to_lowercase(), c.artist.to_lowercase()),
-            _ => (c.artist.to_lowercase(), c.name.to_lowercase()),
-        };
-        if self.filter == Some(Filter::Duplicates) || self.sort.is_some() {
-            // Duplicates sit next to each other; other sorts on request (catalog is artist-sorted).
-            shown.sort_by_cached_key(|&i| {
-                let c = &cx.catalog[i];
-                if self.filter == Some(Filter::Duplicates) && self.sort.is_none() { (c.key.clone(), String::new()) } else { key(c) }
-            });
+        let cat = cx.catalog;
+        match self.sort {
+            // Newest first; the catalog is already artist-sorted, so ties stay in that order.
+            Some(SortBy::Newest) => shown.sort_by_key(|&i| std::cmp::Reverse(cat[i].added)),
+            Some(SortBy::Oldest) => shown.sort_by_key(|&i| cat[i].added),
+            Some(SortBy::Song) => shown.sort_by_cached_key(|&i| (cat[i].name.to_lowercase(), cat[i].artist.to_lowercase())),
+            Some(SortBy::Charter) => {
+                shown.sort_by_cached_key(|&i| (cat[i].charter.to_lowercase(), cat[i].artist.to_lowercase()))
+            }
+            // Duplicates sit next to each other.
+            _ if self.filter == Some(Filter::Duplicates) => shown.sort_by_cached_key(|&i| cat[i].key.clone()),
+            _ => {}
         }
         self.shown = shown;
         self.list.reset();
@@ -175,8 +226,20 @@ impl Page {
                 self.apply(cx);
             }
             Msg::Sort(s) => {
-                self.sort = if self.sort == Some(s) { None } else { Some(s) };
+                self.sort = match (self.sort, s) {
+                    // The Added heading flips between newest and oldest first.
+                    (Some(SortBy::Newest), SortBy::Newest) => Some(SortBy::Oldest),
+                    (Some(SortBy::Oldest), SortBy::Newest) => Some(SortBy::Newest),
+                    (cur, s) if cur == Some(s) => None,
+                    _ => Some(s),
+                };
                 self.apply(cx);
+                return self.sorted();
+            }
+            Msg::SortPicked(s) => {
+                self.sort = (s != SortBy::Artist).then_some(s);
+                self.apply(cx);
+                return self.sorted();
             }
             Msg::Toggle(i) => {
                 if let Some(c) = cx.catalog.get(i)
@@ -276,6 +339,7 @@ impl Page {
         let mut bar = row![
             text_input("Search artist, song, charter, album…", &self.query).on_input(Msg::Query).padding(8).width(320),
             pick_list(KindOpt::ALL, Some(KindOpt(self.kind)), Msg::Kind).padding(8),
+            pick_list(SortBy::ALL, Some(self.sort.unwrap_or(SortBy::Artist)), Msg::SortPicked).padding(8),
             text(status).size(12),
             space().width(Length::Fill),
         ]
@@ -302,20 +366,23 @@ impl Page {
         // Header and rows share these widths, so every column lines up with its heading.
         const CHECK_W: f32 = 22.0;
         const TYPE_W: f32 = 56.0;
+        const ADDED_W: f32 = 84.0;
         const ASSET_W: f32 = 48.0;
         const OPEN_W: f32 = 56.0;
         const GAP: f32 = 10.0;
         // Right side leaves room for the scrollbar, which floats over the list.
         let row_pad = iced::Padding { top: 0.0, right: 26.0, bottom: 0.0, left: 12.0 };
 
-        let sort_head = |label: &'static str, s: SortBy, portion: u16| {
-            let arrow = match self.sort == Some(s) {
-                true => " ▲",
-                false => "",
+        let sort_head = |label: &'static str, s: SortBy, width: Length| {
+            let arrow = match (self.sort, s) {
+                (Some(SortBy::Newest), SortBy::Newest) => " ▼",
+                (Some(SortBy::Oldest), SortBy::Newest) => " ▲",
+                (cur, s) if cur == Some(s) => " ▲",
+                _ => "",
             };
             button(text(format!("{label}{arrow}")).size(12).font(crate::BOLD))
                 .padding(0)
-                .width(Length::FillPortion(portion))
+                .width(width)
                 .style(|t: &Theme, st| button::Style {
                     text_color: if matches!(st, button::Status::Hovered) {
                         t.extended_palette().primary.strong.color
@@ -330,9 +397,10 @@ impl Page {
         let head = container(
             row![
                 space().width(CHECK_W),
-                sort_head("Artist", SortBy::Artist, 3),
-                sort_head("Song", SortBy::Song, 4),
-                sort_head("Charter", SortBy::Charter, 2),
+                sort_head("Artist", SortBy::Artist, Length::FillPortion(3)),
+                sort_head("Song", SortBy::Song, Length::FillPortion(4)),
+                sort_head("Charter", SortBy::Charter, Length::FillPortion(2)),
+                sort_head("Added", SortBy::Newest, Length::Fixed(ADDED_W)),
                 fixed_head("Type", TYPE_W),
                 fixed_head("Art", ASSET_W),
                 fixed_head("BG", ASSET_W),
@@ -389,6 +457,7 @@ impl Page {
                         cell(&c.artist, 3),
                         cell(&song, 4),
                         cell(&c.charter, 2),
+                        text(added_date(c.added)).size(12).width(ADDED_W),
                         text(c.chart_type.label()).size(12).width(TYPE_W).center(),
                         mark(Some(c.has_album_art)),
                         mark(Some(c.has_background)),
@@ -432,5 +501,32 @@ impl Page {
         ]
         .height(Length::Fill)
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorts_by_date_added_and_remembers_it() {
+        let cat: Vec<Arc<LocalChart>> = [("A", "One", 30), ("B", "Two", 10), ("C", "Three", 20)]
+            .into_iter()
+            .map(|(a, n, t)| Arc::new(crate::library::test_chart(a, n, t)))
+            .collect();
+        let lyrics = HashMap::new();
+        let cx = Ctx { catalog: &cat, lyrics: &lyrics, scanning: false, lyrics_scanning: false, has_folders: true, error: None };
+        let names = |p: &Page| p.shown.iter().map(|&i| cat[i].name.clone()).collect::<Vec<_>>();
+
+        let mut p = Page::with_sort("newest");
+        p.refresh(&cx);
+        assert_eq!(names(&p), ["One", "Three", "Two"]);
+
+        // The Added heading flips to oldest first, and the change is reported for saving.
+        assert!(matches!(p.update(Msg::Sort(SortBy::Newest), &cx), Out::Sorted(k) if k == "oldest"));
+        assert_eq!(names(&p), ["Two", "Three", "One"]);
+
+        assert!(matches!(p.update(Msg::SortPicked(SortBy::Artist), &cx), Out::Sorted(k) if k.is_empty()));
+        assert_eq!(names(&p), ["One", "Two", "Three"]);
     }
 }

@@ -44,6 +44,8 @@ pub struct Settings {
     pub refined_ui: bool,
     /// The Leaderboard section in the details is open.
     pub show_leaderboard: bool,
+    /// The Library page's sort order (see `library_ui::SortBy::key`); empty for the default.
+    pub library_sort: String,
     /// Show Fretwork tiers beside the difficulties (they're always on hover).
     pub show_fretwork: bool,
     /// Window transparency (beta): "off", "mica", "acrylic" or "clear". Applies on start.
@@ -76,6 +78,7 @@ impl Default for Settings {
             check_updates: true,
             refined_ui: true,
             show_leaderboard: false,
+            library_sort: String::new(),
             show_fretwork: true,
             // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),

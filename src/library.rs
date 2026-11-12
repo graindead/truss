@@ -57,6 +57,9 @@ pub struct LocalChart {
     pub has_vocals: bool,
     /// Last modified time of the chart file (seconds since the epoch), for caches.
     pub modified: u64,
+    /// When the chart arrived in the library (seconds since the epoch): when its folder or .sng
+    /// was created, which is when it was downloaded or copied in.
+    pub added: u64,
 }
 
 impl LocalChart {
@@ -185,7 +188,7 @@ fn visit(dir: &Path, subdirs: &mut Vec<PathBuf>, charts: &mut Vec<LocalChart>) {
                 dirs.push(e.path());
             }
         } else if ext_of(&name) == "sng" {
-            sngs.push(e.path());
+            sngs.push((e.path(), e.metadata().ok()));
         } else {
             files.push(name);
         }
@@ -202,30 +205,36 @@ fn visit(dir: &Path, subdirs: &mut Vec<PathBuf>, charts: &mut Vec<LocalChart>) {
             .chart_file
             .as_ref()
             .and_then(|f| std::fs::metadata(dir.join(f)).ok())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
+            .and_then(|m| secs(m.modified()))
             .unwrap_or(0);
-        charts.push(make_chart(dir.to_path_buf(), &pairs, assets, modified));
+        let added = std::fs::metadata(dir).ok().and_then(|m| secs(m.created())).unwrap_or(modified);
+        charts.push(make_chart(dir.to_path_buf(), &pairs, assets, modified, added));
     } else {
         subdirs.extend(dirs);
     }
-    for sng in sngs {
+    for (sng, meta) in sngs {
         if let Ok(index) = crate::sng::read_index(&sng) {
             let mut assets = assets_from_names(index.files.iter().map(|f| f.name.as_str()));
             assets.chart_type = ChartType::Sng;
-            let modified = std::fs::metadata(&sng)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            charts.push(make_chart(sng, &index.metadata, assets, modified));
+            let modified = meta.as_ref().and_then(|m| secs(m.modified())).unwrap_or(0);
+            let added = meta.as_ref().and_then(|m| secs(m.created())).unwrap_or(modified);
+            charts.push(make_chart(sng, &index.metadata, assets, modified, added));
         }
     }
 }
 
-fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u64) -> LocalChart {
+/// A chart for other modules' tests.
+#[cfg(test)]
+pub fn test_chart(artist: &str, name: &str, added: u64) -> LocalChart {
+    let pairs = [("artist".to_string(), artist.to_string()), ("name".to_string(), name.to_string())];
+    make_chart(PathBuf::from(format!("{artist} - {name}")), &pairs, assets_from_names(["notes.chart"].into_iter()), 0, added)
+}
+
+fn secs(t: std::io::Result<std::time::SystemTime>) -> Option<u64> {
+    t.ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u64, added: u64) -> LocalChart {
     let get = |k: &str| pairs.iter().find(|(pk, _)| pk.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str()).unwrap_or("");
     let charter = if get("charter").is_empty() { get("frets") } else { get("charter") };
     let has = |k: &str| get(k).trim().parse::<f64>().is_ok_and(|d| d >= 0.0);
@@ -255,6 +264,7 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         has_keys: has("diff_keys"),
         has_vocals: has("diff_vocals"),
         modified,
+        added,
         path,
     }
 }
@@ -337,7 +347,7 @@ mod tests {
     #[test]
     fn ini_key() {
         let ini = "\u{feff}[Song]\r\nname = Through the Fire and Flames\r\nartist=DragonForce\r\nfrets = Neversoft\r\n[other]\r\nname = nope\r\n";
-        let c = make_chart(PathBuf::from("x"), &parse_ini(ini), assets_from_names(["notes.mid", "song.ogg"].into_iter()), 0);
+        let c = make_chart(PathBuf::from("x"), &parse_ini(ini), assets_from_names(["notes.mid", "song.ogg"].into_iter()), 0, 0);
         assert_eq!(c.key, "dragonforce|through the fire and flames|neversoft");
         assert_eq!(c.chart_type, ChartType::Mid);
         assert!(c.has_audio && !c.has_album_art);
