@@ -2,6 +2,7 @@
 
 mod advanced;
 mod api;
+mod art_cache;
 mod audio;
 mod chart;
 mod download;
@@ -101,6 +102,8 @@ fn main() -> iced::Result {
         }
     }
     let transparent = active_backdrop(&settings) != backdrop::Backdrop::Off;
+    // Keep the album art cache under its size limit, without holding up start-up.
+    std::thread::spawn(art_cache::trim);
 
     iced::application(App::boot, App::update, App::view)
         .title("Truss")
@@ -181,6 +184,8 @@ const FULL_ART_KEEP: usize = 24;
 const ART_WINDOW: usize = 150;
 /// Album art downloads at once; the rest wait in `art_queue`, nearest the view first.
 const ART_PARALLEL: usize = 8;
+/// Covers read from the disk cache per worker task.
+const ART_CACHE_CHUNK: usize = 12;
 
 /// Downloads that run at the same time; the rest wait in the queue.
 const MAX_ACTIVE_DOWNLOADS: usize = 2;
@@ -395,6 +400,8 @@ enum Message {
     Scrolled(scrollable::Viewport),
     Select(usize),
     ArtLoaded(String, Result<(DecodedImage, bytes::Bytes), String>),
+    /// Covers looked up in the disk cache; misses go on to download.
+    ArtCached(Vec<(String, art_cache::Cached)>),
     IconList(Result<Arc<Vec<icons::IconEntry>>, String>),
     IconLoaded(String, Result<bytes::Bytes, String>),
 
@@ -945,11 +952,31 @@ impl App {
             .collect();
         order.sort_by_key(|(d, _)| *d);
         let fresh: Vec<String> = order.into_iter().map(|(_, m)| m.clone()).filter(|m| !self.art.contains_key(m)).collect();
-        for m in fresh {
+        for m in &fresh {
             self.art.insert(m.clone(), Art::Loading);
-            self.art_queue.push_back(m);
         }
-        let mut tasks = vec![self.pump_art()];
+        // Look on disk first (a few at a time, nearest first); only misses wait to download.
+        let px = self.thumb_px();
+        let mut tasks: Vec<Task<Message>> = fresh
+            .chunks(ART_CACHE_CHUNK)
+            .map(|chunk| {
+                let keys = chunk.to_vec();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            keys.into_iter().map(|k| {
+                                let c = art_cache::read(&k, px);
+                                (k, c)
+                            }).collect::<Vec<_>>()
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    Message::ArtCached,
+                )
+            })
+            .collect();
+        tasks.push(self.pump_art());
         // Grid tiles show icons too; other layouts only show the selected chart's icon.
         if self.ui == variants::UiVariant::Grid {
             let charts: Vec<Arc<Chart>> = self.results[lo..hi].to_vec();
@@ -1231,6 +1258,39 @@ impl App {
                 self.icons.insert(sha1, r.ok().map(image::Handle::from_bytes));
                 self.icon_version += 1;
                 Task::none()
+            }
+            Message::ArtCached(found) => {
+                let mut shown = false;
+                for (md5, c) in found {
+                    // Skip covers whose rows scrolled away (or that loaded another way) meanwhile.
+                    if !matches!(self.art.get(&md5), Some(Art::Loading)) || self.art_inflight.contains(&md5) {
+                        continue;
+                    }
+                    match c {
+                        art_cache::Cached::Thumb(t) => {
+                            let thumb = image::Handle::from_rgba(t.width, t.height, t.rgba);
+                            self.art.insert(md5, Art::Ready { thumb, full: None });
+                            shown = true;
+                        }
+                        art_cache::Cached::Missing => {
+                            self.art.insert(md5, Art::Failed);
+                            shown = true;
+                        }
+                        art_cache::Cached::Miss => {
+                            if !self.art_queue.contains(&md5) {
+                                self.art_queue.push_back(md5);
+                            }
+                        }
+                    }
+                }
+                let mut tasks = vec![self.pump_art()];
+                if shown {
+                    self.art_version += 1;
+                    // The selected chart's big cover isn't cached; fetch it once its thumbnail is in.
+                    let sel = self.selected.and_then(|i| self.results.get(i)).and_then(|c| c.album_art_md5.clone());
+                    tasks.push(self.ensure_full_art(sel.as_ref()));
+                }
+                Task::batch(tasks)
             }
             Message::ArtLoaded(md5, r) => {
                 self.art_inflight.remove(&md5);
@@ -1732,9 +1792,12 @@ impl App {
                 if self.thumb_px() != old_px {
                     // Thumbnails are decoded at a layout-specific size; reload them.
                     self.art.clear();
+                    self.art_queue.clear();
                     self.full_art_lru.clear();
-                    let md5s: Vec<String> = self.results.iter().filter_map(|c| c.album_art_md5.clone()).collect();
-                    tasks.extend(md5s.iter().map(|m| self.load_art(Some(m))));
+                    self.art_version += 1;
+                    tasks.push(self.refresh_art_window());
+                    let sel = self.selected.and_then(|i| self.results.get(i)).and_then(|c| c.album_art_md5.clone());
+                    tasks.push(self.load_art(sel.as_ref()));
                 }
                 Task::batch(tasks)
             }

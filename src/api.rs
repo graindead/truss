@@ -563,13 +563,18 @@ pub async fn fetch_album_art(md5: String, thumb_px: u32) -> Result<(DecodedImage
         .await
         .map_err(|e| e.to_string())?;
     if matches!(resp.status().as_u16(), 404 | 410) {
+        let _ = tokio::task::spawn_blocking(move || crate::art_cache::write_missing(&md5, thumb_px)).await;
         return Err(ART_MISSING.into());
     }
     let bytes = resp.error_for_status().map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
 
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).map_err(|_| ART_MISSING.to_string())?;
+        let Ok(img) = image::load_from_memory(&bytes) else {
+            crate::art_cache::write_missing(&md5, thumb_px);
+            return Err(ART_MISSING.to_string());
+        };
         let thumb = img.thumbnail(thumb_px, thumb_px).to_rgba8();
+        crate::art_cache::write(&md5, thumb_px, &thumb);
         Ok((DecodedImage { width: thumb.width(), height: thumb.height(), rgba: thumb.into_raw() }, bytes))
     })
     .await
