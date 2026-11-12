@@ -26,6 +26,8 @@ pub struct RvFile {
     pub external_url: Option<String>,
     /// The chart's page on RhythmVerse.
     pub page_url: String,
+    /// The song title, for finding the file again when only the page is known.
+    pub title: Option<String>,
 }
 
 #[derive(Debug)]
@@ -74,9 +76,24 @@ fn to_chart(song: &Value) -> Option<Chart> {
     }
     let file_id = s(&file["file_id"])?;
     let download = s(&file["download_url"]).filter(|u| !u.eq_ignore_ascii_case("none"));
-    let external = s(&file["external_url"]);
+    let mut external = s(&file["external_url"]);
+    // Some charters set the "external" link to the chart's own RhythmVerse page; the file is
+    // still on RhythmVerse, at download_file/<uploader>/<id>/<file name>.
+    let self_link = external.as_deref().is_some_and(|u| host_kind(u) == Host::RvPage);
+    if self_link {
+        external = None;
+    }
+    let direct = || {
+        let folder = s(&file["user_folder"]).or_else(|| s(&file["user"]))?;
+        let name = s(&file["file_name"])?;
+        Some(format!("{BASE}/download_file/{folder}/{file_id}/{name}"))
+    };
     // Hosted on RhythmVerse = a download link on rhythmverse.co and no outside host.
-    let hosted = download.as_deref().map(absolute).filter(|u| u.starts_with(BASE) && external.is_none());
+    let hosted = download
+        .as_deref()
+        .map(absolute)
+        .filter(|u| u.starts_with(BASE) && external.is_none() && (!self_link || u.contains("/download_file/")))
+        .or_else(|| if self_link { direct() } else { None });
     let page = s(&file["file_url_full"]).or_else(|| s(&file["file_url"]).map(|u| absolute(&u))).unwrap_or_else(|| BASE.into());
     let art = s(&file["album_art"]).or_else(|| s(&data["album_art"])).map(|u| absolute(&u));
     let charter = s(&file["charter"]).or_else(|| s(&file["author"]["name"]));
@@ -104,7 +121,12 @@ fn to_chart(song: &Value) -> Option<Chart> {
         diff_bassghl: diff(file, data, "diff_bassghl"),
         diff_vocals: diff(file, data, "diff_vocals"),
         modified_time: s(&file["update_date"]).map(|d| d.replacen(' ', "T", 1)),
-        rv: Some(Arc::new(RvFile { download_url: hosted, external_url: external, page_url: page })),
+        rv: Some(Arc::new(RvFile {
+            download_url: hosted,
+            external_url: external,
+            page_url: page,
+            title: s(&data["title"]).or_else(|| s(&file["file_title"])),
+        })),
         ..Default::default()
     })
 }
@@ -267,6 +289,8 @@ enum Host {
     DriveFile,
     DriveFolder,
     MediaFire,
+    /// The chart's own RhythmVerse page (the file is on RhythmVerse; see `resolve_rv_page`).
+    RvPage,
     Other,
 }
 
@@ -276,9 +300,16 @@ fn host_kind(u: &str) -> Host {
         if l.contains("/folders/") { Host::DriveFolder } else { Host::DriveFile }
     } else if l.contains("mediafire.com") {
         Host::MediaFire
+    } else if l.contains("rhythmverse.co/download/") || l.contains("rhythmverse.co/songfile/") {
+        Host::RvPage
     } else {
         Host::Other
     }
+}
+
+/// True for a link to a chart's own RhythmVerse page (the file is on RhythmVerse).
+pub fn is_rv_page(u: &str) -> bool {
+    host_kind(u) == Host::RvPage
 }
 
 /// The host name shown when a link can't be downloaded in the app.
@@ -338,6 +369,12 @@ pub async fn download(
                 let _ = std::fs::remove_dir_all(&unpacked);
                 std::fs::rename(&inner, &unpacked).map_err(|e| e.to_string())?;
             }
+        }
+        (None, Some((u, Host::RvPage))) => {
+            let _ = tx.send(Progress::Status("Finding the file on RhythmVerse...".into())).await;
+            let url = resolve_rv_page(u, rv.title.as_deref()).await?;
+            let _ = tx.send(Progress::Status("Downloading from RhythmVerse...".into())).await;
+            get_archive(&encode_url(&url), &work, &unpacked, keep_video, "chart.zip", tx).await?;
         }
         (None, Some((u, Host::MediaFire))) => {
             let _ = tx.send(Progress::Status("Finding the MediaFire download...".into())).await;
@@ -412,6 +449,7 @@ pub async fn fetch_note_files(rv: &RvFile) -> Result<Vec<(String, Vec<u8>)>, Str
             }
         }
         (None, Some((u, Host::MediaFire))) => archive(&mediafire_link(u).await?, &mut tx).await?,
+        (None, Some((u, Host::RvPage))) => archive(&encode_url(&resolve_rv_page(u, rv.title.as_deref()).await?), &mut tx).await?,
         (None, Some((u, Host::Other))) => return Err(format!("This chart is hosted on {}, which Truss can't read.", host_name(u))),
         (None, None) => return Err("RhythmVerse has no download for this chart.".into()),
     }
@@ -456,7 +494,7 @@ async fn fetch_to_dir(url: &str, dir: &Path, fallback: &str, tx: &mut Sender<cra
     let status = resp.status();
     if !status.is_success() {
         return Err(match status.as_u16() {
-            404 | 410 => "The file is no longer on the host (it was moved or deleted). Try another version of this song.".into(),
+            404 | 410 => "This chart is no longer available: its download link is dead (the file was deleted or moved). Try another version of this song.".into(),
             401 | 403 => "The host refused the download (the file may be private). Open the link in your browser.".into(),
             429 => "The host is limiting downloads right now. Wait a bit and try again.".into(),
             c => format!("Download failed: the host returned {c}"),
@@ -539,7 +577,7 @@ async fn list_drive_folder(id: &str) -> Result<Vec<(String, String, bool)>, Stri
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Couldn't open the Google Drive folder: {e}"))?
+        .map_err(|e| host_error(&e, "Google Drive"))?
         .text()
         .await
         .map_err(|e| e.to_string())?;
@@ -636,6 +674,61 @@ fn download_drive_folder<'a>(
     })
 }
 
+/// A plain message for a failed request to a chart's host: a missing file means the chart is
+/// gone, not that something went wrong in Truss.
+fn host_error(e: &reqwest::Error, host: &str) -> String {
+    match e.status().map(|s| s.as_u16()) {
+        Some(404 | 410) => format!(
+            "This chart is no longer available: its {host} link is dead (the files were deleted or moved). Try another version of this song."
+        ),
+        Some(401 | 403) => format!(
+            "This chart isn't available: its {host} files are private or were removed. Open the link in your browser to check."
+        ),
+        Some(429) => format!("{host} is limiting downloads right now. Wait a bit and try again."),
+        Some(code) => format!("{host} returned an error ({code}). Try again later."),
+        None => format!("Couldn't reach {host}. Check your connection and try again."),
+    }
+}
+
+/// The direct download link of a chart whose link is its own RhythmVerse page: RhythmVerse's
+/// search (by title) has the uploader folder and file name, matched on the file ID in the link.
+async fn resolve_rv_page(page: &str, title: Option<&str>) -> Result<String, String> {
+    let id: String = page
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let not_found = || "Couldn't find this chart's file on RhythmVerse. Open its RhythmVerse page to download it.".to_string();
+    let title = title.filter(|t| !t.trim().is_empty()).ok_or_else(not_found)?;
+    let body = url_encode(&[
+        ("data_type".into(), "full".into()),
+        ("records".into(), "25".into()),
+        ("page".into(), "1".into()),
+        ("text".into(), title.to_string()),
+    ]);
+    let v: Value = CLIENT
+        .post(format!("{BASE}/api/ch/songfiles/search/live"))
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(20))
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach RhythmVerse. Check your connection and try again.".to_string())?
+        .json()
+        .await
+        .map_err(|_| not_found())?;
+    let songs = v["data"]["songs"].as_array().cloned().unwrap_or_default();
+    let file = songs.iter().map(|s| &s["file"]).find(|f| s(&f["file_id"]).as_deref() == Some(id.as_str())).ok_or_else(not_found)?;
+    let folder = s(&file["user_folder"]).or_else(|| s(&file["user"])).ok_or_else(not_found)?;
+    let name = s(&file["file_name"]).ok_or_else(not_found)?;
+    Ok(format!("{BASE}/download_file/{folder}/{id}/{name}"))
+}
+
 /// MediaFire shows a page with the real download link on it.
 async fn mediafire_link(page: &str) -> Result<String, String> {
     let html = CLIENT
@@ -643,7 +736,7 @@ async fn mediafire_link(page: &str) -> Result<String, String> {
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Couldn't open the MediaFire page: {e}"))?
+        .map_err(|e| host_error(&e, "MediaFire"))?
         .text()
         .await
         .map_err(|e| e.to_string())?;
@@ -850,6 +943,50 @@ mod tests {
         assert!(e.rv.as_ref().unwrap().download_url.is_none() && e.rv.as_ref().unwrap().external_url.is_some());
         let con: Value = serde_json::from_str(r#"{"data": {}, "file": {"file_id": "2", "gameformat": "rb3xbox"}}"#).unwrap();
         assert!(to_chart(&con).is_none());
+
+        // A chart whose "external" link is its own RhythmVerse page is hosted on RhythmVerse.
+        let own: Value = serde_json::from_str(r#"{"data": {"title": "Shared Trauma"}, "file": {"file_id": "e0178", "gameformat": "ch",
+            "download_url": "https://rhythmverse.co/download/e0178", "external_url": "https://rhythmverse.co/download/e0178",
+            "user_folder": "someone", "file_name": "Pierce The Veil - Shared Trauma.zip"}}"#).unwrap();
+        let rv = to_chart(&own).unwrap().rv.unwrap();
+        assert_eq!(rv.download_url.as_deref(), Some("https://rhythmverse.co/download_file/someone/e0178/Pierce The Veil - Shared Trauma.zip"));
+        assert!(rv.external_url.is_none() && can_download(&rv));
+    }
+
+    /// TRUSS_TEST_RV_DL=<dir>: download Heikki Silvennoinen - You Run, which links to its own
+    /// RhythmVerse song page, the way a saved chart list has it.
+    #[test]
+    fn live_rv_page_download() {
+        let Some(dir) = std::env::var_os("TRUSS_TEST_RV_DL") else { return };
+        let dir = PathBuf::from(dir);
+        let rv = RvFile {
+            external_url: Some("https://rhythmverse.co/songfile/98db0619df804b1fae77e713ee2c7464".into()),
+            title: Some("You Run".into()),
+            ..Default::default()
+        };
+        let staged = dir.join("rvpage - You Run");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(async {
+            let (mut tx, mut rx) = futures::channel::mpsc::channel(256);
+            tokio::spawn(async move { while rx.next().await.is_some() {} });
+            download(&rv, &staged, &dir, "rvpage", false, &mut tx).await
+        });
+        let files: Vec<String> =
+            std::fs::read_dir(&staged).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        println!("rvpage: {r:?} {files:?}");
+        assert!(r.is_ok() && files.iter().any(|f| f.eq_ignore_ascii_case("song.ini")));
+    }
+
+    /// Pierce the Veil - Shared Trauma links to its own RhythmVerse page. Saved chart lists only
+    /// have that link and the title; the file is found through RhythmVerse's search.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn live_rv_page_link() {
+        let url = resolve_rv_page("https://rhythmverse.co/download/e017872637fd41dcb77111a59273336e", Some("Shared Trauma")).await.unwrap();
+        assert!(url.ends_with("/e017872637fd41dcb77111a59273336e/Pierce The Veil - Shared Trauma.zip"), "{url}");
+        let resp = CLIENT.get(encode_url(&url)).header("Range", "bytes=0-15").send().await.unwrap();
+        assert!(resp.status().is_success());
+        assert_eq!(resp.headers()["content-type"], "application/octet-stream");
     }
 
     #[test]
@@ -939,6 +1076,54 @@ mod tests {
     }
 
     /// Network test: TRUSS_TEST_RV=1 runs one real search.
+    /// TRUSS_TEST_RV_HOSTED=1: request a sample of RhythmVerse-hosted files from the local chart
+    /// list (first bytes only) and report any that don't come back as a file.
+    #[test]
+    fn live_hosted_sample() {
+        if std::env::var("TRUSS_TEST_RV_HOSTED").is_err() {
+            return;
+        }
+        let db = crate::settings::project_dirs().unwrap().cache_dir().join("rhythmverse.sqlite");
+        let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let mut st = con
+            .prepare("select name, download_url from charts where download_url != '' order by random() limit 60")
+            .unwrap();
+        let rows: Vec<(String, String)> =
+            st.query_map([], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?))).unwrap().flatten().collect();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (mut ok, mut bad) = (0, 0);
+            for (name, url) in rows {
+                let r = CLIENT.get(encode_url(&url)).header("Range", "bytes=0-15").send().await;
+                match r {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                        if status.is_success() && !ct.starts_with("text/html") {
+                            ok += 1;
+                        } else {
+                            bad += 1;
+                            println!("BAD {status} {ct} | {name} | {url}");
+                        }
+                    }
+                    Err(e) => {
+                        bad += 1;
+                        println!("ERR {e} | {name} | {url}");
+                    }
+                }
+            }
+            println!("hosted sample: {ok} ok, {bad} not a file");
+        });
+    }
+
+    /// Bladee - Be Nice 2 Me: its Google Drive folder was deleted.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn live_dead_drive_folder() {
+        let e = list_drive_folder("1J4GnVBUjqGvalft84HSjq1K_eH0szaaU").await.unwrap_err();
+        assert!(e.starts_with("This chart is no longer available"), "{e}");
+    }
+
     /// TRUSS_TEST_RV_DRIVE=<drive url>: fetch just the note files and print their hashes.
     #[test]
     fn live_note_files() {

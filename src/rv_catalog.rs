@@ -392,6 +392,7 @@ fn row_to_chart(r: &rusqlite::Row) -> rusqlite::Result<Chart> {
             download_url: r.get("download_url")?,
             external_url: r.get("external_url")?,
             page_url: r.get::<_, Option<String>>("page_url")?.unwrap_or_default(),
+            title: r.get("name")?,
         })),
         ..Default::default()
     })

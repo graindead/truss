@@ -32,6 +32,9 @@ mod setlists;
 mod sng;
 mod textures;
 mod trackhash;
+mod taskbar_icon;
+mod themes;
+mod icon_paint;
 mod fretwork;
 mod tools_ui;
 mod variants;
@@ -42,7 +45,7 @@ use iced::widget::{
     button, center, checkbox, column, container, image, pick_list, progress_bar, row, rule, scrollable, space, text,
     text_input, toggler,
 };
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme, color};
+use iced::{Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme};
 use extras::{library_mark, rv_tag};
 use settings::Settings;
 use std::collections::{BTreeSet, HashMap};
@@ -362,6 +365,8 @@ enum Message {
     ToggleSng(bool),
     ToggleVideos(bool),
     ThemePicked(ThemeChoice),
+    /// The taskbar pin's icon was updated (or not); nothing to do.
+    PinIconDone,
     LayoutPicked(variants::UiVariant),
     FpsPicked(FpsChoice),
     ToggleCpuRendering(bool),
@@ -391,108 +396,34 @@ impl std::fmt::Display for ThemeChoice {
     }
 }
 
-fn bridge_dark() -> Theme {
-    Theme::custom(
-        "Bridge Dark",
-        iced::theme::Palette {
-            background: color!(0x15161c),
-            text: color!(0xe4e4ea),
-            primary: color!(0x7c5cff),
-            success: color!(0x3ccf8e),
-            warning: color!(0xf5b942),
-            danger: color!(0xf0506e),
-        },
-    )
-}
-
-/// The default theme: warm charcoal with Rust-orange accents.
-fn rust_theme() -> Theme {
-    Theme::custom(
-        "Rust",
-        iced::theme::Palette {
-            background: color!(0x1b1715),
-            text: color!(0xefe6de),
-            primary: color!(0xe2622a),
-            success: color!(0x7cc47f),
-            warning: color!(0xf2b545),
-            danger: color!(0xe5484d),
-        },
-    )
-}
-
-/// Deep navy with a clear blue accent.
-fn kusha_theme() -> Theme {
-    Theme::custom(
-        "Kusha",
-        iced::theme::Palette {
-            background: color!(0x131924),
-            text: color!(0xe2e9f4),
-            primary: color!(0x3b8ef0),
-            success: color!(0x5cc89c),
-            warning: color!(0xf2c14e),
-            danger: color!(0xeb5a6b),
-        },
-    )
-}
-
-/// Deep plum with a vivid purple accent.
-fn nick_theme() -> Theme {
-    Theme::custom(
-        "Nick",
-        iced::theme::Palette {
-            background: color!(0x19141f),
-            text: color!(0xece4f4),
-            primary: color!(0x9d5cf0),
-            success: color!(0x6cc79a),
-            warning: color!(0xf2c14e),
-            danger: color!(0xeb5a72),
-        },
-    )
-}
-
 fn all_themes() -> Vec<ThemeChoice> {
-    [rust_theme(), kusha_theme(), nick_theme(), bridge_dark()].into_iter().chain(Theme::ALL.iter().cloned()).map(ThemeChoice).collect()
+    themes::all().into_iter().map(ThemeChoice).collect()
 }
 
-/// The app icon in a theme's colours: the orange truss becomes the theme's accent and the dark
-/// tile its background, keeping the tile's shading and the smoothed edges.
+/// Points this exe's taskbar pins at the theme's icon embedded in truss.exe (see build.rs), or
+/// back at the main icon for the first (Rust) theme.
+fn pin_icon_task(theme: &Theme) -> Task<Message> {
+    let name = theme.to_string();
+    let Some(i) = themes::all().iter().position(|t| t.to_string() == name) else { return Task::none() };
+    let id = (i > 0).then(|| themes::ICON_ID_BASE + i as u16);
+    Task::perform(async move { tokio::task::spawn_blocking(move || taskbar_icon::apply(id)).await }, |_| {
+        Message::PinIconDone
+    })
+}
+
+/// The window icon in a theme's colours (see icon_paint.rs).
 fn app_icon(theme: &Theme) -> Option<iced::window::Icon> {
     let (rgba, w, h) = app_icon_rgba(theme)?;
     iced::window::icon::from_rgba(rgba, w, h).ok()
 }
 
 fn app_icon_rgba(theme: &Theme) -> Option<(Vec<u8>, u32, u32)> {
-    let img = ::image::load_from_memory(include_bytes!("../assets/truss-256.png")).ok()?.to_rgba8();
-    let (w, h) = img.dimensions();
-    let p = theme.palette();
-    let to = |c: Color| [c.r * 255.0, c.g * 255.0, c.b * 255.0];
-    let (accent, bg) = (to(p.primary), to(p.background));
-    // The original's colours: Rust orange on Rust's background.
-    let (o, b) = ([226.0, 98.0, 42.0], [27.0, 23.0, 21.0]);
-    let lum = |c: [f32; 3]| 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
-    let mut out = img.into_raw();
-    for px in out.chunks_exact_mut(4) {
-        let c = [px[0] as f32, px[1] as f32, px[2] as f32];
-        // How much of the pixel is orange: red minus blue is ~8 on the tile, 184 on the truss.
-        // Past 1 it's one of the truss's lighter highlights, so the accent brightens too.
-        let raw = (c[0] - c[2] - 8.0) / (o[0] - o[2] - 8.0);
-        let a = raw.clamp(0.0, 1.0);
-        let lift = raw.clamp(1.0, 1.3);
-        // The tile part's shade relative to the darkest tile colour (the tile is a gradient).
-        let tile = [0, 1, 2].map(|i| if a < 1.0 { (c[i] - a * o[i]) / (1.0 - a) } else { b[i] });
-        let shade = (lum(tile) / lum(b)).clamp(0.5, 2.0);
-        // On a light background a gentle shade the other way (darker at the top) keeps it subtle.
-        let shade = if lum(bg) < 128.0 { shade } else { 1.0 - (shade - 1.0) * 0.12 };
-        for i in 0..3 {
-            let base = bg[i] * shade;
-            px[i] = (base * (1.0 - a) + (accent[i] * lift).min(255.0) * a).round().clamp(0.0, 255.0) as u8;
-        }
-    }
-    Some((out, w, h))
+    let (accent, bg) = themes::icon_colors(theme);
+    icon_paint::recolor(accent, bg)
 }
 
 fn theme_by_name(name: &str) -> Theme {
-    all_themes().into_iter().map(|t| t.0).find(|t| t.to_string() == name).unwrap_or_else(rust_theme)
+    all_themes().into_iter().map(|t| t.0).find(|t| t.to_string() == name).unwrap_or_else(themes::rust_theme)
 }
 
 impl App {
@@ -581,7 +512,7 @@ impl App {
         let icon_list = Task::perform(icons::fetch_list(), Message::IconList);
         let task = Task::batch([app.search(false), icon_list, app.scan_library(), update_check]);
         #[cfg(feature = "rhythmverse")]
-        let task = Task::batch([task, app.rv_auto_sync()]);
+        let task = Task::batch([task, app.rv_auto_sync(), pin_icon_task(&app.theme)]);
         (app, Task::batch([task, iced::widget::operation::focus(SEARCH_ID)]))
     }
 
@@ -1638,9 +1569,11 @@ impl App {
                     Some(icon) => iced::window::oldest().and_then(move |id| iced::window::set_icon(id, icon.clone())),
                     None => Task::none(),
                 };
+                let pin = pin_icon_task(&t.0);
                 self.theme = t.0;
-                Task::batch([self.save_settings(), icon])
+                Task::batch([self.save_settings(), icon, pin])
             }
+            Message::PinIconDone => Task::none(),
             Message::ToggleCpuRendering(b) => {
                 self.settings.cpu_rendering = b;
                 self.save_settings()
@@ -2743,14 +2676,14 @@ mod tests {
     /// TRUSS_TEST_ICON_DIR=<dir>: write the app icon in a few themes as PNGs to look at.
     #[test]
     fn themed_icons() {
-        let rust = app_icon_rgba(&rust_theme()).unwrap();
+        let rust = app_icon_rgba(&themes::rust_theme()).unwrap();
         let orig = ::image::load_from_memory(include_bytes!("../assets/truss-256.png")).unwrap().to_rgba8().into_raw();
         // The Rust theme gives back (nearly) the original icon.
         // (Only pixels you can see: the corners' near-transparent pixels hold junk colours.)
         let worst = rust.0.chunks(4).zip(orig.chunks(4)).filter(|(_, o)| o[3] >= 200).map(|(a, b)| (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap()).max().unwrap();
         assert!(worst <= 12, "Rust icon differs by {worst}");
         let Ok(dir) = std::env::var("TRUSS_TEST_ICON_DIR") else { return };
-        for t in [rust_theme(), kusha_theme(), nick_theme(), bridge_dark(), Theme::Light, Theme::Dracula] {
+        for t in [themes::rust_theme(), themes::kusha_theme(), themes::nick_theme(), themes::bridge_dark(), Theme::Light, Theme::Dracula] {
             let (px, w, h) = app_icon_rgba(&t).unwrap();
             ::image::RgbaImage::from_raw(w, h, px).unwrap().save(format!("{dir}/icon-{t}.png")).unwrap();
         }

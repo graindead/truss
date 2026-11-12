@@ -106,7 +106,11 @@ async fn run(
         .await
         .map_err(|e| format!("Download failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("Download failed: server returned {}", resp.status()));
+        return Err(match resp.status().as_u16() {
+            404 | 410 => "This chart is no longer available: Encore no longer has its file (it was removed or replaced). Try another version of this song.".into(),
+            429 => "Encore is limiting downloads right now. Wait a bit and try again.".into(),
+            code => format!("Download failed: Encore returned an error ({code}). Try again later."),
+        });
     }
     let total = resp.content_length();
 

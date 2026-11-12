@@ -328,7 +328,7 @@ impl App {
             button(link_text("Copy link".into())).padding([4, 10]).style(crate::style::secondary).on_press(Message::CopyText(rv.page_url.clone())),
         ]
         .spacing(6);
-        if let Some(ext) = &rv.external_url {
+        if let Some(ext) = rv.external_url.as_ref().filter(|u| !rhythmverse::is_rv_page(u)) {
             // Friendly names for the common hosts, the bare domain otherwise.
             let host = rhythmverse::host_name(ext);
             let label = match host.as_str() {
