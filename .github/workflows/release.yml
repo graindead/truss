@@ -5,6 +5,7 @@
 # To release: set `version` in Cargo.toml (e.g. 0.2.0), commit, then
 #   git tag v0.2.0
 #   git push origin main v0.2.0
+# Add a "## v0.2.0" section to CHANGELOG.md first: it becomes the release notes.
 
 name: Release
 
@@ -46,7 +47,21 @@ jobs:
           "$hash  truss.exe" | Out-File -Encoding ascii -NoNewline truss.exe.sha256
           Get-Content truss.exe.sha256
 
+      # The release notes are this version's section of CHANGELOG.md.
+      - name: Release notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $lines = @(Get-Content CHANGELOG.md -Encoding utf8)
+          $start = ($lines | Select-String -Pattern "^## $([regex]::Escape($tag))\s*$" | Select-Object -First 1).LineNumber
+          if (-not $start) { Write-Error "CHANGELOG.md has no '## $tag' section"; exit 1 }
+          $rest = @($lines[$start..($lines.Count - 1)])
+          $next = ($rest | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
+          $section = if ($next) { $rest[0..($next - 2)] } else { $rest }
+          ($section -join "`n").Trim() | Out-File -Encoding utf8 notes.md
+          Get-Content notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" truss.exe truss.exe.sha256 --title "Truss ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" truss.exe truss.exe.sha256 --title "Truss ${{ github.ref_name }}" --notes-file notes.md --generate-notes
