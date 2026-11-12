@@ -34,6 +34,7 @@ mod textures;
 mod trackhash;
 mod taskbar_icon;
 mod themes;
+mod backdrop;
 mod icon_paint;
 mod fretwork;
 mod tools_ui;
@@ -56,7 +57,25 @@ use std::time::Duration;
 const SEARCH_ID: &str = "search";
 const BOLD: Font = Font { weight: iced::font::Weight::Bold, ..Font::DEFAULT };
 
+/// TRUSS_LOG=<level> prints library log messages (e.g. the graphics backend's) to stderr.
+struct StderrLog;
+impl log::Log for StderrLog {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, r: &log::Record) {
+        eprintln!("[{} {}] {}", r.level(), r.target(), r.args());
+    }
+    fn flush(&self) {}
+}
+
 fn main() -> iced::Result {
+    if let Some(level) = std::env::var("TRUSS_LOG").ok().and_then(|l| l.parse::<log::LevelFilter>().ok()) {
+        static LOGGER: StderrLog = StderrLog;
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(level);
+        }
+    }
     settings::migrate_old_data();
     // Pick the renderer before iced starts. SAFETY: no other threads exist yet.
     let settings = Settings::load();
@@ -74,16 +93,24 @@ fn main() -> iced::Result {
         if std::env::var_os("WGPU_BACKEND").is_none() {
             std::env::set_var("WGPU_BACKEND", "dx12");
         }
+        // A transparent window needs DX12 to present through a composition visual.
+        #[cfg(windows)]
+        if active_backdrop(&settings) != backdrop::Backdrop::Off && std::env::var_os("WGPU_DX12_PRESENTATION_SYSTEM").is_none() {
+            std::env::set_var("WGPU_DX12_PRESENTATION_SYSTEM", "Visual");
+        }
     }
+    let transparent = active_backdrop(&settings) != backdrop::Backdrop::Off;
 
     iced::application(App::boot, App::update, App::view)
         .title("Truss")
         .theme(App::theme)
+        .style(App::app_style)
         .subscription(App::subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(1280.0, 800.0),
             icon: app_icon(&theme_by_name(&settings.theme))
                 .or_else(|| iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok()),
+            transparent,
             ..Default::default()
         })
         .antialiasing(false)
@@ -186,6 +213,8 @@ struct App {
     settings: Settings,
     screen: Screen,
     theme: Theme,
+    /// The window transparency in effect (chosen at start; Settings changes apply on restart).
+    backdrop: backdrop::Backdrop,
 
     query: String,
     instrument: Opt,
@@ -311,6 +340,7 @@ enum Message {
     ToggleCheckUpdates(bool),
     ToggleRefined(bool),
     ToggleFretwork(bool),
+    BackdropPicked(backdrop::Backdrop),
     /// The tick box in the list header: tick every result, or none.
     CheckAll(bool),
     RetryDownload(u64),
@@ -400,6 +430,11 @@ fn all_themes() -> Vec<ThemeChoice> {
     themes::all().into_iter().map(ThemeChoice).collect()
 }
 
+/// The transparency to use this session (none with CPU rendering, which can't show it).
+fn active_backdrop(s: &Settings) -> backdrop::Backdrop {
+    if s.cpu_rendering { backdrop::Backdrop::Off } else { backdrop::Backdrop::from_key(&s.window_backdrop) }
+}
+
 /// Points this exe's taskbar pins at the theme's icon embedded in truss.exe (see build.rs), or
 /// back at the main icon for the first (Rust) theme.
 fn pin_icon_task(theme: &Theme) -> Task<Message> {
@@ -467,6 +502,7 @@ impl App {
             #[cfg(feature = "rhythmverse")]
             rv: Default::default(),
             theme: theme_by_name(&settings.theme),
+            backdrop: active_backdrop(&settings),
             instrument: find_opt(&instrument_opts, settings.instrument.as_deref()),
             difficulty: find_opt(&difficulty_opts, settings.difficulty.as_deref()),
             instrument_opts,
@@ -512,12 +548,43 @@ impl App {
         let icon_list = Task::perform(icons::fetch_list(), Message::IconList);
         let task = Task::batch([app.search(false), icon_list, app.scan_library(), update_check]);
         #[cfg(feature = "rhythmverse")]
-        let task = Task::batch([task, app.rv_auto_sync(), pin_icon_task(&app.theme)]);
+        let task = Task::batch([task, app.rv_auto_sync(), pin_icon_task(&app.theme), app.backdrop_task()]);
         (app, Task::batch([task, iced::widget::operation::focus(SEARCH_ID)]))
     }
 
     fn theme(&self) -> Theme {
         self.theme.clone()
+    }
+
+    /// The window background: see-through over a backdrop when transparency is on.
+    fn app_style(&self, theme: &Theme) -> iced::theme::Style {
+        let p = theme.extended_palette();
+        let mut bg = p.background.base.color;
+        // The window presents pre-multiplied alpha, so the colour is scaled by it too.
+        let a = self.backdrop.alpha();
+        bg = Color { r: bg.r * a, g: bg.g * a, b: bg.b * a, a };
+        iced::theme::Style { background_color: bg, text_color: p.background.base.text }
+    }
+
+    /// Asks Windows to blur what's behind the window, tinted with the theme's background.
+    fn backdrop_task(&self) -> Task<Message> {
+        let b = self.backdrop;
+        if b == backdrop::Backdrop::Off {
+            return Task::none();
+        }
+        let c = self.theme.palette().background;
+        let tint = [c.r, c.g, c.b].map(|v| (v * 255.0).round() as u8);
+        // Applied again shortly after, in case the window wasn't fully set up the first time.
+        let at = |delay_ms: u64| {
+            Task::perform(tokio::time::sleep(std::time::Duration::from_millis(delay_ms)), |_| ())
+                .then(|_| iced::window::oldest())
+                .and_then(iced::window::raw_id::<Message>)
+                .map(move |hwnd| {
+                    backdrop::apply(hwnd, b, tint);
+                    Message::PinIconDone
+                })
+        };
+        Task::batch([at(0), at(500)])
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -1204,6 +1271,10 @@ impl App {
                 self.settings.show_fretwork = b;
                 self.save_settings()
             }
+            Message::BackdropPicked(b) => {
+                self.settings.window_backdrop = b.key().into();
+                self.save_settings()
+            }
             Message::ToggleRefined(b) => {
                 self.settings.refined_ui = b;
                 style::set_refined(b);
@@ -1571,7 +1642,7 @@ impl App {
                 };
                 let pin = pin_icon_task(&t.0);
                 self.theme = t.0;
-                Task::batch([self.save_settings(), icon, pin])
+                Task::batch([self.save_settings(), icon, pin, self.backdrop_task()])
             }
             Message::PinIconDone => Task::none(),
             Message::ToggleCpuRendering(b) => {
@@ -2409,6 +2480,24 @@ impl App {
                     toggler(self.settings.show_fretwork)
                         .label("Show Fretwork difficulty tiers next to difficulties (otherwise hover a difficulty to see them)")
                         .on_toggle(Message::ToggleFretwork),
+                    row![
+                        text("Transparency (beta)").size(13),
+                        pick_list(
+                            backdrop::Backdrop::ALL,
+                            Some(backdrop::Backdrop::from_key(&self.settings.window_backdrop)),
+                            Message::BackdropPicked,
+                        ),
+                        text(if self.settings.cpu_rendering {
+                            "Needs low memory mode off. Applies after restart."
+                        } else if backdrop::Backdrop::from_key(&self.settings.window_backdrop) != self.backdrop {
+                            "Restart Truss to apply."
+                        } else {
+                            "Applies after restart."
+                        })
+                        .size(12),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
                 ]
                 .spacing(12)
                 .into(),

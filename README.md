@@ -18,6 +18,8 @@ On top of Bridge:
   Encore charts whose listed hashes are out of date (Truss reads the chart and works them out).
 - **Fretwork tiers**: hover a difficulty to see where the chart lands on Fretwork's scale, or turn
   them on next to every difficulty in Settings.
+- **Frosted glass** (beta, Windows): the window blurs what's behind it (Settings > Appearance >
+  Transparency). Needs small patches to iced, kept in `vendor/` (see `vendor/README.md`).
 - **Library** page for the charts you already have, with tick boxes and a ✓ on search results
   you already own.
 

@@ -46,6 +46,8 @@ pub struct Settings {
     pub show_leaderboard: bool,
     /// Show Fretwork tiers beside the difficulties (they're always on hover).
     pub show_fretwork: bool,
+    /// Window transparency (beta): "off", "mica", "acrylic" or "clear". Applies on start.
+    pub window_backdrop: String,
 }
 
 impl Default for Settings {
@@ -61,7 +63,7 @@ impl Default for Settings {
             spreadsheet_output_path: None,
             chart_folder_name: "{artist} - {name} ({charter})".into(),
             is_sng: false,
-            download_videos: true,
+            download_videos: false,
             instrument: None,
             difficulty: None,
             theme: "Rust".into(),
@@ -70,9 +72,11 @@ impl Default for Settings {
             layout: "list".into(),
             preview_fps: 60,
             check_updates: true,
-            refined_ui: false,
+            refined_ui: true,
             show_leaderboard: false,
-            show_fretwork: false,
+            show_fretwork: true,
+            // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
+            window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
         }
     }
 }
@@ -121,7 +125,8 @@ impl Settings {
     pub fn load() -> Self {
         settings_file()
             .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
+            // Hand-edited files (e.g. saved by PowerShell or Notepad) can start with a BOM.
+            .and_then(|b| serde_json::from_slice(b.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&b)).ok())
             .unwrap_or_default()
     }
 
@@ -133,5 +138,23 @@ impl Settings {
             tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
         }
         tokio::fs::write(path, json).await.map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn new_install_defaults() {
+        let s = Settings::default();
+        assert!(!s.is_sng && !s.download_videos && !s.cpu_rendering);
+        assert!(s.refined_ui && s.show_fretwork);
+        assert_eq!((s.theme.as_str(), s.layout.as_str(), s.preview_fps), ("Rust", "list", 60));
+        #[cfg(windows)]
+        assert_eq!(s.window_backdrop, "frosted");
+        // A settings file from an older version keeps its values; only missing ones get defaults.
+        let old: Settings = serde_json::from_str(r#"{"refined_ui": false, "download_videos": true}"#).unwrap();
+        assert!(!old.refined_ui && old.download_videos && old.show_fretwork);
     }
 }
