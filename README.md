@@ -4,6 +4,23 @@ A native Rust rewrite of [Bridge](https://github.com/Geomitron/Bridge) (formerly
 search the Chorus Encore chart database and download charts straight into your
 Clone Hero / YARG songs folder. No Electron.
 
+![Searching charts in Truss, with album art and chart details](docs/screenshots/browse.png)
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/preview.png" alt="Chart preview"><br>Chart preview</td>
+    <td><img src="docs/screenshots/leaderboard.png" alt="Clone Hero leaderboard for a chart"><br>Leaderboards</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/advanced.png" alt="Advanced search with Fretwork filters"><br>Advanced search</td>
+    <td><img src="docs/screenshots/library.png" alt="Library page"><br>Library</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings.png" alt="Settings page"><br>Settings</td>
+    <td></td>
+  </tr>
+</table>
+
 On top of Bridge:
 
 - **RhythmVerse** as a second chart source (Settings > Chart sources): its Clone Hero charts
