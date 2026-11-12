@@ -232,3 +232,24 @@ pub fn panel_solid(t: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+
+/// A checkbox with an outline you can see on any theme (iced's default nearly vanishes on dark
+/// backgrounds, especially while disabled).
+pub fn visible_checkbox(t: &Theme, s: iced::widget::checkbox::Status) -> iced::widget::checkbox::Style {
+    use iced::widget::checkbox::Status;
+    let p = t.extended_palette();
+    let (checked, hovered, disabled) = match s {
+        Status::Active { is_checked } => (is_checked, false, false),
+        Status::Hovered { is_checked } => (is_checked, true, false),
+        Status::Disabled { is_checked } => (is_checked, false, true),
+    };
+    let accent = p.primary.base.color;
+    let outline = if hovered { accent } else { muted(t) };
+    let fade = |c: Color| if disabled { c.scale_alpha(0.45) } else { c };
+    iced::widget::checkbox::Style {
+        background: if checked { fade(accent).into() } else { Color::TRANSPARENT.into() },
+        icon_color: p.primary.base.text,
+        border: Border { color: fade(if checked { accent } else { outline }), width: 1.5, radius: 3.0.into() },
+        text_color: Some(fade(fg(t))),
+    }
+}

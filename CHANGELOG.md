@@ -3,6 +3,24 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.7
+
+- **More Fretwork search filters** (Advanced search, Encore charts only): difficulty tier,
+  harder or easier than the chart's listed difficulty, hand movement (low / medium / high),
+  pacing (steady or with hard spikes), and for drums kick speed and a double-kick tier. Hover
+  the ⓘ next to each for what it means.
+- **Advanced search reworked:** Song, Chart and Fretwork in their own cards with Features
+  below, easier-to-see Exact / Exclude checkboxes.
+- **RhythmVerse in Advanced search:** its charts are included when you only use filters its
+  chart list has (name, artist, album, genre, year, charter, length, date); otherwise a note
+  says why they're left out. Reset now goes back to the normal results.
+- **See-through slider** for frosted glass (Settings > Appearance).
+- **Select all** skips charts you already have.
+- **Changelog** in Settings > Updates.
+- Album art keeps loading after scrolling far down and back (covers load nearest-first, a few
+  at a time, and retry if a download fails).
+- Scrolling far down no longer turns into a long run of only RhythmVerse charts.
+
 ## v0.1.6
 
 - **Frosted glass (beta, Windows):** Settings > Appearance > Transparency. The window blurs and

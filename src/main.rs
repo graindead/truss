@@ -37,6 +37,7 @@ mod themes;
 mod backdrop;
 mod icon_paint;
 mod fretwork;
+mod fretwork_filter;
 mod tools_ui;
 mod variants;
 mod vlist;
@@ -49,7 +50,7 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme};
 use extras::{library_mark, rv_tag};
 use settings::Settings;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -178,6 +179,8 @@ enum Art {
 const FULL_ART_KEEP: usize = 24;
 /// Thumbnails are kept for this many results on either side of what's on screen.
 const ART_WINDOW: usize = 150;
+/// Album art downloads at once; the rest wait in `art_queue`, nearest the view first.
+const ART_PARALLEL: usize = 8;
 
 /// Downloads that run at the same time; the rest wait in the queue.
 const MAX_ACTIVE_DOWNLOADS: usize = 2;
@@ -254,6 +257,10 @@ struct App {
     reviewed_opts: Vec<Opt>,
     show_issues: bool,
     show_versions: bool,
+    /// The changelog under Settings > Updates is open.
+    show_changelog: bool,
+    /// The Fretwork tier filter of Advanced search and its rating queue.
+    fw: fretwork_filter::FwSearch,
     /// Leaderboards fetched this session, by track.
     boards: HashMap<leaderboard::Track, Result<leaderboard::Board, String>>,
     /// The leaderboard last picked (instrument, difficulty), kept as you move between charts.
@@ -288,6 +295,10 @@ struct App {
 
     art: HashMap<String, Art>,
     full_art_lru: std::collections::VecDeque<String>,
+    /// Album art waiting to be fetched, nearest the visible rows first.
+    art_queue: std::collections::VecDeque<String>,
+    /// Album art being fetched now.
+    art_inflight: HashSet<String>,
     icon_list: Option<Arc<Vec<icons::IconEntry>>>,
     /// Icon images by content hash; `None` while loading or if unavailable.
     icons: HashMap<String, Option<image::Handle>>,
@@ -327,7 +338,10 @@ enum Message {
     /// Read this chart (md5) to work out its leaderboard hashes.
     FindScores(String),
     HashesFound(String, Result<trackhash::Computed, String>),
+    /// A search result rated for the Fretwork filter (generation, md5, reading).
+    FwRated(u64, String, Result<trackhash::Computed, String>),
     ToggleVersions,
+    ToggleChangelog,
     DownloadChecked,
     ClearChecked,
     /// A result's tick box was clicked.
@@ -341,6 +355,9 @@ enum Message {
     ToggleRefined(bool),
     ToggleFretwork(bool),
     BackdropPicked(backdrop::Backdrop),
+    /// Dragging the see-through slider (applies live; saved on release).
+    GlassTransparency(f32),
+    SaveSettings,
     /// The tick box in the list header: tick every result, or none.
     CheckAll(bool),
     RetryDownload(u64),
@@ -482,6 +499,8 @@ impl App {
             list_rev: 0,
             show_issues: false,
             show_versions: false,
+            show_changelog: false,
+            fw: Default::default(),
             boards: HashMap::new(),
             board_pick: None,
             hashes: HashMap::new(),
@@ -523,6 +542,8 @@ impl App {
             selected: None,
             art: HashMap::new(),
             full_art_lru: Default::default(),
+            art_queue: Default::default(),
+            art_inflight: Default::default(),
             icon_list: None,
             icons: HashMap::new(),
             icon_version: 0,
@@ -561,7 +582,7 @@ impl App {
         let p = theme.extended_palette();
         let mut bg = p.background.base.color;
         // The window presents pre-multiplied alpha, so the colour is scaled by it too.
-        let a = self.backdrop.alpha();
+        let a = self.backdrop.alpha(self.settings.glass_transparency);
         bg = Color { r: bg.r * a, g: bg.g * a, b: bg.b * a, a };
         iced::theme::Style { background_color: bg, text_color: p.background.base.text }
     }
@@ -767,6 +788,7 @@ impl App {
             self.generation += 1;
             self.page = 1;
             self.encore_seen = 0;
+            self.fw_reset();
         } else {
             self.page += 1;
         }
@@ -833,7 +855,7 @@ impl App {
 
     /// Whether more results can be loaded by scrolling.
     pub fn more_available(&self) -> bool {
-        let encore = self.encore_seen < self.found;
+        let encore = self.encore_seen < self.found || self.fw_pending();
         #[cfg(feature = "rhythmverse")]
         return encore || self.rv_more() || self.rv_pending();
         #[cfg(not(feature = "rhythmverse"))]
@@ -858,13 +880,28 @@ impl App {
         Task::perform(api::fetch_album_art(md5.clone(), px), move |r| Message::ArtLoaded(md5.clone(), r))
     }
 
+    /// Queues a cover to load, ahead of the others (e.g. the selected chart's).
     fn load_art(&mut self, md5: Option<&String>) -> Task<Message> {
         let Some(md5) = md5 else { return Task::none() };
         if self.art.contains_key(md5) {
             return Task::none();
         }
         self.art.insert(md5.clone(), Art::Loading);
-        self.fetch_art(md5.clone())
+        self.art_queue.push_front(md5.clone());
+        self.pump_art()
+    }
+
+    /// Starts queued art downloads up to `ART_PARALLEL` at once.
+    fn pump_art(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        while self.art_inflight.len() < ART_PARALLEL {
+            let Some(md5) = self.art_queue.pop_front() else { break };
+            if !matches!(self.art.get(&md5), Some(Art::Loading)) || !self.art_inflight.insert(md5.clone()) {
+                continue;
+            }
+            tasks.push(self.fetch_art(md5));
+        }
+        Task::batch(tasks)
     }
 
     /// Loads thumbnails for results near the visible area and frees the ones far away, so memory
@@ -878,19 +915,41 @@ impl App {
         let hi = (center + ART_WINDOW).min(self.results.len());
         let wanted: Vec<String> = self.results[lo..hi].iter().filter_map(|c| c.album_art_md5.clone()).collect();
 
-        if self.art.len() > 2 * ART_WINDOW + 50 {
-            let mut keep: std::collections::HashSet<&String> = wanted.iter().collect();
-            let selected = self.selected.and_then(|i| self.results.get(i)).and_then(|c| c.album_art_md5.as_ref());
-            keep.extend(selected);
-            let before = self.art.len();
-            // Keep in-flight loads so their results aren't wasted.
-            self.art.retain(|k, v| keep.contains(k) || matches!(v, Art::Loading));
-            if self.art.len() != before {
-                self.full_art_lru.retain(|m| self.art.contains_key(m));
-                self.art_version += 1;
+        let selected = self.selected.and_then(|i| self.results.get(i)).and_then(|c| c.album_art_md5.clone());
+        {
+            let keep: std::collections::HashSet<&String> = wanted.iter().chain(selected.as_ref()).collect();
+            // Covers queued for rows that have scrolled away aren't needed any more.
+            let stale: Vec<String> = self.art_queue.iter().filter(|m| !keep.contains(m)).cloned().collect();
+            for m in &stale {
+                if !self.art_inflight.contains(m) {
+                    self.art.remove(m);
+                }
+            }
+            self.art_queue.retain(|m| keep.contains(m));
+            if self.art.len() > 2 * ART_WINDOW + 50 {
+                let before = self.art.len();
+                // Keep in-flight loads so their results aren't wasted.
+                let inflight = &self.art_inflight;
+                self.art.retain(|k, _| keep.contains(k) || inflight.contains(k));
+                if self.art.len() != before {
+                    self.full_art_lru.retain(|m| self.art.contains_key(m));
+                    self.art_version += 1;
+                }
             }
         }
-        let mut tasks: Vec<_> = wanted.iter().map(|m| self.load_art(Some(m))).collect();
+        // Queue the visible rows' covers first, then outwards.
+        let mut order: Vec<(usize, &String)> = self.results[lo..hi]
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| c.album_art_md5.as_ref().map(|m| ((lo + i).abs_diff(center), m)))
+            .collect();
+        order.sort_by_key(|(d, _)| *d);
+        let fresh: Vec<String> = order.into_iter().map(|(_, m)| m.clone()).filter(|m| !self.art.contains_key(m)).collect();
+        for m in fresh {
+            self.art.insert(m.clone(), Art::Loading);
+            self.art_queue.push_back(m);
+        }
+        let mut tasks = vec![self.pump_art()];
         // Grid tiles show icons too; other layouts only show the selected chart's icon.
         if self.ui == variants::UiVariant::Grid {
             let charts: Vec<Arc<Chart>> = self.results[lo..hi].to_vec();
@@ -993,10 +1052,12 @@ impl App {
                 self.advanced_open = false;
                 Task::none()
             }
-            Message::Advanced(advanced::Msg::Search) => match self.advanced.to_filters() {
-                Ok(filters) => {
+            Message::Advanced(advanced::Msg::Search) => match self.advanced.to_filters().and_then(|f| Ok((f, self.advanced.fretwork_filter()?))) {
+                Ok((filters, fw)) => {
                     self.advanced.error = None;
-                    self.active_advanced = Some(Arc::new(filters));
+                    self.fw.filter = fw;
+                    // An empty form means a normal search (which includes RhythmVerse).
+                    self.active_advanced = (self.advanced.active_count() > 0).then(|| Arc::new(filters));
                     self.query.clear();
                     self.search(false)
                 }
@@ -1005,6 +1066,13 @@ impl App {
                     Task::none()
                 }
             },
+            // Reset also ends an Advanced search that's showing, back to the normal results.
+            Message::Advanced(advanced::Msg::Reset) if self.active_advanced.is_some() => {
+                self.advanced.update(advanced::Msg::Reset);
+                self.active_advanced = None;
+                self.fw.filter = None;
+                self.search(false)
+            }
             Message::Advanced(msg) => {
                 self.advanced.update(msg);
                 self.advanced.error = None;
@@ -1052,6 +1120,10 @@ impl App {
                         self.error = None;
                         self.found = resp.found;
                         let save = if append { Task::none() } else { self.clear_results_if_new() };
+                        if self.fw_active() {
+                            let rate = self.fw_take_page(resp.data);
+                            return Task::batch([self.refresh_art_window(), save, rate]);
+                        }
                         #[cfg(feature = "rhythmverse")]
                         if self.merging() {
                             self.rv_encore_page(resp.data);
@@ -1085,6 +1157,13 @@ impl App {
                 self.art_center = if rel.is_finite() { (rel * self.results.len() as f32) as usize } else { 0 };
                 let art = self.refresh_art_window();
                 if rel > 0.85 && !self.searching() && self.more_available() {
+                    if self.fw_active() {
+                        // Charts are still being rated, or another run of pages may follow.
+                        self.fw_more();
+                        if self.fw_pending() || self.encore_seen >= self.found {
+                            return art;
+                        }
+                    }
                     if self.encore_seen < self.found {
                         return Task::batch([art, self.search(true)]);
                     }
@@ -1154,17 +1233,27 @@ impl App {
                 Task::none()
             }
             Message::ArtLoaded(md5, r) => {
-                let art = match r {
-                    Ok((t, f)) => Art::Ready {
-                        thumb: image::Handle::from_rgba(t.width, t.height, t.rgba),
-                        full: Some(image::Handle::from_bytes(f)),
-                    },
-                    Err(_) => Art::Failed,
-                };
-                self.art.insert(md5.clone(), art);
-                self.remember_full_art(&md5);
+                self.art_inflight.remove(&md5);
+                match r {
+                    Ok((t, f)) => {
+                        let art = Art::Ready {
+                            thumb: image::Handle::from_rgba(t.width, t.height, t.rgba),
+                            full: Some(image::Handle::from_bytes(f)),
+                        };
+                        self.art.insert(md5.clone(), art);
+                        self.remember_full_art(&md5);
+                    }
+                    // The chart has no cover.
+                    Err(e) if e == api::ART_MISSING => {
+                        self.art.insert(md5.clone(), Art::Failed);
+                    }
+                    // A failed request: forget it, so it's tried again when the row is next shown.
+                    Err(_) => {
+                        self.art.remove(&md5);
+                    }
+                }
                 self.art_version += 1;
-                Task::none()
+                self.pump_art()
             }
 
             Message::Download(i) => {
@@ -1275,11 +1364,20 @@ impl App {
                 self.settings.window_backdrop = b.key().into();
                 self.save_settings()
             }
+            Message::GlassTransparency(v) => {
+                self.settings.glass_transparency = v;
+                Task::none()
+            }
+            Message::SaveSettings => self.save_settings(),
             Message::ToggleRefined(b) => {
                 self.settings.refined_ui = b;
                 style::set_refined(b);
                 self.list_rev += 1;
                 self.save_settings()
+            }
+            Message::ToggleChangelog => {
+                self.show_changelog = !self.show_changelog;
+                Task::none()
             }
             Message::ToggleCheckUpdates(b) => {
                 self.settings.check_updates = b;
@@ -1294,7 +1392,12 @@ impl App {
                 Task::none()
             }
             Message::CheckAll(all) => {
-                self.checked = if all { (0..self.results.len()).collect() } else { BTreeSet::new() };
+                // Charts already in your library are left out.
+                self.checked = if all {
+                    self.results.iter().enumerate().filter(|(_, c)| !self.in_library(c)).map(|(i, _)| i).collect()
+                } else {
+                    BTreeSet::new()
+                };
                 self.list_rev += 1;
                 Task::none()
             }
@@ -1430,6 +1533,7 @@ impl App {
                 Task::none()
             }
             Message::FindScores(md5) => self.find_scores(md5),
+            Message::FwRated(generation, md5, result) => self.fw_rated(generation, md5, result),
             Message::HashesFound(md5, result) => {
                 self.hashes.insert(md5, leaderboard::Hashes::Done(result));
                 self.load_board()
@@ -2067,7 +2171,9 @@ impl App {
 
     /// The header tick box: ticks every loaded result, or clears them all.
     pub fn check_all_box(&self) -> Element<'static, Message> {
-        let all = !self.results.is_empty() && self.checked.len() == self.results.len();
+        // "All" means every chart you don't already have (those can't be downloaded again from here).
+        let wanted: Vec<usize> = self.results.iter().enumerate().filter(|(_, c)| !self.in_library(c)).map(|(i, _)| i).collect();
+        let all = !wanted.is_empty() && wanted.iter().all(|i| self.checked.contains(i));
         checkbox(all).size(if style::refined() { 14 } else { 16 }).on_toggle(Message::CheckAll).into()
     }
 
@@ -2498,6 +2604,24 @@ impl App {
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
+                    {
+                        let frosted = backdrop::Backdrop::from_key(&self.settings.window_backdrop) == backdrop::Backdrop::Frosted;
+                        let pct = (self.settings.glass_transparency * 100.0).round() as u32;
+                        let mut amount = row![
+                            text("See-through").size(13),
+                            iced::widget::slider(0.1..=0.8, self.settings.glass_transparency, Message::GlassTransparency)
+                                .step(0.05_f32)
+                                .on_release(Message::SaveSettings)
+                                .width(220),
+                            text(format!("{pct}%")).size(12).width(40),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center);
+                        if !frosted {
+                            amount = amount.push(text("Turn on frosted glass to use this.").size(12));
+                        }
+                        amount
+                    },
                 ]
                 .spacing(12)
                 .into(),
@@ -2557,6 +2681,7 @@ impl App {
         column![
             r,
             toggler(self.settings.check_updates).label("Check for updates when Truss starts").on_toggle(Message::ToggleCheckUpdates),
+            changelog_view(self.show_changelog, &current),
         ]
         .spacing(10)
         .into()
@@ -2675,6 +2800,58 @@ impl App {
             })
             .into()
     }
+}
+
+/// Each version's notes from CHANGELOG.md (built into the app): (version, items), newest first.
+fn changelog() -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for line in include_str!("../CHANGELOG.md").lines() {
+        if let Some(v) = line.strip_prefix("## ") {
+            out.push((v.trim().to_string(), Vec::new()));
+        } else if let Some((_, items)) = out.last_mut() {
+            if let Some(item) = line.strip_prefix("- ") {
+                items.push(item.trim().to_string());
+            } else if line.starts_with("  ")
+                && let Some(last) = items.last_mut()
+            {
+                // A wrapped line of the item above.
+                last.push(' ');
+                last.push_str(line.trim());
+            }
+        }
+    }
+    for (_, items) in &mut out {
+        for i in items.iter_mut() {
+            *i = i.replace("**", "").replace('`', "");
+        }
+    }
+    out
+}
+
+/// Settings > Updates: a collapsible list of what changed in each version.
+fn changelog_view(open: bool, current: &str) -> Element<'static, Message> {
+    let toggle = button(text(format!("{} Changelog", if open { "\u{25be}" } else { "\u{25b8}" })).size(13))
+        .padding([4, 0])
+        .style(button::text)
+        .on_press(Message::ToggleChangelog);
+    if !open {
+        return toggle.into();
+    }
+    let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+    let mut list = column![].spacing(14);
+    for (version, items) in changelog() {
+        let this = version.trim_start_matches('v') == current.trim_start_matches('v');
+        let mut head = row![text(version.clone()).size(14).font(BOLD)].spacing(8).align_y(Alignment::Center);
+        if this {
+            head = head.push(text("(this version)").size(12).style(muted));
+        }
+        let mut block = column![head].spacing(4);
+        for item in items {
+            block = block.push(row![text("\u{2022}").size(12).style(muted), text(item).size(12)].spacing(6));
+        }
+        list = list.push(block);
+    }
+    column![toggle, container(list).padding(iced::Padding { left: 14.0, ..Default::default() })].spacing(8).into()
 }
 
 /// Settings > Credits: the projects Truss is ported from, uses, or is built with.

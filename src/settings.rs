@@ -48,6 +48,8 @@ pub struct Settings {
     pub show_fretwork: bool,
     /// Window transparency (beta): "off", "mica", "acrylic" or "clear". Applies on start.
     pub window_backdrop: String,
+    /// How see-through the window is with frosted glass on, 0.1 (barely) to 0.8 (very).
+    pub glass_transparency: f32,
 }
 
 impl Default for Settings {
@@ -77,6 +79,7 @@ impl Default for Settings {
             show_fretwork: true,
             // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
+            glass_transparency: 0.5,
         }
     }
 }

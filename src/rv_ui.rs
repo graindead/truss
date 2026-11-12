@@ -21,6 +21,10 @@ pub struct RvState {
     pub buffer: Vec<Arc<Chart>>,
     /// Chorus Encore results waiting to be interleaved by date (see `merging`).
     pub encore_buffer: Vec<Arc<Chart>>,
+    /// Why RhythmVerse charts are left out of the current Advanced search, if they are.
+    pub hidden_note: Option<String>,
+    /// Whose turn it is when undated RhythmVerse charts are mixed in (see `rv_undated`).
+    pub alternate: bool,
     /// Local catalogue status, and sync progress (page, pages) while one runs.
     pub catalog: rv_catalog::Status,
     pub syncing: Option<(u32, u32)>,
@@ -31,6 +35,15 @@ impl Default for rv_catalog::Status {
     fn default() -> Self {
         Self { charts: 0, ready: false, last_sync: None }
     }
+}
+
+/// RhythmVerse dates that don't say when a chart was uploaded: blank, or 3-6 November 2023,
+/// when ~45,000 charts (about half the list) all got the same few dates, apparently from a
+/// move to RhythmVerse's current site. Sorting by these would show tens of thousands of
+/// RhythmVerse charts in a row once the list reached that date.
+fn rv_undated(date: &str) -> bool {
+    let day = &date[..date.len().min(10)];
+    day.is_empty() || ("2023-11-03"..="2023-11-06").contains(&day)
 }
 
 /// Results per page when searching the local catalogue.
@@ -45,7 +58,22 @@ impl App {
 
     /// Starts the RhythmVerse part of a search (or the next page of it).
     pub fn rv_search(&mut self, append: bool) -> Task<Message> {
-        if !self.rv_enabled() || self.active_advanced.is_some() {
+        // Advanced search: RhythmVerse's chart list only has names, length, difficulties and
+        // dates, so it joins in only when every filter set is one it can answer.
+        let skip = match &self.active_advanced {
+            _ if !self.rv_enabled() => Some(None),
+            None => None,
+            Some(_) if self.fw.filter.is_some() => Some(Some("the Fretwork filter only works on Encore charts".to_string())),
+            Some(a) => match a.rv_unsupported() {
+                Some(what) => Some(Some(format!("{what} isn't available for them"))),
+                None if !self.rv.catalog.ready => Some(Some("their chart list hasn't finished copying yet".into())),
+                None => None,
+            },
+        };
+        if !append {
+            self.rv.hidden_note = skip.clone().flatten();
+        }
+        if skip.is_some() {
             if !append {
                 self.reset_rv_search(0);
             }
@@ -64,10 +92,11 @@ impl App {
         if self.rv.catalog.ready {
             // Instant local search once the catalogue has been copied.
             let (query, sort, inst, page) = (self.query.clone(), self.sort, self.instrument.key.map(String::from), self.rv.page);
+            let advanced = self.active_advanced.clone();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        rv_catalog::search(&query, sort, inst.as_deref(), page, LOCAL_PAGE)
+                        rv_catalog::search(&query, sort, inst.as_deref(), advanced.as_deref(), page, LOCAL_PAGE)
                             .map(|(charts, total)| RvPage { charts, total })
                     })
                     .await
@@ -95,6 +124,7 @@ impl App {
         self.rv.loading = false;
         self.rv.buffer.clear();
         self.rv.encore_buffer.clear();
+        self.rv.alternate = false;
     }
 
     /// Both sources list newest-first (blank search, default sort), so their results are
@@ -226,6 +256,11 @@ impl App {
         let mut out = Vec::new();
         loop {
             let take_rv = match (e.peek(), r.peek()) {
+                // Undated RhythmVerse charts take turns with Encore's instead of piling up.
+                (Some(_), Some(b)) if rv_undated(date(b)) => {
+                    self.rv.alternate = !self.rv.alternate;
+                    self.rv.alternate
+                }
                 (Some(a), Some(b)) => date(b) > date(a),
                 (Some(_), None) if rv_done => false,
                 (None, Some(_)) if encore_done => true,
@@ -347,5 +382,19 @@ impl App {
         }
         col = col.push(links.wrap().vertical_spacing(6));
         Some(col.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn undated_rhythmverse_dates() {
+        assert!(super::rv_undated(""));
+        assert!(super::rv_undated("2023-11-05T14:02:11"));
+        assert!(super::rv_undated("2023-11-03"));
+        assert!(super::rv_undated("2023-11-06T23:59:59"));
+        assert!(!super::rv_undated("2023-11-07T00:00:00"));
+        assert!(!super::rv_undated("2023-11-02T23:59:59"));
+        assert!(!super::rv_undated("2026-11-12T10:35:08"));
     }
 }

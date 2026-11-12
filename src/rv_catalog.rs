@@ -315,14 +315,54 @@ pub fn search(
     query: &str,
     sort: Option<Sort>,
     instrument: Option<&str>,
+    advanced: Option<&crate::api::AdvancedFilters>,
     page: u32,
     per_page: u32,
 ) -> Result<(Vec<Arc<Chart>>, u64), String> {
-    let words: Vec<String> = query.split_whitespace().map(|w| format!("%{}%", w.replace(['%', '_'], ""))).collect();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut param = |v: Box<dyn rusqlite::ToSql>| {
+        params.push(v);
+        params.len()
+    };
+    let like = |w: &str| format!("%{}%", w.replace(['%', '_'], ""));
     let mut sql_where = Vec::new();
-    for i in 0..words.len() {
-        let n = i + 1;
+    for w in query.split_whitespace() {
+        let n = param(Box::new(like(w)));
         sql_where.push(format!("(name LIKE ?{n} OR artist LIKE ?{n} OR album LIKE ?{n} OR charter LIKE ?{n})"));
+    }
+    if let Some(a) = advanced {
+        for (col, f) in [
+            ("name", &a.name),
+            ("artist", &a.artist),
+            ("album", &a.album),
+            ("genre", &a.genre),
+            ("year", &a.year),
+            ("charter", &a.charter),
+        ] {
+            if f.value.is_empty() {
+                continue;
+            }
+            let cond = if f.exact {
+                let n = param(Box::new(f.value.clone()));
+                format!("{col} = ?{n} COLLATE NOCASE")
+            } else {
+                let n = param(Box::new(like(&f.value)));
+                format!("{col} LIKE ?{n}")
+            };
+            sql_where.push(if f.exclude { format!("NOT IFNULL({cond}, 0)") } else { cond });
+        }
+        if let Some(m) = a.min_length {
+            let n = param(Box::new((m * 60_000.0) as i64));
+            sql_where.push(format!("length_ms >= ?{n}"));
+        }
+        if let Some(m) = a.max_length {
+            let n = param(Box::new((m * 60_000.0) as i64));
+            sql_where.push(format!("length_ms <= ?{n}"));
+        }
+        if !a.modified_after.is_empty() {
+            let n = param(Box::new(a.modified_after.clone()));
+            sql_where.push(format!("modified >= ?{n}"));
+        }
     }
     if let Some(col) = instrument.and_then(diff_column) {
         sql_where.push(format!("{col} > 0"));
@@ -343,7 +383,7 @@ pub fn search(
     };
     let offset = (page.saturating_sub(1) * per_page) as i64;
     with_db(|c| {
-        let params: Vec<&dyn rusqlite::ToSql> = words.iter().map(|w| w as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let total: i64 = c.query_row(&format!("SELECT COUNT(*) FROM charts {where_sql}"), params.as_slice(), |r| r.get(0))?;
         let mut stmt = c.prepare(&format!("SELECT * FROM charts {where_sql} ORDER BY {order} LIMIT {per_page} OFFSET {offset}"))?;
         let rows = stmt.query_map(params.as_slice(), row_to_chart)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -493,5 +533,32 @@ mod tests {
         let oldest = charts.last().and_then(|c| c.modified_time.clone());
         println!("newest {newest:?}, oldest on page {oldest:?}");
         assert!(newest >= oldest);
+    }
+}
+
+#[cfg(test)]
+mod adv_tests {
+    /// TRUSS_TEST_RV_ADV=1: Advanced filters against the local RhythmVerse list (read only).
+    #[test]
+    fn advanced_filters_on_local_list() {
+        if std::env::var("TRUSS_TEST_RV_ADV").is_err() {
+            return;
+        }
+        let mut a = crate::api::AdvancedFilters::default();
+        a.artist.value = "Metallica".into();
+        let (all, n_all) = super::search("", None, None, Some(&a), 1, 500).unwrap();
+        assert!(n_all > 0 && all.iter().all(|c| c.artist.as_deref().unwrap_or("").to_lowercase().contains("metallica")));
+        a.artist.exact = true;
+        let (exact, n_exact) = super::search("", None, None, Some(&a), 1, 500).unwrap();
+        assert!(n_exact <= n_all && exact.iter().all(|c| c.artist.as_deref().unwrap_or("").eq_ignore_ascii_case("metallica")));
+        a.min_length = Some(6.0);
+        let (long, _) = super::search("", None, None, Some(&a), 1, 500).unwrap();
+        assert!(long.iter().all(|c| c.song_length.unwrap_or(0) >= 360_000));
+        a.min_length = None;
+        a.name.value = "one".into();
+        a.name.exclude = true;
+        let (no_one, _) = super::search("", None, None, Some(&a), 1, 500).unwrap();
+        assert!(no_one.iter().all(|c| !c.name.as_deref().unwrap_or("").to_lowercase().contains("one")));
+        println!("metallica {n_all}, exact {n_exact}, long {}, without 'one' {}", long.len(), no_one.len());
     }
 }

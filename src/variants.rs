@@ -69,8 +69,30 @@ fn s(o: &Option<String>) -> String {
 
 impl App {
     fn status_line(&self) -> Option<String> {
+        self.status_base()
+    }
+
+    /// Why RhythmVerse charts are missing from the current Advanced search, if they are.
+    fn rv_hidden_banner(&self) -> Option<Element<'_, Message>> {
+        #[cfg(feature = "rhythmverse")]
+        if let Some(note) = self.rv.hidden_note.as_ref().filter(|_| self.active_advanced.is_some()) {
+            return Some(
+                container(text(format!("RhythmVerse charts aren't included: {note}.")).size(12).style(|t: &Theme| text::Style {
+                    color: Some(crate::style::muted(t)),
+                }))
+                .padding([6, 14])
+                .width(Length::Fill)
+                .into(),
+            );
+        }
+        None
+    }
+
+    fn status_base(&self) -> Option<String> {
         if let Some(e) = &self.error {
             Some(if e.starts_with("No chart sources") { e.clone() } else { format!("Error: {e}") })
+        } else if let Some(s) = self.fw_status() {
+            Some(s)
         } else if self.searching() {
             Some("Searching…".into())
         } else if self.results.is_empty() {
@@ -465,21 +487,24 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            (self.list_rev, crate::style::refined(), self.list_cols()),
+            (self.list_rev, crate::style::refined(), self.list_cols(), self.fw.checked),
         )
     }
 
     /// The results list for the current layout, rebuilt only when `results_key` changes.
     pub fn lazy_results(&self) -> Element<'_, Message> {
         // `lazy` doesn't report its child's size, so give it an explicit fill-sized box.
-        container(iced::widget::lazy(self.results_key(), move |_| match self.ui {
+        let list = container(iced::widget::lazy(self.results_key(), move |_| match self.ui {
             UiVariant::Grid => self.grid_results(),
             UiVariant::Compact => self.compact_results(),
             UiVariant::Hero => self.hero_results(),
             UiVariant::Default => self.list_results(),
         }))
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+        match self.rv_hidden_banner() {
+            Some(b) => column![b, list].width(Length::Fill).height(Length::Fill).into(),
+            None => list.into(),
+        }
     }
 }

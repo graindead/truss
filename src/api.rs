@@ -156,6 +156,38 @@ pub struct AdvancedFilters {
     pub modchart: Option<bool>,
 }
 
+impl AdvancedFilters {
+    /// The first filter RhythmVerse's chart list can't answer (it only has names, length,
+    /// difficulties and dates), for "RhythmVerse charts are hidden: … isn't available".
+    pub fn rv_unsupported(&self) -> Option<&'static str> {
+        let checks: [(bool, &'static str); 5] = [
+            (self.min_intensity.is_some() || self.max_intensity.is_some(), "Intensity"),
+            (self.min_average_nps.is_some() || self.max_average_nps.is_some(), "Average NPS"),
+            (self.min_max_nps.is_some() || self.max_max_nps.is_some(), "Max NPS"),
+            (!self.hash.is_empty(), "Hash"),
+            (
+                [
+                    self.has_solo_sections,
+                    self.has_forced_notes,
+                    self.has_open_notes,
+                    self.has_tap_notes,
+                    self.has_lyrics,
+                    self.has_vocals,
+                    self.has_roll_lanes,
+                    self.has_2x_kick,
+                    self.has_issues,
+                    self.has_video_background,
+                    self.modchart,
+                ]
+                .iter()
+                .any(|f| f.is_some()),
+                "Features",
+            ),
+        ];
+        checks.into_iter().find(|(set, _)| *set).map(|(_, name)| name)
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct AdvancedRequest<'a> {
     #[serde(flatten)]
@@ -518,21 +550,25 @@ async fn post_search(path: &str, body: &impl Serialize) -> Result<SearchResponse
 /// Downloads album art and decodes a small thumbnail off the UI thread.
 /// The full image is kept compressed (~50-150 KB) and decoded on demand only
 /// for the selected chart, instead of holding 1 MB of RGBA per result.
+/// The album art error meaning there is no (usable) cover, as opposed to a failed request.
+pub const ART_MISSING: &str = "no album art";
+
 pub async fn fetch_album_art(md5: String, thumb_px: u32) -> Result<(DecodedImage, bytes::Bytes), String> {
     // RhythmVerse results carry their album art's full address instead of an Encore hash.
     let url = if md5.starts_with("https://") { md5.clone() } else { format!("{FILES_URL}/{md5}.jpg") };
-    let bytes = CLIENT
+    let resp = CLIENT
         .get(url)
+        .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
         .map_err(|e| e.to_string())?;
+    if matches!(resp.status().as_u16(), 404 | 410) {
+        return Err(ART_MISSING.into());
+    }
+    let bytes = resp.error_for_status().map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
 
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        let img = image::load_from_memory(&bytes).map_err(|_| ART_MISSING.to_string())?;
         let thumb = img.thumbnail(thumb_px, thumb_px).to_rgba8();
         Ok((DecodedImage { width: thumb.width(), height: thumb.height(), rgba: thumb.into_raw() }, bytes))
     })
