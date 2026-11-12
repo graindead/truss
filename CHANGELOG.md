@@ -3,6 +3,14 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.8
+
+- **Sort the Library:** a Sort menu on the Library page (artist, song, charter, recently added,
+  oldest added) and an Added column with the date each chart arrived. Click Added to switch
+  between newest and oldest first. Your choice is remembered.
+- **Faster album art:** covers you've seen before are saved on your PC and show up instantly
+  at start-up, when you search again and when you scroll back, instead of downloading again.
+
 ## v0.1.7
 
 - **More Fretwork search filters** (Advanced search, Encore charts only): difficulty tier,
