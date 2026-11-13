@@ -435,13 +435,18 @@ impl Page {
                         }
                     })
                 };
-                let cell = |s: &str, p: u16| {
-                    container(text(s.to_string()).size(13).wrapping(text::Wrapping::None))
-                        .width(Length::FillPortion(p))
-                        .clip(true)
+                // `raw`: the song.ini text with its colour tags, when it has any.
+                let cell = |s: &str, raw: Option<&str>, p: u16| {
+                    let content: Element<'_, Msg> = match raw.filter(|r| crate::rich::is_styled(r)) {
+                        Some(r) => crate::rich::view(r, 13, iced::Font::DEFAULT, None),
+                        None => text(s.to_string()).size(13).wrapping(text::Wrapping::None).into(),
+                    };
+                    container(content).width(Length::FillPortion(p)).clip(true)
                 };
+                let tagged = c.tagged.as_deref();
+                let dupes = self.filter == Some(Filter::Duplicates);
                 let open = if c.is_sng() { c.path.parent().map(|p| p.to_path_buf()).unwrap_or_default() } else { c.path.clone() };
-                let song = if self.filter == Some(Filter::Duplicates) {
+                let song = if dupes {
                     // Show where each copy is, so you can tell them apart.
                     c.path
                         .parent()
@@ -454,9 +459,9 @@ impl Page {
                 button(
                     row![
                         text(if sel { "☑" } else { "☐" }).size(14).width(CHECK_W).center(),
-                        cell(&c.artist, 3),
-                        cell(&song, 4),
-                        cell(&c.charter, 2),
+                        cell(&c.artist, tagged.map(|t| t.artist.as_str()), 3),
+                        cell(&song, tagged.filter(|_| !dupes && !c.name.is_empty()).map(|t| t.name.as_str()), 4),
+                        cell(&c.charter, tagged.map(|t| t.charter.as_str()), 2),
                         text(added_date(c.added)).size(12).width(ADDED_W),
                         text(c.chart_type.label()).size(12).width(TYPE_W).center(),
                         mark(Some(c.has_album_art)),

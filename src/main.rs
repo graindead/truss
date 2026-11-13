@@ -3,6 +3,7 @@
 mod advanced;
 mod api;
 mod art_cache;
+mod rich;
 mod audio;
 mod chart;
 mod download;
@@ -280,6 +281,9 @@ struct App {
     confirm_delete: Option<String>,
     delete_error: Option<String>,
     library_scanning: bool,
+    /// Charts added to (path) or removed from (paths) the library while a scan was running.
+    /// The scan may have missed them, so they're applied again to its result.
+    library_changes: Vec<(String, Option<PathBuf>, Vec<PathBuf>)>,
     /// Every chart in the library folders (Library page and tools).
     catalog: Vec<Arc<library::LocalChart>>,
     /// Which local charts have lyrics; filled in the first time Library/Tools is opened.
@@ -359,6 +363,7 @@ enum Message {
     ToggleCheckUpdates(bool),
     ToggleRefined(bool),
     ToggleFretwork(bool),
+    ToggleTextColors(bool),
     BackdropPicked(backdrop::Backdrop),
     /// Dragging the see-through slider (applies live; saved on release).
     GlassTransparency(f32),
@@ -489,6 +494,7 @@ impl App {
     fn boot() -> (Self, Task<Message>) {
         let settings = Settings::load();
         style::set_refined(settings.refined_ui);
+        rich::set_enabled(settings.text_colors);
         let instrument_opts = instrument_opts();
         let difficulty_opts = difficulty_opts();
         let drum_type_opts = drum_type_opts();
@@ -516,6 +522,7 @@ impl App {
             delete_error: None,
             library_charts: 0,
             library_scanning: false,
+            library_changes: Vec::new(),
             catalog: Vec::new(),
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
@@ -709,6 +716,28 @@ impl App {
             return Some(leaderboard::Source::Local(p));
         }
         leaderboard::source(c)
+    }
+
+    /// Records a chart added to the library (`added`, replacing `removed`) or removed from it.
+    fn apply_library_change(&mut self, (key, added, removed): (String, Option<PathBuf>, Vec<PathBuf>)) {
+        if self.library_scanning {
+            self.library_changes.push((key.clone(), added.clone(), removed.clone()));
+        }
+        let entry = self.library.entry(key.clone()).or_default();
+        let before = entry.len();
+        entry.retain(|p| !removed.contains(p));
+        if let Some(p) = added
+            && !entry.contains(&p)
+        {
+            entry.push(p);
+        }
+        let after = entry.len();
+        if after == 0 {
+            self.library.remove(&key);
+        }
+        self.library_charts = (self.library_charts + after).saturating_sub(before);
+        self.catalog_stale = true;
+        self.list_rev += 1;
     }
 
     /// The library copies of a chart that may safely be removed.
@@ -1364,18 +1393,7 @@ impl App {
             }
             Message::Deleted(key, removed, r) => {
                 match r {
-                    Ok(()) => {
-                        if let Some(entry) = self.library.get_mut(&key) {
-                            let before = entry.len();
-                            entry.retain(|p| !removed.contains(p));
-                            self.library_charts -= before - entry.len();
-                            if entry.is_empty() {
-                                self.library.remove(&key);
-                            }
-                        }
-                        self.catalog_stale = true;
-                        self.list_rev += 1;
-                    }
+                    Ok(()) => self.apply_library_change((key, None, removed)),
                     Err(e) => self.delete_error = Some(e),
                 }
                 Task::none()
@@ -1437,6 +1455,12 @@ impl App {
             }
             // Settings are saved as they change, so there's nothing to flush first.
             Message::RestartForUpdate => updater::restart(),
+            Message::ToggleTextColors(b) => {
+                self.settings.text_colors = b;
+                rich::set_enabled(b);
+                self.list_rev += 1; // redraw the cached result rows
+                self.save_settings()
+            }
             Message::ToggleFretwork(b) => {
                 self.settings.show_fretwork = b;
                 self.save_settings()
@@ -1510,13 +1534,8 @@ impl App {
                                 Err(e) => DlStatus::Failed(e),
                             };
                             if let DlStatus::Done(dest) = &d.status {
-                                self.catalog_stale = true;
-                                let entry = self.library.entry(d.chart.library_key()).or_default();
-                                let before = entry.len();
-                                entry.retain(|p| !d.replace.contains(p));
-                                entry.push(dest.clone());
-                                self.library_charts = self.library_charts + entry.len() - before;
-                                self.list_rev += 1;
+                                let change = (d.chart.library_key(), Some(dest.clone()), d.replace.clone());
+                                self.apply_library_change(change);
                             }
                             return self.pump_downloads();
                         }
@@ -1677,6 +1696,18 @@ impl App {
                 self.library = lib.keys;
                 self.catalog = lib.catalog;
                 self.list_rev += 1;
+                // Downloads and deletions that finished during the scan may be missing from it.
+                for (key, added, removed) in std::mem::take(&mut self.library_changes) {
+                    if added.as_ref().is_some_and(|p| !p.exists()) || removed.iter().any(|p| p.exists() && Some(p) != added.as_ref()) {
+                        continue; // undone since (or the scan already saw it)
+                    }
+                    let entry = self.library.get(&key);
+                    let seen = added.as_ref().is_none_or(|p| entry.is_some_and(|e| e.contains(p)))
+                        && removed.iter().all(|p| entry.is_none_or(|e| !e.contains(p)));
+                    if !seen {
+                        self.apply_library_change((key, added, removed));
+                    }
+                }
                 self.refresh_pages();
                 if matches!(self.screen, Screen::Library | Screen::Tools) || !self.lyrics_map.is_empty() {
                     return self.scan_lyrics();
@@ -2201,12 +2232,9 @@ impl App {
         let selected = self.selected == Some(i);
         let checked = self.checked.contains(&i);
         let owned = self.in_library(c);
-        let cell = |s: String, w: Length, quiet: bool| {
-            let t = text(s).size(if quiet { 13 } else { 14 }).wrapping(text::Wrapping::None);
-            let t = if quiet { t.style(|th: &Theme| text::Style { color: Some(style::muted(th)) }) } else { t };
-            container(t).width(w).clip(true)
+        let cell = |v: &Option<String>, w: Length, quiet: bool| {
+            container(tagged(v.as_deref().unwrap_or(""), if quiet { 13 } else { 14 }, quiet)).width(w).clip(true)
         };
-        let s = |o: &Option<String>| o.as_deref().map(strip_tags).unwrap_or_default();
         let thumb: Element<_> = match c.album_art_md5.as_ref().and_then(|m| self.art.get(m)) {
             Some(Art::Ready { thumb, .. }) => image(thumb.clone()).width(40).height(40).into(),
             _ => container(space())
@@ -2218,7 +2246,7 @@ impl App {
         let name: Element<_> = row![]
             .push(owned.then(library_mark))
             .push(c.is_rv().then(rv_tag))
-            .push(cell(s(&c.name), Length::Fill, false))
+            .push(cell(&c.name, Length::Fill, false))
             .spacing(6)
             .align_y(Alignment::Center)
             .width(Length::FillPortion(4))
@@ -2235,10 +2263,10 @@ impl App {
                 container(self.check_box(i)).width(20).center_x(20),
                 thumb,
                 name,
-                cell(s(&c.artist), Length::FillPortion(3), false),
+                cell(&c.artist, Length::FillPortion(3), false),
             ]
-            .push((self.list_cols() < 1).then(|| cell(s(&c.album), Length::FillPortion(3), true)))
-            .push((self.list_cols() < 2).then(|| cell(s(&c.charter), Length::FillPortion(2), true)))
+            .push((self.list_cols() < 1).then(|| cell(&c.album, Length::FillPortion(3), true)))
+            .push((self.list_cols() < 2).then(|| cell(&c.charter, Length::FillPortion(2), true)))
             .push(
                 container(text(c.length_str()).size(13).style(|th: &Theme| text::Style { color: Some(style::muted(th)) }))
                     .width(56)
@@ -2275,7 +2303,7 @@ impl App {
         let checked = self.checked.contains(&i);
         let owned = self.in_library(c);
         let cell = |s: &Option<String>, portion: u16| {
-            container(text(s.as_deref().map(strip_tags).unwrap_or_default()).size(14).wrapping(text::Wrapping::None))
+            container(tagged(s.as_deref().unwrap_or(""), 14, false))
                 .width(Length::FillPortion(portion))
                 .clip(true)
         };
@@ -2366,16 +2394,17 @@ impl App {
                 .into(),
         };
 
-        let s = |o: &Option<String>| o.as_deref().map(strip_tags).unwrap_or_default();
+        // Raw values keep their colour tags; the widgets below draw them.
+        let raw = |o: &Option<String>| o.clone().unwrap_or_default();
         let meta_line = |label: &'static str, v: String, link: bool| -> Element<'_, Message> {
-            if v.is_empty() {
+            if strip_tags(&v).is_empty() {
                 space().into()
             } else {
                 row![
                     text(label).size(13).width(58).style(|t: &Theme| text::Style {
                         color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
                     }),
-                    if link { search_link(v, 13) } else { text(v).size(13).into() },
+                    if link { search_link(v, 13) } else { tagged(&v, 13, false) },
                 ]
                     .spacing(8)
                     .into()
@@ -2536,16 +2565,16 @@ impl App {
             column![
                 art,
                 column![
-                    text(s(&c.name)).font(if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }).size(19),
-                    search_link(s(&c.artist), 15),
+                    container(rich::view(c.name.as_deref().unwrap_or(""), 19, if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }, None)).clip(true),
+                    search_link(raw(&c.artist), 15),
                 ]
                 .spacing(2),
                 column![
-                    meta_line("Album", s(&c.album), true),
-                    meta_line("Genre", s(&c.genre), true),
-                    meta_line("Charter", s(&c.charter), true),
+                    meta_line("Album", raw(&c.album), true),
+                    meta_line("Genre", raw(&c.genre), true),
+                    meta_line("Charter", raw(&c.charter), true),
                     row![
-                        container(meta_line("Year", s(&c.year), true)).width(Length::Fill),
+                        container(meta_line("Year", raw(&c.year), true)).width(Length::Fill),
                         container(meta_line("Length", c.length_str(), false)).width(Length::Fill),
                     ]
                     .spacing(10),
@@ -2676,6 +2705,9 @@ impl App {
                     toggler(self.settings.show_fretwork)
                         .label("Show Fretwork difficulty tiers next to difficulties (otherwise hover a difficulty to see them)")
                         .on_toggle(Message::ToggleFretwork),
+                    toggler(self.settings.text_colors)
+                        .label("Show coloured song names, artists and charters (as charters styled them for Clone Hero)")
+                        .on_toggle(Message::ToggleTextColors),
                     row![
                         text("Transparency (beta)").size(13),
                         pick_list(
@@ -3006,9 +3038,22 @@ fn credits_section() -> Element<'static, Message> {
 }
 
 /// Text in the details that searches for itself when clicked (artist, charter, genre…).
+/// Text that may carry colour tags: drawn styled when it has any, else plain (`quiet`: muted).
+fn tagged<'a>(v: &str, size: u32, quiet: bool) -> Element<'a, Message> {
+    if rich::is_styled(v) {
+        return rich::view(v, size, Font::DEFAULT, None);
+    }
+    let t = text(strip_tags(v)).size(size).wrapping(text::Wrapping::None);
+    if quiet { t.style(|th: &Theme| text::Style { color: Some(style::muted(th)) }).into() } else { t.into() }
+}
+
+/// A value that searches for itself when clicked. `v` may carry colour tags (searched without).
 fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
     let refined = style::refined();
-    button(text(v.clone()).size(size))
+    let content: Element<'a, Message> =
+        if rich::is_styled(&v) { rich::view(&v, size, Font::DEFAULT, None) } else { text(strip_tags(&v)).size(size).into() };
+    let v = strip_tags(&v);
+    button(content)
         .padding(0)
         .style(move |t: &Theme, st| button::Style {
             background: None,

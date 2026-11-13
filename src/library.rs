@@ -29,6 +29,14 @@ impl ChartType {
     }
 }
 
+/// Tagged originals of a library chart's text (see `LocalChart::tagged`).
+#[derive(Debug, Clone)]
+pub struct Tagged {
+    pub name: String,
+    pub artist: String,
+    pub charter: String,
+}
+
 /// One chart in the user's library.
 #[derive(Debug, Clone)]
 pub struct LocalChart {
@@ -40,6 +48,9 @@ pub struct LocalChart {
     pub genre: String,
     pub year: String,
     pub charter: String,
+    /// The name, artist and charter as written in song.ini, kept only when one of them has
+    /// colour/formatting tags (drawn styled on the Library page).
+    pub tagged: Option<Box<Tagged>>,
     /// Raw (un-stripped) artist|name|charter key.
     pub key: String,
     pub song_length_ms: u64,
@@ -251,6 +262,9 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         genre: clean(get("genre")),
         year: clean(get("year")),
         charter: clean(charter),
+        tagged: [get("name"), get("artist"), charter].iter().any(|v| v.contains('<')).then(|| {
+            Box::new(Tagged { name: get("name").to_string(), artist: get("artist").to_string(), charter: charter.to_string() })
+        }),
         song_length_ms: get("song_length").trim().parse::<f64>().map(|v| v.max(0.0) as u64).unwrap_or(0),
         chart_type: a.chart_type,
         chart_file: a.chart_file,

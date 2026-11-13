@@ -3,6 +3,15 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.10
+
+- **Coloured names:** song names, artists and charters show the colours and bold/italic that
+  charters gave them for Clone Hero (on the Library page, and wherever a chart's own text has
+  them). Turn it off in Settings.
+- **Runs on any Windows PC:** Truss no longer needs the Visual C++ Redistributable installed.
+- Fixed charts losing their "in your library" tick when they finished downloading while Truss
+  was still scanning the library at start-up.
+
 ## v0.1.9
 
 - **Sharper chart preview:** the whole fret row fits with room to spare, the highway and notes

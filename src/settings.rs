@@ -48,6 +48,8 @@ pub struct Settings {
     pub library_sort: String,
     /// Show Fretwork tiers beside the difficulties (they're always on hover).
     pub show_fretwork: bool,
+    /// Draw the colours and bold/italic tags in song names, artists and charters.
+    pub text_colors: bool,
     /// Window transparency (beta): "off", "mica", "acrylic" or "clear". Applies on start.
     pub window_backdrop: String,
     /// How see-through the window is with frosted glass on, 0.1 (barely) to 0.8 (very).
@@ -80,6 +82,7 @@ impl Default for Settings {
             show_leaderboard: false,
             library_sort: String::new(),
             show_fretwork: true,
+            text_colors: true,
             // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
             glass_transparency: 0.5,
@@ -161,6 +164,6 @@ mod tests {
         assert_eq!(s.window_backdrop, "frosted");
         // A settings file from an older version keeps its values; only missing ones get defaults.
         let old: Settings = serde_json::from_str(r#"{"refined_ui": false, "download_videos": true}"#).unwrap();
-        assert!(!old.refined_ui && old.download_videos && old.show_fretwork);
+        assert!(!old.refined_ui && old.download_videos && old.show_fretwork && old.text_colors);
     }
 }
