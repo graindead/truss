@@ -131,7 +131,7 @@ impl App {
             if self.fw.ratings.contains_key(&c.md5) || !self.fw.started.insert(c.md5.clone()) {
                 continue;
             }
-            let Some(src) = leaderboard::source(c) else {
+            let Some(src) = self.chart_source(c) else {
                 self.fw.ratings.insert(c.md5.clone(), None);
                 self.fw.checked += 1;
                 continue;

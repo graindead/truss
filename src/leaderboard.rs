@@ -34,12 +34,14 @@ pub enum Source {
     Encore(String),
     #[cfg(feature = "rhythmverse")]
     RhythmVerse(std::sync::Arc<crate::rhythmverse::RvFile>),
+    /// A chart folder or .sng already on this computer (only read).
+    Local(std::path::PathBuf),
 }
 
 impl Source {
     /// RhythmVerse charts can mean downloading a whole archive, so they wait for a click.
     pub fn is_cheap(&self) -> bool {
-        matches!(self, Source::Encore(_))
+        matches!(self, Source::Encore(_) | Source::Local(_))
     }
 }
 
@@ -68,12 +70,44 @@ pub async fn compute(src: Source) -> Result<Computed, String> {
             let (meta, files) = crate::sng::fetch_remote_notes(&url).await?;
             tokio::task::spawn_blocking(move || crate::trackhash::hash_files(&files, Some(&meta))).await.map_err(|e| e.to_string())?
         }
+        Source::Local(path) => tokio::task::spawn_blocking(move || {
+            let (files, meta) = local_note_files(&path)?;
+            crate::trackhash::hash_files(&files, meta.as_deref())
+        })
+        .await
+        .map_err(|e| e.to_string())?,
         #[cfg(feature = "rhythmverse")]
         Source::RhythmVerse(rv) => {
             let files = crate::rhythmverse::fetch_note_files(&rv).await?;
             tokio::task::spawn_blocking(move || crate::trackhash::hash_files(&files, None)).await.map_err(|e| e.to_string())?
         }
     }
+}
+
+type NoteFiles = (Vec<(String, Vec<u8>)>, Option<Vec<(String, String)>>);
+
+/// The notes and song.ini of a chart on disk: a folder's files, or a .sng's entries and metadata.
+fn local_note_files(path: &std::path::Path) -> Result<NoteFiles, String> {
+    let wanted = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        l.ends_with(".chart") || l.ends_with(".mid") || l.ends_with(".ini")
+    };
+    if path.is_dir() {
+        let mut files = Vec::new();
+        for e in std::fs::read_dir(path).map_err(|e| e.to_string())?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.file_type().is_ok_and(|t| t.is_file()) && wanted(&name) {
+                files.push((name, std::fs::read(e.path()).map_err(|e| e.to_string())?));
+            }
+        }
+        return Ok((files, None));
+    }
+    let idx = crate::sng::read_index(path)?;
+    let mut files = Vec::new();
+    for f in idx.files.iter().filter(|f| wanted(&f.name)) {
+        files.push((f.name.clone(), crate::sng::read_entry(path, &idx, f)?));
+    }
+    Ok((files, Some(idx.metadata.clone())))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -218,6 +252,22 @@ async fn top_for(hash: &str, track: &Track) -> Result<Board, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_notes_from_a_local_folder() {
+        let d = std::env::temp_dir().join(format!("truss-local-notes-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for (n, b) in [("notes.chart", &b"[Song]"[..]), ("song.ini", b"[song]"), ("guitar.ogg", b"OggS"), ("album.png", b"x")] {
+            std::fs::write(d.join(n), b).unwrap();
+        }
+        let (files, meta) = local_note_files(&d).unwrap();
+        let mut names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["notes.chart", "song.ini"]);
+        assert!(meta.is_none());
+        assert!(Source::Local(d.clone()).is_cheap());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 
     /// Metallica - Enter Sandman (oBLINKxONCEo), lead guitar on Expert.
     #[tokio::test]

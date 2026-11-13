@@ -690,6 +690,27 @@ impl App {
         !self.library.is_empty() && self.library.get(&c.library_key()).is_some_and(|p| !p.is_empty())
     }
 
+    /// A copy of the chart already on this computer (in the library), to read instead of
+    /// downloading it again for previews, leaderboards and Fretwork ratings.
+    pub fn library_copy(&self, c: &Chart) -> Option<PathBuf> {
+        self.library.get(&c.library_key())?.first().cloned()
+    }
+
+    /// Where to read a chart's notes from: the library copy, then (RhythmVerse) a copy kept from
+    /// an earlier preview, then the internet.
+    pub fn chart_source(&self, c: &Chart) -> Option<leaderboard::Source> {
+        if let Some(p) = self.library_copy(c) {
+            return Some(leaderboard::Source::Local(p));
+        }
+        #[cfg(feature = "rhythmverse")]
+        if c.is_rv()
+            && let Some(p) = crate::preview::rv_cache::any_cached(c)
+        {
+            return Some(leaderboard::Source::Local(p));
+        }
+        leaderboard::source(c)
+    }
+
     /// The library copies of a chart that may safely be removed.
     pub fn library_paths(&self, c: &Chart) -> Vec<PathBuf> {
         let roots = self.settings.all_library_folders();
@@ -1522,12 +1543,14 @@ impl App {
                     return Task::none();
                 }
                 let save = self.close_preview();
+                let local = self.library_copy(&chart);
                 let (panel, task) = preview_panel::Panel::open(
                     chart,
                     self.instrument.key.map(String::from),
                     self.difficulty.key.map(String::from),
                     self.settings.preview_volume,
                     self.settings.download_videos,
+                    local,
                 );
                 self.preview = Some(panel);
                 self.screen = Screen::Browse;
@@ -2331,7 +2354,7 @@ impl App {
         let art: Element<_> = match (&self.preview, c.album_art_md5.as_ref().and_then(|m| self.art.get(m))) {
             // The preview replaces the album art while it's open.
             (Some(p), _) if p.md5 == c.md5 => {
-                p.view(if p.expanded() { 500.0 } else { 328.0 }).map(Message::Preview)
+                p.view(if p.expanded() { 500.0 } else { 296.0 }).map(Message::Preview)
             }
             (_, Some(Art::Ready { full: Some(full), .. })) => sized_art(full.clone()),
             (_, Some(Art::Ready { thumb, .. })) => sized_art(thumb.clone()),

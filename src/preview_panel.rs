@@ -82,6 +82,7 @@ impl Panel {
         pref_difficulty: Option<String>,
         volume: f32,
         keep_video: bool,
+        local: Option<std::path::PathBuf>,
     ) -> (Self, Task<Msg>) {
         let title = format!(
             "{} — {}",
@@ -90,7 +91,7 @@ impl Panel {
         );
         // Fetch textures for the likely instrument while the chart downloads.
         let guess = instrument_type(pref_instrument.as_deref().unwrap_or("guitar"));
-        let (load_task, load_handle) = Task::run(load(chart.clone(), keep_video), Msg::Load).abortable();
+        let (load_task, load_handle) = Task::run(load(chart.clone(), keep_video, local), Msg::Load).abortable();
         let tex = Task::perform(crate::textures::get(guess), move |r| Msg::Textures(guess, r));
         let panel = Self {
             md5: chart.md5.clone(),
@@ -302,10 +303,24 @@ impl Panel {
             .into(),
             _ => center(text("Loading graphics…").size(13)).into(),
         };
-        let stage = container(stage)
-            .width(Length::Fill)
-            .height(stage_height)
-            .style(|_: &Theme| container::Style { background: Some(Color::BLACK.into()), ..Default::default() });
+        // The border goes on top of the canvas, so the highway can't cover it.
+        let outline = |color: Color| {
+            move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                border: iced::Border {
+                    radius: crate::preview::STAGE_RADIUS.into(),
+                    width: 1.0,
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                },
+                ..Default::default()
+            }
+        };
+        let stage = iced::widget::stack![
+            container(stage).width(Length::Fill).height(Length::Fill).style(outline(Color::BLACK)),
+            container(iced::widget::space()).width(Length::Fill).height(Length::Fill).style(outline(Color::TRANSPARENT)),
+        ]
+        .width(Length::Fill)
+        .height(stage_height);
 
         let small = |label: &'static str, msg: Msg| {
             button(text(label).size(12)).padding([4, 8]).style(crate::style::secondary).on_press(msg)

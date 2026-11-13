@@ -9,16 +9,75 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 const BASE_URL: &str = "https://static.enchor.us";
-/// Highway texture is pre-sliced into this many row strips for perspective drawing.
-pub const HIGHWAY_STRIPS: usize = 256;
+/// Smallest width kept when making the smaller copies of a texture.
+const MIN_MIP_WIDTH: u32 = 8;
 
 pub const SP_FLAG: u32 = 1 << 31;
 pub const BARRE1: u8 = 101;
 pub const BARRE2: u8 = 102;
 pub const BARRE3: u8 = 103;
 
+/// One image at several sizes (each half the one before), so it can be drawn small without the
+/// shimmer and grain of squeezing a big image into a few pixels.
+pub struct Mips {
+    /// Width and height of each level, largest first.
+    sizes: Vec<(u32, u32)>,
+    handles: Vec<Handle>,
+}
+
+impl Mips {
+    pub fn new(img: image::RgbaImage) -> Self {
+        let mut sizes = Vec::new();
+        let mut handles = Vec::new();
+        for level in mip_chain(img) {
+            sizes.push(level.dimensions());
+            handles.push(Handle::from_rgba(level.width(), level.height(), level.into_raw()));
+        }
+        Self { sizes, handles }
+    }
+
+    /// The smallest copy that is still at least `px` wide.
+    pub fn pick(&self, px: f32) -> &Handle {
+        let i = self.sizes.iter().rposition(|&(w, _)| w as f32 >= px).unwrap_or(0);
+        &self.handles[i]
+    }
+}
+
+/// Halves an image repeatedly (in premultiplied alpha, so transparent edges don't darken).
+fn mip_chain(img: image::RgbaImage) -> Vec<image::RgbaImage> {
+    let mut out = vec![img];
+    loop {
+        let last = out.last().unwrap();
+        let (w, h) = (last.width() / 2, last.height() / 2);
+        if w < MIN_MIP_WIDTH || h == 0 {
+            break;
+        }
+        let next = shrink(last, w, h);
+        out.push(next);
+    }
+    out
+}
+
+/// Area-averaged resize with premultiplied alpha.
+pub fn shrink(img: &image::RgbaImage, w: u32, h: u32) -> image::RgbaImage {
+    let mut pre = image::Rgba32FImage::new(img.width(), img.height());
+    for (d, s) in pre.pixels_mut().zip(img.pixels()) {
+        let a = s[3] as f32 / 255.0;
+        let k = a / 255.0; // the resizer works in 0..1
+        *d = image::Rgba([s[0] as f32 * k, s[1] as f32 * k, s[2] as f32 * k, a]);
+    }
+    let small = image::imageops::resize(&pre, w, h, image::imageops::FilterType::Triangle);
+    let mut out = image::RgbaImage::new(w, h);
+    for (d, s) in out.pixels_mut().zip(small.pixels()) {
+        let a = s[3].clamp(0.0, 1.0);
+        let c = |v: f32| if a > 0.0 { (v / a * 255.0).round().clamp(0.0, 255.0) as u8 } else { 0 };
+        *d = image::Rgba([c(s[0]), c(s[1]), c(s[2]), (a * 255.0).round() as u8]);
+    }
+    out
+}
+
 pub struct AnimTexture {
-    pub frames: Vec<Handle>,
+    pub frames: Vec<Mips>,
     /// Cumulative end time of each frame in ms.
     pub frame_ends: Vec<u32>,
     pub total_ms: u32,
@@ -26,7 +85,7 @@ pub struct AnimTexture {
 }
 
 impl AnimTexture {
-    pub fn frame(&self, t_ms: u64) -> &Handle {
+    pub fn frame(&self, t_ms: u64) -> &Mips {
         if self.frames.len() <= 1 || self.total_ms == 0 {
             return &self.frames[0];
         }
@@ -46,10 +105,19 @@ pub struct TextureSet {
     /// Small solid-colour images for sustains, keyed by 0xRRGGBB.
     pub solid: HashMap<u32, Handle>,
     pub itype: InstrumentType,
-    pub highway: Vec<Handle>,
-    pub strikeline: Handle,
+    /// The highway texture at several sizes, each cut into one-pixel rows (repeated three times
+    /// so smooth sampling never picks up a neighbouring row).
+    pub highway: Vec<HighwayLevel>,
+    pub strikeline: Mips,
+    /// Vertical black-to-clear gradient for fading out the far end of the highway.
+    pub fade: Handle,
     pub strikeline_aspect: f32,
     pub notes: HashMap<(u8, u32), Arc<AnimTexture>>,
+}
+
+pub struct HighwayLevel {
+    pub width: u32,
+    pub rows: Vec<Handle>,
 }
 
 impl TextureSet {
@@ -174,12 +242,12 @@ fn decode_anim(bytes: &[u8]) -> Result<AnimTexture, String> {
             frame_ends.push(total);
             let buf = f.into_buffer();
             aspect = buf.width() as f32 / buf.height() as f32;
-            frames.push(Handle::from_rgba(buf.width(), buf.height(), buf.into_raw()));
+            frames.push(Mips::new(buf));
         }
     } else {
         let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();
         aspect = img.width() as f32 / img.height() as f32;
-        frames.push(Handle::from_rgba(img.width(), img.height(), img.into_raw()));
+        frames.push(Mips::new(img));
         frame_ends.push(0);
     }
     if frames.is_empty() {
@@ -250,19 +318,24 @@ async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
         }
 
         let hw = image::load_from_memory(&raw["preview-highway.png"]).map_err(|e| e.to_string())?.to_rgba8();
-        let (w, h) = (hw.width(), hw.height());
-        let rows_per = (h as usize / HIGHWAY_STRIPS).max(1);
-        let highway = (0..HIGHWAY_STRIPS)
-            .map(|i| {
-                let y = (i * rows_per).min(h as usize - rows_per) as u32;
-                let strip = image::imageops::crop_imm(&hw, 0, y, w, rows_per as u32).to_image();
-                Handle::from_rgba(w, rows_per as u32, strip.into_raw())
+        let highway = mip_chain(hw)
+            .into_iter()
+            .map(|level| {
+                let w = level.width();
+                let rows = level
+                    .rows()
+                    .map(|row| {
+                        let line: Vec<u8> = row.flat_map(|p| p.0).collect();
+                        Handle::from_rgba(w, 3, line.repeat(3))
+                    })
+                    .collect();
+                HighwayLevel { width: w, rows }
             })
             .collect();
 
         let sl = image::load_from_memory(&raw[strikeline]).map_err(|e| e.to_string())?.to_rgba8();
         let strikeline_aspect = sl.width() as f32 / sl.height() as f32;
-        let strikeline = Handle::from_rgba(sl.width(), sl.height(), sl.into_raw());
+        let strikeline = Mips::new(sl);
 
         let solid = crate::preview::SUSTAIN_HEXES
             .iter()
@@ -272,8 +345,36 @@ async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
             })
             .collect();
 
-        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, notes }))
+        let fade_px: Vec<u8> = (0..64u32)
+            .flat_map(|i| {
+                let t = i as f32 / 63.0;
+                // Smooth ease so the fade has no visible edge.
+                let a = 1.0 - t * t * (3.0 - 2.0 * t);
+                [0, 0, 0, (a * 255.0).round() as u8]
+            })
+            .collect();
+        let fade = Handle::from_rgba(1, 64, fade_px);
+
+        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, fade, notes }))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shrinking_keeps_colours() {
+        // Left half opaque red, right half fully transparent black: the red must stay red
+        // (not darkened by the transparent pixels) and the image must not come out black.
+        let img = image::RgbaImage::from_fn(16, 8, |x, _| if x < 8 { image::Rgba([200, 20, 20, 255]) } else { image::Rgba([0, 0, 0, 0]) });
+        let small = shrink(&img, 8, 4);
+        let p = small.get_pixel(1, 1);
+        assert_eq!((p[0], p[1], p[2], p[3]), (200, 20, 20, 255));
+        let edge = small.get_pixel(4, 1);
+        assert!(edge[3] > 0 && edge[3] < 255 && edge[0] >= 195, "{edge:?}");
+        assert_eq!(mip_chain(img).iter().map(|m| m.width()).collect::<Vec<_>>(), [16, 8]);
+    }
 }
