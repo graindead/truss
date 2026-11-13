@@ -284,6 +284,10 @@ struct App {
     /// Charts added to (path) or removed from (paths) the library while a scan was running.
     /// The scan may have missed them, so they're applied again to its result.
     library_changes: Vec<(String, Option<PathBuf>, Vec<PathBuf>)>,
+    /// Charts found so far by the running library scan, and how many the last scan found.
+    library_scan_found: usize,
+    library_scan_expected: Option<usize>,
+    library_scan_handle: Option<iced::task::Handle>,
     /// Every chart in the library folders (Library page and tools).
     catalog: Vec<Arc<library::LocalChart>>,
     /// Which local charts have lyrics; filled in the first time Library/Tools is opened.
@@ -376,7 +380,7 @@ enum Message {
     Deleted(String, Vec<PathBuf>, Result<(), String>),
     CopyText(String),
     OpenUrl(String),
-    LibraryScanned(Arc<library::Library>),
+    LibraryScan(library::ScanEvent),
     #[cfg(feature = "rhythmverse")]
     RvDone { generation: u64, append: bool, result: Result<Arc<rhythmverse::RvPage>, String> },
     #[cfg(feature = "rhythmverse")]
@@ -523,6 +527,9 @@ impl App {
             library_charts: 0,
             library_scanning: false,
             library_changes: Vec::new(),
+            library_scan_found: 0,
+            library_scan_expected: None,
+            library_scan_handle: None,
             catalog: Vec::new(),
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
@@ -679,8 +686,18 @@ impl App {
             self.list_rev += 1;
             return Task::none();
         }
+        // A rescan replaces any scan still running.
+        if let Some(h) = self.library_scan_handle.take() {
+            h.abort();
+        }
         self.library_scanning = true;
-        Task::perform(library::scan(folders), Message::LibraryScanned)
+        self.library_scan_found = 0;
+        self.library_scan_expected = (self.library_charts > 0).then_some(self.library_charts);
+        // Show the library saved by the last scan while this one runs (at start-up).
+        let use_cache = self.catalog.is_empty() && self.library.is_empty();
+        let (task, handle) = Task::run(library::scan(folders, use_cache), Message::LibraryScan).abortable();
+        self.library_scan_handle = Some(handle);
+        task
     }
 
     /// Encore charts always; RhythmVerse charts when Truss can download them.
@@ -1688,7 +1705,30 @@ impl App {
                 let sync = if b { self.rv_auto_sync() } else { Task::none() };
                 Task::batch([self.save_settings(), self.search(false), sync])
             }
-            Message::LibraryScanned(lib) => {
+            Message::LibraryScan(library::ScanEvent::Found(n)) => {
+                self.library_scan_found = n;
+                Task::none()
+            }
+            Message::LibraryScan(library::ScanEvent::Cached(lib)) => {
+                if !self.library_scanning || !self.catalog.is_empty() {
+                    return Task::none();
+                }
+                let lib = Arc::unwrap_or_clone(lib);
+                self.library_scan_expected = Some(lib.charts);
+                self.library_charts = lib.charts;
+                self.library = lib.keys;
+                self.catalog = lib.catalog;
+                // Downloads and deletions since start-up are replayed onto the cached library.
+                // (Each is recorded again for the scan's result.)
+                for change in std::mem::take(&mut self.library_changes) {
+                    self.apply_library_change(change);
+                }
+                self.list_rev += 1;
+                self.refresh_pages();
+                Task::none()
+            }
+            Message::LibraryScan(library::ScanEvent::Done(lib)) => {
+                self.library_scan_handle = None;
                 self.library_scanning = false;
                 self.catalog_stale = false;
                 let lib = Arc::unwrap_or_clone(lib);
@@ -2616,7 +2656,7 @@ impl App {
             );
         }
         let lib_status = if self.library_scanning {
-            "Scanning your library…".to_string()
+            format!("Scanning your library… {} charts found so far.", self.library_scan_found)
         } else if folders.is_empty() {
             String::new()
         } else {
@@ -2833,6 +2873,20 @@ impl App {
             text(summary).size(13),
             space().width(Length::Fill),
         ]
+        .extend(self.library_scanning.then(|| -> Element<'_, Message> {
+            let found = self.library_scan_found;
+            let label = match self.library_scan_expected {
+                Some(n) => format!("Scanning library… {} / {}", thousands(found), thousands(n)),
+                None => format!("Scanning library… {} charts", thousands(found)),
+            };
+            // Without a previous count the total is unknown: the bar fills towards double what's
+            // been found so far, so it keeps moving without claiming to be nearly done.
+            let total = self.library_scan_expected.unwrap_or(found * 2).max(found).max(1);
+            row![text(label).size(12), progress_bar(0.0..=total as f32, found as f32).length(140).girth(6)]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into()
+        }))
         .extend((!self.checked.is_empty()).then(|| -> Element<'_, Message> {
             let n = self.checked.len();
             row![
@@ -3089,4 +3143,17 @@ mod tests {
             ::image::RgbaImage::from_raw(w, h, px).unwrap().save(format!("{dir}/icon-{t}.png")).unwrap();
         }
     }
+}
+
+/// 30987 -> "30,987".
+fn thousands(n: usize) -> String {
+    let d = n.to_string();
+    let mut out = String::new();
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }

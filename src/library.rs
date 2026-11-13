@@ -5,12 +5,15 @@
 use crate::api::library_key;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use futures::{SinkExt, channel::mpsc::Sender};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Worker threads for reading folders.
 const THREADS: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChartType {
     Chart,
     Mid,
@@ -30,7 +33,7 @@ impl ChartType {
 }
 
 /// Tagged originals of a library chart's text (see `LocalChart::tagged`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tagged {
     pub name: String,
     pub artist: String,
@@ -38,7 +41,7 @@ pub struct Tagged {
 }
 
 /// One chart in the user's library.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalChart {
     /// Chart folder, or the .sng file.
     pub path: PathBuf,
@@ -95,11 +98,102 @@ pub struct Library {
     pub catalog: Vec<Arc<LocalChart>>,
 }
 
-pub async fn scan(folders: Vec<PathBuf>) -> Arc<Library> {
-    tokio::task::spawn_blocking(move || Arc::new(scan_blocking(&folders))).await.unwrap_or_default()
+impl Library {
+    fn from_catalog(catalog: Vec<Arc<LocalChart>>) -> Self {
+        let mut keys: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for c in &catalog {
+            keys.entry(c.key.clone()).or_default().push(c.path.clone());
+        }
+        Library { keys, charts: catalog.len(), catalog }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ScanEvent {
+    /// The library as it was at the end of the last scan (shown while this one runs) and its
+    /// chart count, used as the expected total for progress.
+    Cached(Arc<Library>),
+    /// Charts found so far.
+    Found(usize),
+    Done(Arc<Library>),
+}
+
+/// Scans the library folders, reporting progress. With `use_cache`, first sends the library
+/// saved by the last scan of the same folders so it shows straight away.
+pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item = ScanEvent> {
+    iced::stream::channel(8, async move |mut tx: Sender<ScanEvent>| {
+        if use_cache {
+            let f = folders.clone();
+            if let Ok(Some(lib)) = tokio::task::spawn_blocking(move || load_cache(&f)).await {
+                let _ = tx.send(ScanEvent::Cached(Arc::new(lib))).await;
+            }
+        }
+        let found = Arc::new(AtomicUsize::new(0));
+        let counter = found.clone();
+        let mut job = tokio::task::spawn_blocking(move || {
+            let lib = scan_counting(&folders, &counter);
+            save_cache(&folders, &lib);
+            lib
+        });
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(120));
+        loop {
+            tokio::select! {
+                lib = &mut job => {
+                    let _ = tx.send(ScanEvent::Done(Arc::new(lib.unwrap_or_default()))).await;
+                    break;
+                }
+                _ = tick.tick() => {
+                    let _ = tx.send(ScanEvent::Found(found.load(Ordering::Relaxed))).await;
+                }
+            }
+        }
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cache {
+    version: u32,
+    folders: Vec<PathBuf>,
+    charts: Vec<Arc<LocalChart>>,
+}
+const CACHE_VERSION: u32 = 1;
+
+fn cache_path() -> Option<PathBuf> {
+    crate::settings::project_dirs().map(|d| d.cache_dir().join("library.json"))
+}
+
+fn load_cache(folders: &[PathBuf]) -> Option<Library> {
+    let f = std::fs::File::open(cache_path()?).ok()?;
+    let c: Cache = serde_json::from_reader(std::io::BufReader::new(f)).ok()?;
+    (c.version == CACHE_VERSION && c.folders == folders).then(|| Library::from_catalog(c.charts))
+}
+
+fn save_cache(folders: &[PathBuf], lib: &Library) {
+    let Some(path) = cache_path() else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+    let c = Cache { version: CACHE_VERSION, folders: folders.to_vec(), charts: lib.catalog.clone() };
+    // Written beside it and renamed, so a crash can't leave half a file.
+    let tmp = path.with_extension("json.tmp");
+    let ok = std::fs::File::create(&tmp)
+        .ok()
+        .and_then(|f| {
+            let mut w = std::io::BufWriter::new(f);
+            serde_json::to_writer(&mut w, &c).ok()?;
+            std::io::Write::flush(&mut w).ok()
+        })
+        .is_some();
+    if ok {
+        let _ = std::fs::rename(&tmp, &path);
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 pub fn scan_blocking(folders: &[PathBuf]) -> Library {
+    scan_counting(folders, &AtomicUsize::new(0))
+}
+
+fn scan_counting(folders: &[PathBuf], found: &AtomicUsize) -> Library {
     let mut lib = Library::default();
     let mut frontier: Vec<PathBuf> = folders.iter().filter(|f| f.is_dir()).cloned().collect();
     // Breadth-first, one directory level at a time, each level split across a few threads.
@@ -111,7 +205,9 @@ pub fn scan_blocking(folders: &[PathBuf]) -> Library {
                 .map(|dirs| {
                     s.spawn(move || {
                         dirs.iter().fold((Vec::new(), Vec::new()), |mut acc, d| {
+                            let before = acc.1.len();
                             visit(d, &mut acc.0, &mut acc.1);
+                            found.fetch_add(acc.1.len() - before, Ordering::Relaxed);
                             acc
                         })
                     })
@@ -374,6 +470,11 @@ mod tests {
         let t = std::time::Instant::now();
         let root = PathBuf::from(dir);
         let lib = scan_blocking(std::slice::from_ref(&root));
+        let t2 = std::time::Instant::now();
+        let json = serde_json::to_vec(&lib.catalog).unwrap();
+        let back: Vec<Arc<LocalChart>> = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back.len(), lib.charts);
+        println!("cache {} KB, round trip {:?}", json.len() / 1024, t2.elapsed());
         let some = lib.keys.values().next().unwrap()[0].clone();
         assert!(is_deletable_chart(&some, std::slice::from_ref(&root)));
         assert!(!is_deletable_chart(&root, std::slice::from_ref(&root)));

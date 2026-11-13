@@ -3,6 +3,14 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.11
+
+- **Library shows instantly:** Truss remembers your library between runs, so "in your library"
+  ticks and the Library page are ready as soon as it opens. It still rescans in the background to
+  pick up changes.
+- **Scan progress:** a progress bar at the bottom of the window shows how far a library scan has
+  got.
+
 ## v0.1.10
 
 - **Coloured names:** song names, artists and charters show the colours and bold/italic that
