@@ -3,6 +3,15 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.9
+
+- **Sharper chart preview:** the whole fret row fits with room to spare, the highway and notes
+  are smooth instead of grainy, notes fade in at the far end instead of flashing, and the
+  preview has a proper rounded border.
+- **No downloading charts you already have:** previews, leaderboards and Fretwork tiers read
+  the copy in your library (RhythmVerse and Encore charts), so they start instantly.
+  RhythmVerse charts you have show their leaderboard and tiers without clicking Find scores.
+
 ## v0.1.8
 
 - **Sort the Library:** a Sort menu on the Library page (artist, song, charter, recently added,
