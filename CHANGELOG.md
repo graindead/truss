@@ -3,6 +3,19 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.13
+
+- **New downloads button:** the downloads bar at the bottom is gone. A small button in the
+  bottom-right corner shows overall progress (and the library scan) and opens the downloads list
+  over the page; it hides when there's nothing to show.
+- **Download notices:** one notice per batch that counts up ("Downloaded 23 charts · 27 to go"),
+  and one for failures with Retry. Turn them off in Settings > Downloads.
+- **Progress where you're looking:** a chart's row shows a thin bar while it downloads, and the
+  Download button in the details becomes a progress bar.
+- "Download N" for ticked charts sits at the bottom of the results; "Update to vX" moved to the
+  top bar.
+- **Star Power path images** now draw notes with CHOpt's own sprites, so they look like CHOpt's.
+
 ## v0.1.12
 
 - **Star Power paths:** a new tool (first in Tools) that works out the best Star Power path

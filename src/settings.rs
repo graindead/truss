@@ -24,6 +24,8 @@ pub struct Settings {
     pub is_sng: bool,
     /// Download background videos when a chart has one.
     pub download_videos: bool,
+    /// Corner notices when downloads finish or fail.
+    pub download_notices: bool,
     /// Default instrument filter (API key, e.g. "guitar").
     pub instrument: Option<String>,
     /// Default difficulty filter (API key, e.g. "expert").
@@ -85,6 +87,7 @@ impl Default for Settings {
             library_sort: String::new(),
             show_fretwork: true,
             text_colors: true,
+            download_notices: true,
             // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
             glass_transparency: 0.5,

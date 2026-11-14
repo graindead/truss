@@ -241,6 +241,21 @@ enum DlStatus {
     Failed(String),
 }
 
+/// The grouped download notices in the corner.
+#[derive(Default)]
+struct Notices {
+    /// Charts downloaded since the "done" notice appeared, and the last one.
+    done: usize,
+    last_title: String,
+    last_path: Option<PathBuf>,
+    done_at: Option<std::time::Instant>,
+    /// Downloads that failed since the "failed" notice appeared.
+    failed: usize,
+}
+
+/// How long the "done" notice stays after the last download of a batch finishes.
+const NOTICE_SECS: u64 = 6;
+
 struct DownloadEntry {
     id: u64,
     md5: String,
@@ -386,6 +401,8 @@ struct App {
     downloads: Vec<DownloadEntry>,
     next_dl_id: u64,
     show_downloads: bool,
+    /// Download notices (finished / failed), grouped so a batch shows one of each.
+    notices: Notices,
 
     preview: Option<preview_panel::Panel>,
     update: UpdateState,
@@ -488,6 +505,13 @@ enum Message {
     CancelDownload(u64),
     ClearFinished,
     ToggleDownloads,
+    /// Retries every failed download.
+    RetryAllFailed,
+    /// Closes a notice: true the "failed" one, false the "done" one.
+    DismissNotice(bool),
+    /// Once a second while a notice shows, to let it time out.
+    NoticeTick,
+    ToggleDownloadNotices(bool),
     OpenPreview(usize),
     Preview(preview_panel::Msg),
     OpenPath(PathBuf),
@@ -644,6 +668,7 @@ impl App {
             downloads: Vec::new(),
             next_dl_id: 0,
             show_downloads: false,
+            notices: Notices::default(),
             preview: None,
             update: UpdateState::Idle,
             ui: variants::UiVariant::Default,
@@ -709,6 +734,11 @@ impl App {
         let tools = Subscription::batch([
             if self.screen == Screen::Tools { self.tools_page.subscription().map(Message::ToolsPage) } else { Subscription::none() },
             self.tools_page.background().map(Message::ToolsPage),
+            if self.notices.done > 0 {
+                iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::NoticeTick)
+            } else {
+                Subscription::none()
+            },
         ]);
         match &self.preview {
             Some(p) => {
@@ -1057,7 +1087,6 @@ impl App {
             status: DlStatus::Queued,
             handle: None,
         });
-        self.show_downloads = true;
     }
 
     /// Starts queued downloads while fewer than `MAX_ACTIVE_DOWNLOADS` are running.
@@ -1777,10 +1806,15 @@ impl App {
                                 Ok(p) => DlStatus::Done(p),
                                 Err(e) => DlStatus::Failed(e),
                             };
-                            if let DlStatus::Done(dest) = &d.status {
-                                let change = (d.chart.library_key(), Some(dest.clone()), d.replace.clone());
-                                self.apply_library_change(change);
+                            let dest = match &d.status {
+                                DlStatus::Done(p) => Some(p.clone()),
+                                _ => None,
+                            };
+                            let (key, replace, title) = (d.chart.library_key(), d.replace.clone(), d.title.clone());
+                            if let Some(dest) = &dest {
+                                self.apply_library_change((key, Some(dest.clone()), replace));
                             }
+                            self.note_download(title, dest);
                             return self.pump_downloads();
                         }
                     }
@@ -1830,6 +1864,35 @@ impl App {
             Message::ToggleDownloads => {
                 self.show_downloads = !self.show_downloads;
                 Task::none()
+            }
+            Message::RetryAllFailed => {
+                for d in self.downloads.iter_mut().filter(|d| matches!(d.status, DlStatus::Failed(_))) {
+                    d.status = DlStatus::Queued;
+                }
+                self.notices.failed = 0;
+                self.pump_downloads()
+            }
+            Message::DismissNotice(failed) => {
+                if failed {
+                    self.notices.failed = 0;
+                } else {
+                    self.notices.done = 0;
+                }
+                Task::none()
+            }
+            Message::NoticeTick => {
+                let busy = self.downloads.iter().any(|d| matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued));
+                if !busy && self.notices.done_at.is_some_and(|t| t.elapsed().as_secs() >= NOTICE_SECS) {
+                    self.notices.done = 0;
+                }
+                Task::none()
+            }
+            Message::ToggleDownloadNotices(b) => {
+                self.settings.download_notices = b;
+                if !b {
+                    self.notices = Notices::default();
+                }
+                self.save_settings()
             }
             Message::OpenPath(p) => {
                 let _ = open::that_detached(p);
@@ -2200,7 +2263,11 @@ impl App {
         if self.advanced_open && self.screen == Screen::Browse {
             layout = layout.push(self.advanced.view().map(Message::Advanced));
         }
-        layout.push(body).push(self.view_downloads()).into()
+        let base = layout.push(body);
+        match self.view_corner() {
+            Some(corner) => iced::widget::stack![base, corner].into(),
+            None => base.into(),
+        }
     }
 
     fn view_topbar(&self) -> Element<'_, Message> {
@@ -2273,6 +2340,7 @@ impl App {
             nav("Settings", Screen::Settings),
             search,
         ]
+        .push(self.update_button())
         .spacing(10)
         .align_y(Alignment::Center);
         let bar: Element<'_, Message> = if self.narrow_topbar() {
@@ -2335,6 +2403,7 @@ impl App {
             space().width(14),
             search,
         ]
+        .push(self.update_button())
         .spacing(14)
         .align_y(Alignment::Center);
         let mut filters = row![
@@ -2555,6 +2624,7 @@ impl App {
             .align_y(Alignment::Center)
             .width(Length::FillPortion(4))
             .into();
+        let name = with_progress(name, self.dl_progress(&c.md5), 4);
         // A slim accent bar marks the selected row.
         let bar = container(space()).width(3).height(28).style(move |t: &Theme| container::Style {
             background: selected.then(|| style::accent(t).into()),
@@ -2636,6 +2706,7 @@ impl App {
                 .width(Length::FillPortion(4))
                 .into(),
         };
+        let name = with_progress(name, self.dl_progress(&c.md5), 4);
         button(
             row![
                 self.check_box(i),
@@ -2813,10 +2884,17 @@ impl App {
         let crowded = (!busy && self.in_library(c)) || opens_link;
         let dl_button: Element<_> = if let Some(b) = rv_dl { b } else { match dl_state {
             Some(DlStatus::Queued) => {
-                button(text("Queued…").size(15).width(Length::Fill).center()).width(Length::Fill).padding(10).into()
+                button(text("Waiting to download…").size(15).width(Length::Fill).center()).width(Length::Fill).padding(10).into()
             }
             Some(DlStatus::Active { .. }) => {
-                button(text("Downloading…").size(15).width(Length::Fill).center()).width(Length::Fill).padding(10).into()
+                let p = self.dl_progress(&c.md5).unwrap_or(0.0);
+                column![
+                    text(format!("Downloading… {:.0}%", p * 100.0)).size(14).width(Length::Fill).center(),
+                    progress_bar(0.0..=1.0, p).girth(6),
+                ]
+                .spacing(6)
+                .width(Length::Fill)
+                .into()
             }
             _ if self.in_library(c) => self.library_buttons(i, c, 15, 10),
             _ => button(text("Download").size(15).width(Length::Fill).center())
@@ -2957,6 +3035,9 @@ impl App {
                     toggler(self.settings.download_videos)
                         .label("Download background videos")
                         .on_toggle(Message::ToggleVideos),
+                    toggler(self.settings.download_notices)
+                        .label("Show a notice when downloads finish or fail (a batch shares one notice)")
+                        .on_toggle(Message::ToggleDownloadNotices),
                 ]
                 .spacing(10)
                 .into(),
@@ -3096,79 +3177,202 @@ impl App {
         .into()
     }
 
-    fn view_downloads(&self) -> Element<'_, Message> {
+    /// How far a chart's download has got (0 while queued), if it's queued or downloading.
+    pub fn dl_progress(&self, md5: &str) -> Option<f32> {
+        self.downloads.iter().rev().find(|d| d.md5 == md5).and_then(|d| match &d.status {
+            DlStatus::Queued => Some(0.0),
+            DlStatus::Active { done, total, .. } => Some(total.map(|t| *done as f32 / t.max(1) as f32).unwrap_or(0.0).clamp(0.0, 1.0)),
+            _ => None,
+        })
+    }
+
+    /// What the results rows show of the downloads (for the list's redraw key): each queued or
+    /// running chart and its progress in whole percent.
+    pub fn dl_rows_key(&self) -> Vec<(String, u8)> {
+        self.downloads
+            .iter()
+            .filter_map(|d| self.dl_progress(&d.md5).map(|p| (d.md5.clone(), (p * 100.0) as u8)))
+            .collect()
+    }
+
+    /// Records a finished download for the corner notices.
+    fn note_download(&mut self, title: String, dest: Option<PathBuf>) {
+        if !self.settings.download_notices {
+            return;
+        }
+        match dest {
+            Some(p) => {
+                self.notices.done += 1;
+                self.notices.last_title = title;
+                self.notices.last_path = Some(p);
+                self.notices.done_at = Some(std::time::Instant::now());
+            }
+            None => self.notices.failed += 1,
+        }
+    }
+
+    /// "Update to vX" in the top bar while an update is waiting.
+    fn update_button(&self) -> Option<Element<'_, Message>> {
+        match &self.update {
+            UpdateState::Available(rel) => Some(
+                button(text(format!("Update to {}", rel.version)).size(12))
+                    .padding([5, 10])
+                    .style(button::primary)
+                    .on_press(Message::InstallUpdate)
+                    .into(),
+            ),
+            UpdateState::Installing(_, p) => Some(button(text(format!("Updating… {:.0}%", p * 100.0)).size(12)).padding([5, 10]).into()),
+            UpdateState::Ready(_) => Some(
+                button(text("Restart to update").size(12)).padding([5, 10]).style(button::primary).on_press(Message::RestartForUpdate).into(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The bar below the results while several are ticked: "Download N".
+    pub fn selection_bar(&self) -> Option<Element<'_, Message>> {
+        if self.checked.is_empty() {
+            return None;
+        }
+        let n = self.checked.len();
+        let charts = if n == 1 { "1 chart".to_string() } else { format!("{n} charts") };
+        // Both buttons the same size and shape; Download in the accent colour.
+        let download = button(text(format!("Download {charts}")).size(13))
+            .padding([6, 16])
+            .style(|t: &Theme, s| {
+                let hover = matches!(s, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: Some(if hover { style::accent_tint(t, 0.85) } else { style::accent(t) }.into()),
+                    text_color: Color::WHITE,
+                    border: Border::default().rounded(6),
+                    ..Default::default()
+                }
+            })
+            .on_press(Message::DownloadChecked);
+        let bar = container(
+            row![
+                text(format!("{charts} selected")).size(13),
+                space().width(Length::Fill),
+                button(text("Clear").size(13)).padding([6, 14]).style(style::quiet_button(false)).on_press(Message::ClearChecked),
+                download,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([8, 16])
+        .width(Length::Fill);
+        Some(column![style::divider(false), bar].into())
+    }
+
+    /// The bottom-right corner: the downloads button, its list, and the download notices.
+    fn view_corner(&self) -> Option<Element<'_, Message>> {
+        let pill = self.downloads_pill();
+        let notices = self.notice_cards();
+        if pill.is_none() && notices.is_empty() {
+            return None;
+        }
+        let open = self.show_downloads && !self.downloads.is_empty();
+        let mut col = column![].spacing(8).align_x(Alignment::End);
+        if open {
+            col = col.push(self.downloads_popover());
+        }
+        for n in notices {
+            col = col.push(n);
+        }
+        if let Some(p) = pill {
+            col = col.push(p);
+        }
+        let corner = container(col).width(Length::Fill).height(Length::Fill).align_right(Length::Fill).align_bottom(Length::Fill).padding(16);
+        if open {
+            // A click anywhere else closes the list.
+            let away = iced::widget::mouse_area(container(space()).width(Length::Fill).height(Length::Fill)).on_press(Message::ToggleDownloads);
+            return Some(iced::widget::stack![away, corner].into());
+        }
+        Some(corner.into())
+    }
+
+    /// The floating button: overall download progress (or the library scan).
+    fn downloads_pill(&self) -> Option<Element<'_, Message>> {
+        let total = self.downloads.len();
+        let active = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued)).count();
+        let failed = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Failed(_))).count();
+        let finished = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Done(_))).count();
+        let (label, progress): (String, Option<f32>) = if active > 0 {
+            // Each chart is one step; running ones count by their bytes so far.
+            let running: f32 = self
+                .downloads
+                .iter()
+                .filter(|d| matches!(d.status, DlStatus::Active { .. }))
+                .filter_map(|d| self.dl_progress(&d.md5))
+                .sum();
+            let done = total - active;
+            let p = ((done as f32 + running) / total.max(1) as f32).min(1.0);
+            (format!("↓  {done} / {total}  ·  {:.0}%", p * 100.0), Some(p))
+        } else if total > 0 {
+            let mut s = format!("✓  {finished} downloaded");
+            if failed > 0 {
+                s.push_str(&format!("  ·  {failed} failed"));
+            }
+            (s, None)
+        } else if self.library_scanning {
+            let found = self.library_scan_found;
+            match self.library_scan_expected {
+                Some(n) => (
+                    format!("Scanning library… {} / {}", thousands(found), thousands(n)),
+                    Some((found as f32 / n.max(1) as f32).min(1.0)),
+                ),
+                None => (format!("Scanning library… {} charts", thousands(found)), None),
+            }
+        } else {
+            return None;
+        };
+        let scanning_only = total == 0;
+        let mut content = column![text(label).size(13).wrapping(text::Wrapping::None)].spacing(5);
+        if let Some(p) = progress {
+            content = content.push(progress_bar(0.0..=1.0, p).length(180).girth(4));
+        }
+        let pill = button(content)
+            .padding([8, 14])
+            .style(move |t: &Theme, s| {
+                let hovered = matches!(s, button::Status::Hovered) && !scanning_only;
+                button::Style {
+                    background: Some(if hovered { style::accent_tint(t, 0.25) } else { style::raised(t) }.into()),
+                    text_color: style::fg(t),
+                    border: Border { color: style::hairline(t), width: 1.0, radius: 18.0.into() },
+                    shadow: iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.45), offset: iced::Vector::new(0.0, 4.0), blur_radius: 14.0 },
+                    ..Default::default()
+                }
+            })
+            .on_press_maybe((!scanning_only).then_some(Message::ToggleDownloads));
+        Some(pill.into())
+    }
+
+    /// The downloads list, opened from the floating button.
+    fn downloads_popover(&self) -> Element<'_, Message> {
         let active = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Active { .. })).count();
         let queued = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Queued)).count();
         let failed = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Failed(_))).count();
-        let summary = if self.downloads.is_empty() {
-            "No downloads — tip: Ctrl- or Shift-click results to download several at once".to_string()
-        } else {
-            let mut s = format!("{active} active, {} total", self.downloads.len());
-            if queued > 0 {
-                s.push_str(&format!(", {queued} queued"));
-            }
-            if failed > 0 {
-                s.push_str(&format!(", {failed} failed"));
-            }
-            s
-        };
-
-        let bar = row![
-            button(text(if self.show_downloads { "▾ Downloads" } else { "▸ Downloads" }).size(13))
-                .style(button::text)
-                .on_press(Message::ToggleDownloads),
-            text(summary).size(13),
+        let finished = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Done(_))).count();
+        let mut summary = if active + queued > 0 { format!("{active} downloading") } else { format!("{finished} finished") };
+        if queued > 0 {
+            summary.push_str(&format!(", {queued} waiting"));
+        }
+        if failed > 0 {
+            summary.push_str(&format!(", {failed} failed"));
+        }
+        let header = row![
+            column![
+                text("Downloads").size(15).font(BOLD),
+                text(summary).size(12).style(|t: &Theme| text::Style { color: Some(style::muted(t)) }),
+            ]
+            .spacing(2),
             space().width(Length::Fill),
         ]
-        .extend(self.library_scanning.then(|| -> Element<'_, Message> {
-            let found = self.library_scan_found;
-            let label = match self.library_scan_expected {
-                Some(n) => format!("Scanning library… {} / {}", thousands(found), thousands(n)),
-                None => format!("Scanning library… {} charts", thousands(found)),
-            };
-            // Without a previous count the total is unknown: the bar fills towards double what's
-            // been found so far, so it keeps moving without claiming to be nearly done.
-            let total = self.library_scan_expected.unwrap_or(found * 2).max(found).max(1);
-            row![text(label).size(12), progress_bar(0.0..=total as f32, found as f32).length(140).girth(6)]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
-        }))
-        .extend((!self.checked.is_empty()).then(|| -> Element<'_, Message> {
-            let n = self.checked.len();
-            row![
-                text(format!("{n} selected")).size(13),
-                button(text(format!("Download {n}")).size(12))
-                    .padding([4, 12])
-                    .style(button::primary)
-                    .on_press(Message::DownloadChecked),
-                button(text("Clear selection").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::ClearChecked),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
-        }))
-        .push(match &self.update {
-            UpdateState::Available(rel) => Some(
-                button(text(format!("Update to {}", rel.version)).size(12))
-                    .padding([4, 10])
-                    .style(button::primary)
-                    .on_press(Message::InstallUpdate),
-            ),
-            UpdateState::Installing(_, p) => Some(button(text(format!("Updating… {:.0}%", p * 100.0)).size(12)).padding([4, 10])),
-            UpdateState::Ready(_) => Some(
-                button(text("Restart to update").size(12)).padding([4, 10]).style(button::primary).on_press(Message::RestartForUpdate),
-            ),
-            _ => None,
-        })
-        .push(
-            button(text("Clear finished").size(12)).style(crate::style::subtle).padding([4, 10]).on_press(Message::ClearFinished),
-        )
-        .spacing(10)
+        .push((failed > 0).then(|| button(text("Retry failed").size(12)).style(crate::style::secondary).padding([4, 10]).on_press(Message::RetryAllFailed)))
+        .push(button(text("Clear finished").size(12)).style(crate::style::subtle).padding([4, 10]).on_press(Message::ClearFinished))
+        .push(button(text("✕").size(12)).style(crate::style::subtle).padding([4, 8]).on_press(Message::ToggleDownloads))
+        .spacing(8)
         .align_y(Alignment::Center);
-
-        let mut col = column![bar].spacing(6);
-        if self.show_downloads && !self.downloads.is_empty() {
             let items = self.downloads.iter().rev().map(|d| {
                 let (status_el, pct): (Element<_>, f32) = match &d.status {
                     DlStatus::Queued => (text("Waiting in queue").size(12).into(), 0.0),
@@ -3208,20 +3412,80 @@ impl App {
                 .align_y(Alignment::Center)
                 .into()
             });
-            col = col.push(container(scrollable(column(items).spacing(10).padding([0, 12]))).max_height(180));
-        }
-
-        if style::refined() {
-            return column![style::divider(false), container(col).padding([5, 18]).width(Length::Fill)].into();
-        }
-        container(col)
-            .padding([6, 14])
-            .width(Length::Fill)
+        let list = scrollable(column(items).spacing(10).padding(iced::Padding { right: 12.0, ..Default::default() }));
+        container(column![header, rule::horizontal(1).style(crate::style::rule), container(list).max_height(340)].spacing(10))
+            .padding(14)
+            .width(420)
             .style(|t: &Theme| container::Style {
-                background: Some(crate::style::weak(t).into()),
+                background: Some(style::raised(t).into()),
+                text_color: Some(style::fg(t)),
+                border: Border { color: style::hairline(t), width: 1.0, radius: 12.0.into() },
+                shadow: iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.5), offset: iced::Vector::new(0.0, 6.0), blur_radius: 24.0 },
                 ..Default::default()
             })
             .into()
+    }
+
+    /// The grouped "downloaded" and "failed" notices.
+    fn notice_cards(&self) -> Vec<Element<'_, Message>> {
+        let card = |body: Element<'static, Message>, actions: Vec<Element<'static, Message>>, failed: bool| -> Element<'static, Message> {
+            let mut r = row![body].spacing(8).align_y(Alignment::Center);
+            for a in actions {
+                r = r.push(a);
+            }
+            r = r.push(button(text("✕").size(11)).style(crate::style::subtle).padding([3, 7]).on_press(Message::DismissNotice(failed)));
+            container(r)
+                .padding([8, 12])
+                .max_width(460)
+                .style(move |t: &Theme| container::Style {
+                    background: Some(style::raised(t).into()),
+                    text_color: Some(style::fg(t)),
+                    border: Border {
+                        color: if failed { t.extended_palette().danger.base.color } else { style::hairline(t) },
+                        width: 1.0,
+                        radius: 10.0.into(),
+                    },
+                    shadow: iced::Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.4), offset: iced::Vector::new(0.0, 4.0), blur_radius: 12.0 },
+                    ..Default::default()
+                })
+                .into()
+        };
+        let mut out = Vec::new();
+        let n = &self.notices;
+        if n.failed > 0 {
+            let msg = if n.failed == 1 { "1 download failed".to_string() } else { format!("{} downloads failed", n.failed) };
+            out.push(card(
+                text(msg).size(13).style(text::danger).into(),
+                vec![
+                    button(text("Retry").size(12)).style(crate::style::secondary).padding([3, 10]).on_press(Message::RetryAllFailed).into(),
+                    button(text("Show").size(12)).style(crate::style::subtle).padding([3, 10]).on_press(Message::ToggleDownloads).into(),
+                ],
+                true,
+            ));
+        }
+        if n.done > 0 {
+            let waiting = self.downloads.iter().filter(|d| matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued)).count();
+            let mut msg = if n.done == 1 { format!("Downloaded {}", n.last_title) } else { format!("Downloaded {} charts", n.done) };
+            if waiting > 0 {
+                msg.push_str(&format!("  ·  {waiting} to go"));
+            }
+            let action: Element<'static, Message> = match (&n.last_path, n.done) {
+                (Some(p), 1) => {
+                    button(text("Open folder").size(12)).style(crate::style::subtle).padding([3, 10]).on_press(Message::OpenPath(p.clone())).into()
+                }
+                _ => button(text("Show").size(12)).style(crate::style::subtle).padding([3, 10]).on_press(Message::ToggleDownloads).into(),
+            };
+            out.push(card(text(msg).size(13).wrapping(text::Wrapping::None).into(), vec![action], false));
+        }
+        out
+    }
+}
+
+/// A results cell with a thin download bar under it while the chart is queued or downloading.
+fn with_progress(cell: Element<'static, Message>, progress: Option<f32>, portion: u16) -> Element<'static, Message> {
+    match progress {
+        Some(p) => column![cell, progress_bar(0.0..=1.0, p).girth(3)].spacing(3).width(Length::FillPortion(portion)).into(),
+        None => cell,
     }
 }
 

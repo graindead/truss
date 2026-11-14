@@ -20,6 +20,7 @@ mod points;
 mod processed;
 mod song;
 mod sp;
+mod sprites;
 mod time;
 
 pub use builder::PathImage;

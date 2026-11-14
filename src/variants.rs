@@ -487,7 +487,7 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            (self.list_rev, crate::style::refined(), self.list_cols(), self.fw.checked),
+            (self.list_rev, crate::style::refined(), self.list_cols(), self.fw.checked, self.dl_rows_key()),
         )
     }
 
@@ -502,9 +502,12 @@ impl App {
         }))
         .width(Length::Fill)
         .height(Length::Fill);
-        match self.rv_hidden_banner() {
-            Some(b) => column![b, list].width(Length::Fill).height(Length::Fill).into(),
-            None => list.into(),
-        }
+        column![]
+            .push(self.rv_hidden_banner())
+            .push(list)
+            .push(self.selection_bar())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 }
