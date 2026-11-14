@@ -306,6 +306,7 @@ mod tests {
             tracks: vec![("drums".into(), "expert".into(), "new".into()), ("guitar".into(), "expert".into(), "G".into())],
             pro_drums: false,
             ratings: Vec::new(),
+            curves: Vec::new(),
         };
         let t: Vec<_> = tracks(&c, Some(&cp)).into_iter().map(|t| format!("{}/{}/{}", t.instrument, t.difficulty, t.hashes.join("+"))).collect();
         assert_eq!(t, ["guitar/expert/G", "guitar/hard/g", "drums/expert/new+abc", "prodrums/expert/new+abc"]);

@@ -3,6 +3,20 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.12
+
+- **Star Power paths:** a new tool (first in Tools) that works out the best Star Power path
+  for a chart in your library, like CHOpt, and draws it. It's a Rust port of CHOpt 1.19 built
+  into Truss, so nothing else needs installing, and its results match CHOpt's. Clone Hero
+  scoring (standard and precision) for guitar, bass, rhythm, keys and co-op, with squeeze,
+  early whammy, video calibration, speed and lefty options, and Save image.
+- **Library details:** click a chart on the Library page to open its details below it: album
+  art, song info, difficulties with Fretwork tiers, a preview played from your own copy, Open
+  folder, and the leaderboard.
+- **Difficulty graphs:** the details show Fretwork's difficulty-over-the-song graph (the same
+  one as Truss Index), with the values under the mouse.
+- Truss now opens inside the screen's usable area instead of partly under the taskbar.
+
 ## v0.1.11
 
 - **Library shows instantly:** Truss remembers your library between runs, so "in your library"

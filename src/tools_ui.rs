@@ -1,4 +1,4 @@
-//! The Tools page: the Scene Switcher (and the Issue scanner, hidden for now).
+//! The Tools page: Star Power paths, the Scene Switcher (and the Issue scanner, hidden for now).
 
 use crate::vlist::VList;
 use futures::{SinkExt, channel::mpsc::Sender};
@@ -15,6 +15,7 @@ const ISSUE_SCANNER_ENABLED: bool = false;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
+    Paths,
     Scenes,
     Issues,
 }
@@ -22,6 +23,7 @@ pub enum Tab {
 /// What the page reads from the app.
 pub struct Ctx<'a> {
     pub settings: &'a crate::settings::Settings,
+    pub catalog: &'a [Arc<crate::library::LocalChart>],
 }
 
 /// Requests for the app.
@@ -29,6 +31,8 @@ pub enum Out {
     None,
     Open(PathBuf),
     SetIssuePaths(Option<PathBuf>, Option<PathBuf>),
+    /// Keep the Star Power paths video calibration.
+    SetVideoLag(i32),
 }
 
 fn toggle_chip<'a, M: Clone + 'a>(label: &'static str, active: bool, msg: M) -> Element<'a, M> {
@@ -333,6 +337,7 @@ impl IssueTool {
                                 })
                                 .into()
                             },
+                            None,
                             IssueMsg::Scrolled,
                         ),
                     ]
@@ -358,6 +363,7 @@ pub struct Page {
     pub tab: Tab,
     issues: IssueTool,
     scenes: crate::scenes_ui::ScenesTool,
+    paths: crate::path_ui::PathTool,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +371,7 @@ pub enum Msg {
     Tab(Tab),
     Issues(IssueMsg),
     Scenes(crate::scenes_ui::Msg),
+    Paths(crate::path_ui::Msg),
 }
 
 impl Page {
@@ -380,6 +387,10 @@ impl Page {
                 (t.map(Msg::Issues), o)
             }
             Msg::Scenes(m) => (self.scenes.update(m).map(Msg::Scenes), Out::None),
+            Msg::Paths(m) => {
+                let (t, lag) = self.paths.update(m, cx.settings.chopt_video_lag_ms);
+                (t.map(Msg::Paths), lag.map_or(Out::None, Out::SetVideoLag))
+            }
         };
         (Task::batch([task, self.issues.list.take_scroll_task()]), out)
     }
@@ -398,7 +409,7 @@ impl Page {
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Scene Switcher", Tab::Scenes)];
+        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes)];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -406,6 +417,7 @@ impl Page {
         let body: Element<'a, Msg> = match self.tab {
             Tab::Issues => self.issues.view(cx).map(Msg::Issues),
             Tab::Scenes => self.scenes.view().map(Msg::Scenes),
+            Tab::Paths => self.paths.view(cx.catalog).map(Msg::Paths),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }

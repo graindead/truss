@@ -54,6 +54,8 @@ pub struct Settings {
     pub window_backdrop: String,
     /// How see-through the window is with frosted glass on, 0.1 (barely) to 0.8 (very).
     pub glass_transparency: f32,
+    /// Tools > Star Power paths: the player's video calibration (ms), kept between runs.
+    pub chopt_video_lag_ms: i32,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             // Frosted glass needs Windows' blur; elsewhere it would only be see-through.
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
             glass_transparency: 0.5,
+            chopt_video_lag_ms: 0,
         }
     }
 }

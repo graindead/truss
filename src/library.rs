@@ -379,6 +379,79 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
     }
 }
 
+/// Prefix of the stand-in md5 given to library charts shown as a `Chart` (see `details`).
+pub const LOCAL_MD5: &str = "local:";
+
+/// The library copy a stand-in chart from `details` was read from.
+pub fn local_path(c: &crate::api::Chart) -> Option<PathBuf> {
+    c.md5.strip_prefix(LOCAL_MD5).map(PathBuf::from)
+}
+
+/// A library chart's song.ini read into a `Chart` (so the Browse details widgets can show it),
+/// and its album art. Reads only; nothing is written.
+pub fn details(c: &LocalChart) -> (crate::api::Chart, Option<Vec<u8>>) {
+    let is_image = |n: &str| {
+        let n = n.to_ascii_lowercase();
+        IMAGE_EXT.iter().any(|e| n == format!("album.{e}"))
+    };
+    let (pairs, art) = if c.is_sng() {
+        match crate::sng::read_index(&c.path) {
+            Ok(idx) => {
+                let art = idx.files.iter().find(|e| is_image(&e.name)).and_then(|e| crate::sng::read_entry(&c.path, &idx, e).ok());
+                (idx.metadata.clone(), art)
+            }
+            Err(_) => (Vec::new(), None),
+        }
+    } else {
+        let mut ini = None;
+        let mut art = None;
+        if let Ok(rd) = std::fs::read_dir(&c.path) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.eq_ignore_ascii_case("song.ini") {
+                    ini = Some(e.path());
+                } else if art.is_none() && is_image(&n) {
+                    art = Some(e.path());
+                }
+            }
+        }
+        let pairs = ini.and_then(|p| std::fs::read(p).ok()).map(|b| parse_ini(&decode(&b))).unwrap_or_default();
+        (pairs, art.and_then(|p| std::fs::read(p).ok()))
+    };
+    let get = |k: &str| pairs.iter().find(|(pk, _)| pk.eq_ignore_ascii_case(k)).map(|(_, v)| v.trim().to_string()).filter(|v| !v.is_empty());
+    let num = |k: &str| get(k).and_then(|v| v.parse::<f64>().ok());
+    let diff = |k: &str| num(k).map(|d| d as i32).filter(|d| *d >= 0);
+    let t = c.tagged.as_deref();
+    let chart = crate::api::Chart {
+        name: Some(t.map(|t| t.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| c.name.clone())),
+        artist: Some(t.map(|t| t.artist.clone()).unwrap_or_else(|| c.artist.clone())),
+        charter: Some(t.map(|t| t.charter.clone()).unwrap_or_else(|| c.charter.clone())),
+        album: get("album"),
+        genre: get("genre"),
+        year: get("year"),
+        md5: format!("{LOCAL_MD5}{}", c.path.display()),
+        song_length: (c.song_length_ms > 0).then_some(c.song_length_ms as i64),
+        diff_band: diff("diff_band"),
+        diff_guitar: diff("diff_guitar"),
+        diff_guitar_coop: diff("diff_guitar_coop"),
+        diff_rhythm: diff("diff_rhythm"),
+        diff_bass: diff("diff_bass"),
+        diff_drums: diff("diff_drums").or_else(|| diff("diff_drums_real")),
+        diff_keys: diff("diff_keys"),
+        diff_guitarghl: diff("diff_guitarghl"),
+        diff_guitar_coop_ghl: diff("diff_guitar_coop_ghl"),
+        diff_rhythm_ghl: diff("diff_rhythm_ghl"),
+        diff_bassghl: diff("diff_bassghl"),
+        diff_vocals: diff("diff_vocals"),
+        loading_phrase: get("loading_phrase"),
+        preview_start_time: num("preview_start_time").map(|v| v as i64),
+        has_video_background: c.has_video,
+        modchart: get("modchart").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        ..Default::default()
+    };
+    (chart, art)
+}
+
 /// song.ini text: UTF-8 (with or without BOM), UTF-16 with BOM, else Latin-1.
 pub fn decode(b: &[u8]) -> String {
     if let Some(rest) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {

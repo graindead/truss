@@ -89,6 +89,8 @@ pub enum Msg {
     /// Picked from the Sort menu (a header click toggles instead).
     SortPicked(SortBy),
     Toggle(usize),
+    /// Opens (or closes) the details below a chart's row.
+    Expand(usize),
     SelectAllShown,
     ClearSelection,
     Delete,
@@ -105,6 +107,8 @@ pub enum Out {
     Rescan,
     Delete(Vec<PathBuf>),
     Open(PathBuf),
+    /// The chart whose details are open below its row changed (`None`: closed).
+    Expanded(Option<Arc<LocalChart>>),
 }
 
 /// What the page reads from the app.
@@ -125,6 +129,8 @@ pub struct Page {
     kind: Option<ChartType>,
     sort: Option<SortBy>,
     selected: BTreeSet<PathBuf>,
+    /// The chart whose details are open below its row.
+    open: Option<PathBuf>,
     confirm_delete: bool,
     list: VList,
     /// Indices into the catalog that pass the filters, in display order.
@@ -161,7 +167,15 @@ impl Page {
         self.dup_keys = count.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k.to_string()).collect();
         let existing: HashSet<&PathBuf> = cx.catalog.iter().map(|c| &c.path).collect();
         self.selected.retain(|p| existing.contains(p));
+        if self.open.as_ref().is_some_and(|p| !existing.contains(p)) {
+            self.open = None;
+        }
         self.apply(cx);
+    }
+
+    /// The chart whose details are open, if any.
+    pub fn open_chart(&self) -> Option<&PathBuf> {
+        self.open.as_ref()
     }
 
     fn passes(&self, c: &LocalChart, cx: &Ctx) -> bool {
@@ -253,6 +267,15 @@ impl Page {
                     self.selected.insert(cx.catalog[i].path.clone());
                 }
             }
+            Msg::Expand(i) => {
+                let Some(c) = cx.catalog.get(i) else { return Out::None };
+                if self.open.as_ref() == Some(&c.path) {
+                    self.open = None;
+                    return Out::Expanded(None);
+                }
+                self.open = Some(c.path.clone());
+                return Out::Expanded(Some(c.clone()));
+            }
             Msg::ClearSelection => self.selected.clear(),
             Msg::Delete => {
                 if !self.confirm_delete {
@@ -270,7 +293,13 @@ impl Page {
         Out::None
     }
 
-    pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
+    /// The page; `details` (its height, and the widget) is drawn below the open chart's row.
+    pub fn view<'a>(&'a self, cx: &Ctx<'a>, details: Option<(f32, Element<'a, crate::Message>)>) -> Element<'a, crate::Message> {
+        self.view_inner(cx, details)
+    }
+
+    fn view_inner<'a>(&'a self, cx: &Ctx<'a>, details: Option<(f32, Element<'a, crate::Message>)>) -> Element<'a, crate::Message> {
+        use crate::Message::LibraryPage as M;
         if !cx.has_folders {
             return container(
                 column![
@@ -284,6 +313,7 @@ impl Page {
             .into();
         }
         let cat = cx.catalog;
+        let open_row = self.open.as_ref().and_then(|p| self.shown.iter().position(|&i| &cat[i].path == p));
         let lyrics_known = !cx.lyrics.is_empty();
         let count = |f: fn(&LocalChart) -> bool| cat.iter().filter(|c| f(c)).count();
         let no_lyrics = cat.iter().filter(|c| cx.lyrics.get(&c.path) == Some(&false)).count();
@@ -419,6 +449,7 @@ impl Page {
                 let i = self.shown[r];
                 let c = &cat[i];
                 let sel = self.selected.contains(&c.path);
+                let is_open = open_row == Some(r);
                 let mark = |b: Option<bool>| {
                     let (glyph, ok) = match b {
                         Some(true) => ("✓", Some(true)),
@@ -456,9 +487,12 @@ impl Page {
                 } else {
                     c.name.clone()
                 };
-                button(
+                let row: Element<'a, Msg> = button(
                     row![
-                        text(if sel { "☑" } else { "☐" }).size(14).width(CHECK_W).center(),
+                        button(text(if sel { "☑" } else { "☐" }).size(14).width(CHECK_W).center())
+                            .padding(0)
+                            .style(button::text)
+                            .on_press(Msg::Toggle(i)),
                         cell(&c.artist, tagged.map(|t| t.artist.as_str()), 3),
                         cell(&song, tagged.filter(|_| !dupes && !c.name.is_empty()).map(|t| t.name.as_str()), 4),
                         cell(&c.charter, tagged.map(|t| t.charter.as_str()), 2),
@@ -479,12 +513,13 @@ impl Page {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .padding(row_pad)
-                .on_press(Msg::Toggle(i))
+                .on_press(Msg::Expand(i))
                 .style(move |t: &Theme, s| {
                     let p = t.extended_palette();
                     button::Style {
                         background: match (sel, s) {
                             (true, _) => Some(Background::Color(crate::style::selected(t).scale_alpha(0.5))),
+                            _ if is_open => Some(Background::Color(crate::style::weak(t))),
                             (false, button::Status::Hovered) => Some(Background::Color(crate::style::weak(t))),
                             _ if r % 2 == 1 => Some(Background::Color(crate::style::weakest(t))),
                             _ => None,
@@ -493,14 +528,23 @@ impl Page {
                         ..Default::default()
                     }
                 })
-                .into()
+                .into();
+                row.map(M)
             },
-            Msg::Scrolled,
+            open_row.zip(details).map(|(r, (h, d))| {
+                let d = container(d)
+                    .padding(iced::Padding { top: 10.0, right: 26.0, bottom: 14.0, left: 12.0 + CHECK_W + GAP })
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|t: &Theme| container::Style { background: Some(crate::style::weakest(t).into()), ..Default::default() });
+                (r, h, Element::from(d))
+            }),
+            |vp| M(Msg::Scrolled(vp)),
         );
 
         column![
-            container(column![tiles, bar].spacing(10)).padding([12, 14]),
-            head,
+            Element::from(container(column![tiles, bar].spacing(10)).padding([12, 14])).map(M),
+            Element::from(head).map(M),
             rule::horizontal(1).style(crate::style::rule),
             list,
         ]

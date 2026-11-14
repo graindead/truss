@@ -78,7 +78,7 @@ impl App {
 
     /// Reads the selected chart's notes to work out its leaderboard hashes.
     pub fn find_scores(&mut self, md5: String) -> Task<Message> {
-        let Some(c) = self.selected.and_then(|i| self.results.get(i)).filter(|c| c.md5 == md5) else { return Task::none() };
+        let Some(c) = self.current_chart().filter(|c| c.md5 == md5) else { return Task::none() };
         let Some(src) = self.chart_source(c) else { return Task::none() };
         self.hashes.insert(md5.clone(), Hashes::Working);
         Task::perform(leaderboard::compute(src), move |r| Message::HashesFound(md5.clone(), r))
@@ -109,7 +109,7 @@ impl App {
     /// Reads the selected chart's notes (for leaderboard hashes and Fretwork tiers) where that's
     /// cheap, then fetches its leaderboard if the section is open and it isn't loaded.
     pub fn load_board(&mut self) -> Task<Message> {
-        let Some(c) = self.selected.and_then(|i| self.results.get(i)) else { return Task::none() };
+        let Some(c) = self.current_chart() else { return Task::none() };
         // Encore's listed hashes are often in an old layout, so read the chart first (just its
         // header and notes). RhythmVerse charts wait for "Find scores".
         match self.hashes.get(&c.md5) {

@@ -1,6 +1,6 @@
 [package]
 name = "truss"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 description = "A fast native rhythm game chart search and download tool (Chorus Encore client)"
 license = "GPL-3.0"
@@ -23,6 +23,8 @@ symphonia-adapter-libopus = "0.3"
 cpal = "0.18"
 rtrb = "0.4"
 midly = "0.5"
+tiny-skia = "0.11"
+cosmic-text = "0.15"
 trash = "5.3.0"
 rust_xlsxwriter = { version = "0.102.0", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
@@ -40,7 +42,7 @@ log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 # Recolouring the taskbar pin (taskbar_icon.rs). Already in the build through cpal and trash.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi"] }
 
 [dev-dependencies]
 

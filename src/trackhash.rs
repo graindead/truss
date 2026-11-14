@@ -214,6 +214,8 @@ pub struct Computed {
     pub pro_drums: bool,
     /// Fretwork ratings of each instrument's Expert track.
     pub ratings: Vec<(String, crate::fretwork::Rating)>,
+    /// Fretwork's difficulty-over-time curves of each instrument's Expert track.
+    pub curves: Vec<(String, std::sync::Arc<crate::curves::Curves>)>,
 }
 
 /// Hashes every track of a chart from its files (name, bytes): notes.mid or notes.chart, plus
@@ -250,6 +252,12 @@ pub fn hash_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>)
             .iter()
             .filter(|t| t.difficulty == "expert")
             .filter_map(|t| Some((t.instrument.to_string(), crate::fretwork::rate(t.instrument, t)?)))
+            .collect(),
+        curves: parsed
+            .tracks
+            .iter()
+            .filter(|t| t.difficulty == "expert")
+            .filter_map(|t| Some((t.instrument.to_string(), std::sync::Arc::new(crate::curves::curves(t.instrument, t)?))))
             .collect(),
     })
 }

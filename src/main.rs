@@ -6,6 +6,9 @@ mod art_cache;
 mod rich;
 mod audio;
 mod chart;
+mod chopt;
+mod curves;
+mod graph;
 mod download;
 mod extras;
 mod icons;
@@ -41,6 +44,7 @@ mod icon_paint;
 mod fretwork;
 mod fretwork_filter;
 mod tools_ui;
+mod path_ui;
 mod variants;
 mod vlist;
 
@@ -106,13 +110,15 @@ fn main() -> iced::Result {
     // Keep the album art cache under its size limit, without holding up start-up.
     std::thread::spawn(art_cache::trim);
 
+    let (initial_size, initial_position) = initial_window();
     iced::application(App::boot, App::update, App::view)
         .title("Truss")
         .theme(App::theme)
         .style(App::app_style)
         .subscription(App::subscription)
         .window(iced::window::Settings {
-            size: iced::Size::new(1280.0, 800.0),
+            size: initial_size,
+            position: initial_position,
             icon: app_icon(&theme_by_name(&settings.theme))
                 .or_else(|| iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok()),
             transparent,
@@ -120,6 +126,42 @@ fn main() -> iced::Result {
         })
         .antialiasing(false)
         .run()
+}
+
+/// The window's first size and place: 1280x800 at most, shrunk to fit the screen's usable
+/// area (not under the taskbar) and centred in it.
+fn initial_window() -> (iced::Size, iced::window::Position) {
+    let want: iced::Size<f32> = iced::Size::new(1280.0, 800.0);
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::HiDpi::GetDpiForSystem;
+        use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+        let mut wa = RECT::default();
+        // SAFETY: SPI_GETWORKAREA writes one RECT to the pointer given.
+        let ok = unsafe {
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut wa as *mut RECT as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).is_ok()
+        };
+        if ok && wa.right > wa.left && wa.bottom > wa.top {
+            // The work area is in this process's pixels: physical if it's DPI aware yet, else
+            // already scaled to 96 DPI. Either way this gives logical units.
+            let scale = (unsafe { GetDpiForSystem() }.max(96)) as f32 / 96.0;
+            let (left, top) = (wa.left as f32 / scale, wa.top as f32 / scale);
+            let (aw, ah) = ((wa.right - wa.left) as f32 / scale, (wa.bottom - wa.top) as f32 / scale);
+            // Room for the title bar and borders, plus a small margin.
+            const FRAME_W: f32 = 16.0;
+            const FRAME_H: f32 = 40.0;
+            const MARGIN: f32 = 16.0;
+            let size = iced::Size::new(
+                want.width.min(aw - FRAME_W - 2.0 * MARGIN).max(640.0),
+                want.height.min(ah - FRAME_H - 2.0 * MARGIN).max(480.0),
+            );
+            let x = left + ((aw - size.width - FRAME_W) / 2.0).max(0.0);
+            let y = top + ((ah - size.height - FRAME_H) / 2.0).max(0.0);
+            return (size, iced::window::Position::Specific(iced::Point::new(x, y)));
+        }
+    }
+    (want, iced::window::Position::Centered)
 }
 
 /// Where the GitHub update is at.
@@ -210,6 +252,23 @@ struct DownloadEntry {
     handle: Option<iced::task::Handle>,
 }
 
+/// An instrument in the difficulty graph's picker.
+#[derive(Debug, Clone, PartialEq)]
+struct GraphInst(String);
+
+impl std::fmt::Display for GraphInst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&leaderboard::instrument_label(&self.0))
+    }
+}
+
+/// A library chart opened on the Library page (`chart` once its song.ini is read).
+struct LibDetails {
+    path: PathBuf,
+    chart: Option<Arc<Chart>>,
+    art: Option<image::Handle>,
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Screen {
     Browse,
@@ -288,6 +347,10 @@ struct App {
     library_scan_found: usize,
     library_scan_expected: Option<usize>,
     library_scan_handle: Option<iced::task::Handle>,
+    /// The library chart whose details are open on the Library page.
+    lib_details: Option<LibDetails>,
+    /// The instrument picked for the Library details' difficulty graph.
+    lib_graph_inst: Option<String>,
     /// Every chart in the library folders (Library page and tools).
     catalog: Vec<Arc<library::LocalChart>>,
     /// Which local charts have lyrics; filled in the first time Library/Tools is opened.
@@ -381,6 +444,12 @@ enum Message {
     CopyText(String),
     OpenUrl(String),
     LibraryScan(library::ScanEvent),
+    /// A library chart's details were read (its folder, the chart, its album art).
+    LibraryDetails(PathBuf, Arc<Chart>, Option<image::Handle>),
+    /// Preview the library chart whose details are open.
+    OpenLocalPreview,
+    /// The instrument shown in the Library details' difficulty graph.
+    LibraryGraphInstrument(String),
     #[cfg(feature = "rhythmverse")]
     RvDone { generation: u64, append: bool, result: Result<Arc<rhythmverse::RvPage>, String> },
     #[cfg(feature = "rhythmverse")]
@@ -530,6 +599,8 @@ impl App {
             library_scan_found: 0,
             library_scan_expected: None,
             library_scan_handle: None,
+            lib_details: None,
+            lib_graph_inst: None,
             catalog: Vec::new(),
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
@@ -659,7 +730,7 @@ impl App {
     }
 
     fn tools_ctx(&self) -> tools_ui::Ctx<'_> {
-        tools_ui::Ctx { settings: &self.settings }
+        tools_ui::Ctx { settings: &self.settings, catalog: &self.catalog }
     }
 
     /// Re-filters the Library list after the catalog or lyrics data changed.
@@ -720,9 +791,165 @@ impl App {
         self.library.get(&c.library_key())?.first().cloned()
     }
 
+    /// The chart whose details are showing: the open library chart on the Library page, else
+    /// the selected search result.
+    pub fn current_chart(&self) -> Option<&Chart> {
+        if self.screen == Screen::Library {
+            return self.lib_details.as_ref().and_then(|d| d.chart.as_deref());
+        }
+        self.selected.and_then(|i| self.results.get(i)).map(|c| &**c)
+    }
+
+    /// Opens (or with `None` closes) a library chart's details: reads its song.ini and art.
+    fn open_library_details(&mut self, c: Option<Arc<library::LocalChart>>) -> Task<Message> {
+        let close = match &self.preview {
+            Some(p) if p.md5.starts_with(library::LOCAL_MD5) => self.close_preview(),
+            _ => Task::none(),
+        };
+        let Some(c) = c else {
+            self.lib_details = None;
+            return close;
+        };
+        let path = c.path.clone();
+        self.lib_details = Some(LibDetails { path: path.clone(), chart: None, art: None });
+        let read = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let (chart, art) = library::details(&c);
+                    (Arc::new(chart), art.map(image::Handle::from_bytes))
+                })
+                .await
+                .unwrap_or_else(|_| (Arc::new(Chart::default()), None))
+            },
+            move |(chart, art)| Message::LibraryDetails(path.clone(), chart, art),
+        );
+        Task::batch([close, read])
+    }
+
+    /// Height of the details below the open row: taller while an expanded preview shows.
+    fn library_details_height(&self) -> f32 {
+        let expanded = self.preview.as_ref().is_some_and(|p| p.md5.starts_with(library::LOCAL_MD5) && p.expanded());
+        if expanded { 660.0 } else { 440.0 }
+    }
+
+    /// The details below the open row on the Library page.
+    fn library_details_view(&self) -> Option<Element<'_, Message>> {
+        let d = self.lib_details.as_ref()?;
+        if self.library_page.open_chart() != Some(&d.path) {
+            return None;
+        }
+        let Some(c) = d.chart.as_deref() else {
+            return Some(center(text("Reading the chart…").size(13)).into());
+        };
+        let expanded = self.preview.as_ref().is_some_and(|p| p.md5 == c.md5 && p.expanded());
+        // The preview's highway is square like the album art it replaces (bigger when expanded).
+        let left_w: f32 = if expanded { 520.0 } else { 300.0 };
+        let h = self.library_details_height() - 24.0;
+        let previewing = self.preview.as_ref().filter(|p| p.md5 == c.md5);
+        let left: Element<'_, Message> = match (previewing, &d.art) {
+            (Some(p), _) => p.view(left_w).map(Message::Preview),
+            (None, Some(art)) => image(art.clone()).width(left_w).height(left_w).into(),
+            (None, None) => container(center(text("No album art").size(13))).width(left_w).height(left_w).style(style::panel).into(),
+        };
+
+        let raw = |o: &Option<String>| o.clone().unwrap_or_default();
+        let meta_line = |label: &'static str, v: String, link: bool| -> Element<'_, Message> {
+            if strip_tags(&v).is_empty() {
+                return space().into();
+            }
+            row![
+                text(label).size(13).width(58).style(|t: &Theme| text::Style {
+                    color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
+                }),
+                if link { search_link(v, 13) } else { tagged(&v, 13, false) },
+            ]
+            .spacing(8)
+            .into()
+        };
+        let is_sng = d.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sng"));
+        let open_path = if is_sng { d.path.parent().map(PathBuf::from).unwrap_or_default() } else { d.path.clone() };
+        let buttons = row![
+            button(text(if previewing.is_some() { "Stop preview" } else { "Preview" }).size(14))
+                .padding([8, 16])
+                .style(button::primary)
+                .on_press(if previewing.is_some() { Message::Preview(preview_panel::Msg::Close) } else { Message::OpenLocalPreview }),
+            button(text("Open folder").size(14)).padding([8, 16]).style(style::secondary).on_press(Message::OpenPath(open_path)),
+        ]
+        .spacing(8);
+        let middle = scrollable(
+            column![
+                column![
+                    container(rich::view(c.name.as_deref().unwrap_or(""), 19, BOLD, None)).clip(true),
+                    search_link(raw(&c.artist), 15),
+                ]
+                .spacing(2),
+                column![
+                    meta_line("Album", raw(&c.album), true),
+                    meta_line("Genre", raw(&c.genre), true),
+                    meta_line("Charter", raw(&c.charter), true),
+                    meta_line("Year", raw(&c.year), true),
+                    meta_line("Length", c.length_str(), false),
+                ]
+                .spacing(4),
+                self.difficulty_rows(c, 380.0),
+                chart_tags(c),
+                buttons,
+            ]
+            .spacing(10)
+            .padding(iced::Padding { right: 12.0, ..Default::default() }),
+        )
+        .width(330)
+        .height(h);
+        const GRAPH_H: f32 = 220.0;
+        let board = scrollable(container(self.leaderboard_section(c)).padding(iced::Padding { right: 12.0, ..Default::default() }))
+            .width(Length::Fill)
+            .height(h - GRAPH_H - 34.0 - 12.0);
+        let right = column![self.library_graph(c, GRAPH_H), board].spacing(12).width(Length::Fill);
+        Some(row![container(left).width(left_w), middle, right].spacing(24).height(h).into())
+    }
+
+    /// Fretwork's difficulty graph of the open library chart, with an instrument picker.
+    fn library_graph(&self, c: &Chart, height: f32) -> Element<'_, Message> {
+        let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+        let title = || text("Difficulty over the song").size(13).font(BOLD);
+        let body = |e: Element<'static, Message>| -> Element<'_, Message> {
+            column![row![title()].height(34).align_y(Alignment::Center), container(e).height(height).width(Length::Fill)].into()
+        };
+        let curves: Vec<(String, Arc<curves::Curves>)> = match self.hashes.get(&c.md5) {
+            Some(leaderboard::Hashes::Done(Ok(cp))) => cp.curves.clone(),
+            Some(leaderboard::Hashes::Done(Err(e))) => {
+                return body(text(format!("Couldn't read this chart: {e}")).size(12).style(muted).into());
+            }
+            _ => return body(text("Reading the chart…").size(12).style(muted).into()),
+        };
+        if curves.is_empty() {
+            return body(text("Fretwork doesn't graph this chart's instruments (it rates 5-fret and drums).").size(12).style(muted).into());
+        }
+        let pick = self
+            .lib_graph_inst
+            .as_ref()
+            .and_then(|k| curves.iter().position(|(i, _)| i == k))
+            .or_else(|| curves.iter().position(|(i, _)| i == "guitar"))
+            .unwrap_or(0);
+        let opts: Vec<GraphInst> = curves.iter().map(|(k, _)| GraphInst(k.clone())).collect();
+        let picker = pick_list(opts, Some(GraphInst(curves[pick].0.clone())), |g: GraphInst| Message::LibraryGraphInstrument(g.0))
+            .text_size(12)
+            .padding([3, 8]);
+        let graph = iced::widget::canvas(graph::Graph { curves: curves[pick].1.clone() }).width(Length::Fill).height(height);
+        column![
+            row![title(), space().width(Length::Fill), picker].height(34).align_y(Alignment::Center),
+            graph,
+        ]
+        .into()
+    }
+
     /// Where to read a chart's notes from: the library copy, then (RhythmVerse) a copy kept from
     /// an earlier preview, then the internet.
     pub fn chart_source(&self, c: &Chart) -> Option<leaderboard::Source> {
+        // A library chart opened on the Library page: that exact copy.
+        if let Some(p) = library::local_path(c) {
+            return Some(leaderboard::Source::Local(p));
+        }
         if let Some(p) = self.library_copy(c) {
             return Some(leaderboard::Source::Local(p));
         }
@@ -1779,6 +2006,7 @@ impl App {
                         let _ = open::that_detached(p);
                         Task::none()
                     }
+                    library_ui::Out::Expanded(c) => self.open_library_details(c),
                     library_ui::Out::Delete(paths) => {
                         // Only charts inside the library folders can be removed (to the Recycle Bin).
                         let roots = self.settings.all_library_folders();
@@ -1787,6 +2015,34 @@ impl App {
                     }
                 };
                 Task::batch([task, scroll])
+            }
+            Message::LibraryDetails(path, chart, art) => {
+                let Some(d) = self.lib_details.as_mut().filter(|d| d.path == path) else { return Task::none() };
+                d.chart = Some(chart);
+                d.art = art;
+                self.load_board()
+            }
+            Message::LibraryGraphInstrument(i) => {
+                self.lib_graph_inst = Some(i);
+                Task::none()
+            }
+            Message::OpenLocalPreview => {
+                let Some(chart) = self.lib_details.as_ref().and_then(|d| d.chart.clone()) else { return Task::none() };
+                if self.preview.as_ref().is_some_and(|p| p.md5 == chart.md5) {
+                    return Task::none();
+                }
+                let save = self.close_preview();
+                let local = library::local_path(&chart);
+                let (panel, task) = preview_panel::Panel::open(
+                    chart,
+                    self.instrument.key.map(String::from),
+                    self.difficulty.key.map(String::from),
+                    self.settings.preview_volume,
+                    self.settings.download_videos,
+                    local,
+                );
+                self.preview = Some(panel);
+                Task::batch([save, task.map(Message::Preview)])
             }
             Message::LibraryDeleted(r) => {
                 self.library_error = r.err();
@@ -1806,6 +2062,10 @@ impl App {
                     tools_ui::Out::SetIssuePaths(a, b) => {
                         self.settings.issue_scan_path = a;
                         self.settings.spreadsheet_output_path = b;
+                        self.save_settings()
+                    }
+                    tools_ui::Out::SetVideoLag(v) => {
+                        self.settings.chopt_video_lag_ms = v;
                         self.save_settings()
                     }
                 };
@@ -1857,6 +2117,10 @@ impl App {
             Message::ShowScreen(s) => {
                 self.screen = s;
                 let mut tasks = Vec::new();
+                // A library chart's preview only shows on the Library page.
+                if s != Screen::Library && self.preview.as_ref().is_some_and(|p| p.md5.starts_with(library::LOCAL_MD5)) {
+                    tasks.push(self.close_preview());
+                }
                 if s == Screen::Library {
                     if self.catalog_stale && !self.library_scanning {
                         tasks.push(self.scan_library());
@@ -1929,7 +2193,7 @@ impl App {
         let body = match self.screen {
             Screen::Browse => self.view_browse(),
             Screen::Settings => self.view_settings(),
-            Screen::Library => self.library_page.view(&self.library_ctx()).map(Message::LibraryPage),
+            Screen::Library => self.library_page.view(&self.library_ctx(), self.library_details_view().map(|d| (self.library_details_height(), d))),
             Screen::Tools => self.tools_page.view(&self.tools_ctx()).map(Message::ToolsPage),
         };
         let mut layout = column![self.view_topbar()];
@@ -2406,51 +2670,8 @@ impl App {
         .into()
     }
 
-    fn view_sidebar(&self) -> Element<'_, Message> {
-        let Some((i, c)) = self.selected.and_then(|i| self.results.get(i).map(|c| (i, c))) else {
-            return center(text("Select a chart to see details").size(14)).into();
-        };
-
-        // Album art fills the sidebar width at most, and shrinks in short windows.
-        let inner = self.sidebar_width() - if style::refined() { 40.0 } else { 32.0 } - 16.0;
-        let art_size = inner.min((self.win.height * 0.38).max(120.0));
-        let icon_size = (art_size * 0.2).clamp(36.0, 64.0);
-        let sized_art = |h: iced::widget::image::Handle| -> Element<'static, Message> {
-            let art = self.with_icon(image(h).width(art_size).height(art_size).into(), c, icon_size, icon_size * 0.19);
-            container(art).center_x(Length::Fill).into()
-        };
-        let art: Element<_> = match (&self.preview, c.album_art_md5.as_ref().and_then(|m| self.art.get(m))) {
-            // The preview replaces the album art while it's open.
-            (Some(p), _) if p.md5 == c.md5 => {
-                p.view(if p.expanded() { 500.0 } else { 296.0 }).map(Message::Preview)
-            }
-            (_, Some(Art::Ready { full: Some(full), .. })) => sized_art(full.clone()),
-            (_, Some(Art::Ready { thumb, .. })) => sized_art(thumb.clone()),
-            (_, Some(Art::Loading)) => container(center(text("Loading art…").size(13))).height(art_size).into(),
-            _ => container(center(text("No album art").size(13)))
-                .height(art_size)
-                .width(Length::Fill)
-                .style(crate::style::panel)
-                .into(),
-        };
-
-        // Raw values keep their colour tags; the widgets below draw them.
-        let raw = |o: &Option<String>| o.clone().unwrap_or_default();
-        let meta_line = |label: &'static str, v: String, link: bool| -> Element<'_, Message> {
-            if strip_tags(&v).is_empty() {
-                space().into()
-            } else {
-                row![
-                    text(label).size(13).width(58).style(|t: &Theme| text::Style {
-                        color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
-                    }),
-                    if link { search_link(v, 13) } else { tagged(&v, 13, false) },
-                ]
-                    .spacing(8)
-                    .into()
-            }
-        };
-
+    /// A chart's difficulties (with Fretwork tiers), in two columns when `inner` px allows.
+    fn difficulty_rows(&self, c: &Chart, inner: f32) -> Element<'_, Message> {
         let mut diff_items: Vec<Element<'_, Message>> = Vec::new();
         let instruments: &[(&str, &str)] = &[
             ("guitar", "Guitar"),
@@ -2527,30 +2748,56 @@ impl App {
                 a
             });
         }
+        diffs.into()
+    }
 
-        let mut tags = Vec::new();
-        if let Some(nd) = &c.notes_data {
-            if nd.has_solo_sections { tags.push("Solos"); }
-            if nd.has_lyrics { tags.push("Lyrics"); }
-            if nd.has_tap_notes { tags.push("Taps"); }
-            if nd.has_open_notes { tags.push("Opens"); }
-            if nd.has_2x_kick { tags.push("2x Kick"); }
-        }
-        if c.has_video_background { tags.push("Video"); }
-        if c.modchart { tags.push("Modchart"); }
-        let tag_row = tags.into_iter().fold(row![].spacing(6), |r, t| {
-            r.push(container(text(t).size(11)).padding([2, 8]).style(|th: &Theme| {
-                if style::refined() {
-                    style::outline_tag(th)
-                } else {
-                    container::Style {
-                        background: Some(crate::style::strong(th).into()),
-                        border: Border::default().rounded(10),
-                        ..Default::default()
-                    }
-                }
-            }))
-        });
+    fn view_sidebar(&self) -> Element<'_, Message> {
+        let Some((i, c)) = self.selected.and_then(|i| self.results.get(i).map(|c| (i, c))) else {
+            return center(text("Select a chart to see details").size(14)).into();
+        };
+
+        // Album art fills the sidebar width at most, and shrinks in short windows.
+        let inner = self.sidebar_width() - if style::refined() { 40.0 } else { 32.0 } - 16.0;
+        let art_size = inner.min((self.win.height * 0.38).max(120.0));
+        let icon_size = (art_size * 0.2).clamp(36.0, 64.0);
+        let sized_art = |h: iced::widget::image::Handle| -> Element<'static, Message> {
+            let art = self.with_icon(image(h).width(art_size).height(art_size).into(), c, icon_size, icon_size * 0.19);
+            container(art).center_x(Length::Fill).into()
+        };
+        let art: Element<_> = match (&self.preview, c.album_art_md5.as_ref().and_then(|m| self.art.get(m))) {
+            // The preview replaces the album art while it's open.
+            (Some(p), _) if p.md5 == c.md5 => {
+                p.view(if p.expanded() { 500.0 } else { 296.0 }).map(Message::Preview)
+            }
+            (_, Some(Art::Ready { full: Some(full), .. })) => sized_art(full.clone()),
+            (_, Some(Art::Ready { thumb, .. })) => sized_art(thumb.clone()),
+            (_, Some(Art::Loading)) => container(center(text("Loading art…").size(13))).height(art_size).into(),
+            _ => container(center(text("No album art").size(13)))
+                .height(art_size)
+                .width(Length::Fill)
+                .style(crate::style::panel)
+                .into(),
+        };
+
+        // Raw values keep their colour tags; the widgets below draw them.
+        let raw = |o: &Option<String>| o.clone().unwrap_or_default();
+        let meta_line = |label: &'static str, v: String, link: bool| -> Element<'_, Message> {
+            if strip_tags(&v).is_empty() {
+                space().into()
+            } else {
+                row![
+                    text(label).size(13).width(58).style(|t: &Theme| text::Style {
+                        color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
+                    }),
+                    if link { search_link(v, 13) } else { tagged(&v, 13, false) },
+                ]
+                    .spacing(8)
+                    .into()
+            }
+        };
+
+        let diffs = self.difficulty_rows(c, inner);
+        let tag_row = chart_tags(c);
 
         let dl_state = self.downloads.iter().rev().find(|d| d.md5 == c.md5).map(|d| &d.status);
         #[cfg(feature = "rhythmverse")]
@@ -2978,6 +3225,34 @@ impl App {
     }
 }
 
+/// Tags for what a chart has (solos, lyrics, video…).
+fn chart_tags<'a>(c: &Chart) -> Element<'a, Message> {
+    let mut tags = Vec::new();
+    if let Some(nd) = &c.notes_data {
+        if nd.has_solo_sections { tags.push("Solos"); }
+        if nd.has_lyrics { tags.push("Lyrics"); }
+        if nd.has_tap_notes { tags.push("Taps"); }
+        if nd.has_open_notes { tags.push("Opens"); }
+        if nd.has_2x_kick { tags.push("2x Kick"); }
+    }
+    if c.has_video_background { tags.push("Video"); }
+    if c.modchart { tags.push("Modchart"); }
+    let tag_row = tags.into_iter().fold(row![].spacing(6), |r, t| {
+        r.push(container(text(t).size(11)).padding([2, 8]).style(|th: &Theme| {
+            if style::refined() {
+                style::outline_tag(th)
+            } else {
+                container::Style {
+                    background: Some(crate::style::strong(th).into()),
+                    border: Border::default().rounded(10),
+                    ..Default::default()
+                }
+            }
+        }))
+    });
+    tag_row.into()
+}
+
 /// Each version's notes from CHANGELOG.md (built into the app): (version, items), newest first.
 fn changelog() -> Vec<(String, Vec<String>)> {
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
@@ -3059,6 +3334,8 @@ fn credits_section() -> Element<'static, Message> {
         ("Symphonia", "https://github.com/pdeljanov/Symphonia"),
         ("cpal", "https://github.com/RustAudio/cpal"),
         ("midly", "https://github.com/kovaxis/midly"),
+        ("tiny-skia", "https://github.com/linebender/tiny-skia"),
+        ("cosmic-text", "https://github.com/pop-os/cosmic-text"),
         ("image", "https://github.com/image-rs/image"),
         ("zip", "https://github.com/zip-rs/zip2"),
         ("sevenz-rust2", "https://github.com/hasenbanck/sevenz-rust2"),
@@ -3078,6 +3355,7 @@ fn credits_section() -> Element<'static, Message> {
         entry("scan-chart", "https://github.com/Geomitron/scan-chart", "by Geomitron (MIT). Chart reading, the issue checks, and the track hashes leaderboards use."),
         entry("chart-preview", "https://github.com/Geomitron/chart-preview", "by Geomitron (MIT). The note highway preview."),
         entry("Fretwork", "https://github.com/Staycation44/fretwork", "by Staycation (MIT). The Fretwork difficulty tiers."),
+        entry("CHOpt", "https://github.com/GenericMadScientist/CHOpt", "by Raymond Wright (GPL-3.0). The Star Power path optimiser and path images."),
         entry("SngFileFormat", "https://github.com/mdsitton/SngFileFormat", "by mdsitton. The .sng file format."),
         heading("Related"),
         entry("CH Scene Switcher", "https://github.com/graindead/chswitcher", "Shares its settings with the Scene Switcher tool."),

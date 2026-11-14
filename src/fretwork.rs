@@ -8,11 +8,11 @@
 
 use crate::chart::{Track, nf, nt};
 
-const WINDOW_MS: f64 = 1000.0;
-const STEP_MS: f64 = 250.0;
+pub(crate) const WINDOW_MS: f64 = 1000.0;
+pub(crate) const STEP_MS: f64 = 250.0;
 const T_REF: f64 = 230.0;
 const S_STAM: f64 = 0.20;
-const ROLL_CAP_HPS: f64 = 4.0;
+pub(crate) const ROLL_CAP_HPS: f64 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -45,7 +45,7 @@ struct Stats {
 
 /// Sums `values` (at sorted `times`) over each [start, start + 1 s) window of a grid from 0 to
 /// the last event.
-fn windowed(times: &[f64], values: &[f64], last: f64) -> Vec<f64> {
+pub(crate) fn windowed(times: &[f64], values: &[f64], last: f64) -> Vec<f64> {
     let n = (last / STEP_MS).floor() as usize + 1;
     let mut prefix = Vec::with_capacity(values.len() + 1);
     prefix.push(0.0);
