@@ -17,6 +17,7 @@ pub enum Tab {
     #[default]
     Paths,
     Scenes,
+    Themes,
     Issues,
 }
 
@@ -24,6 +25,10 @@ pub enum Tab {
 pub struct Ctx<'a> {
     pub settings: &'a crate::settings::Settings,
     pub catalog: &'a [Arc<crate::library::LocalChart>],
+    /// The theme in use.
+    pub theme: &'a Theme,
+    /// Whether the window was opened see-through.
+    pub glass_window: bool,
 }
 
 /// Requests for the app.
@@ -33,19 +38,14 @@ pub enum Out {
     SetIssuePaths(Option<PathBuf>, Option<PathBuf>),
     /// Keep the Star Power paths video calibration.
     SetVideoLag(i32),
+    /// Save, delete or import custom themes.
+    Theme(crate::theme_maker::Out),
 }
 
 fn toggle_chip<'a, M: Clone + 'a>(label: &'static str, active: bool, msg: M) -> Element<'a, M> {
     button(text(label).size(12))
         .padding([3, 10])
-        .style(move |t: &Theme, s| {
-            if crate::style::refined() {
-                return crate::style::quiet_button(active)(t, s);
-            }
-            let mut b = if active { button::primary(t, s) } else { button::secondary(t, s) };
-            b.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 });
-            b
-        })
+        .style(move |t: &Theme, s| crate::style::quiet_button(active)(t, s))
         .on_press(msg)
         .into()
 }
@@ -287,7 +287,7 @@ impl IssueTool {
                             .padding([3, 10])
                             .style(move |t: &Theme, s| {
                                 let mut b = if active { button::primary(t, s) } else { button::secondary(t, s) };
-                                b.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 });
+                                b.border = Border::default().rounded(5);
                                 b
                             })
                             .on_press(IssueMsg::Only(Some(k.clone()))),
@@ -364,6 +364,7 @@ pub struct Page {
     issues: IssueTool,
     scenes: crate::scenes_ui::ScenesTool,
     paths: crate::path_ui::PathTool,
+    themes: crate::theme_maker::ThemeMaker,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +373,7 @@ pub enum Msg {
     Issues(IssueMsg),
     Scenes(crate::scenes_ui::Msg),
     Paths(crate::path_ui::Msg),
+    Themes(crate::theme_maker::Msg),
 }
 
 impl Page {
@@ -391,6 +393,11 @@ impl Page {
                 let (t, lag) = self.paths.update(m, cx.settings.chopt_video_lag_ms);
                 (t.map(Msg::Paths), lag.map_or(Out::None, Out::SetVideoLag))
             }
+            Msg::Themes(m) => {
+                let taken: Vec<String> = crate::themes::all().iter().map(|t| t.to_string()).collect();
+                let (t, o) = self.themes.update(m, &cx.settings.custom_themes, cx.theme, &taken);
+                (t.map(Msg::Themes), Out::Theme(o))
+            }
         };
         (Task::batch([task, self.issues.list.take_scroll_task()]), out)
     }
@@ -409,7 +416,7 @@ impl Page {
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes)];
+        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes)];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -418,6 +425,7 @@ impl Page {
             Tab::Issues => self.issues.view(cx).map(Msg::Issues),
             Tab::Scenes => self.scenes.view().map(Msg::Scenes),
             Tab::Paths => self.paths.view(cx.catalog).map(Msg::Paths),
+            Tab::Themes => self.themes.view(&cx.settings.custom_themes, cx.theme, cx.glass_window).map(Msg::Themes),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }

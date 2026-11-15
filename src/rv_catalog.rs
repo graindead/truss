@@ -93,6 +93,17 @@ fn restore(path: &std::path::Path) -> Result<Connection, String> {
 
 /// Saves a compact copy of the database to restore from if it's ever damaged. Written to a
 /// temporary file first, so a crash part-way can't spoil the previous backup.
+/// Truss checks for new uploads every few minutes; the ~40 MB backup is only rewritten when
+/// it's missing or over 6 hours old.
+fn backup_due() -> bool {
+    let Some(path) = db_path() else { return false };
+    std::fs::metadata(backup_path(&path))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_none_or(|age| age > std::time::Duration::from_secs(6 * 3600))
+}
+
 fn backup() -> Result<(), String> {
     let path = db_path().ok_or("No cache folder available")?;
     let target = backup_path(&path);
@@ -196,7 +207,7 @@ pub async fn sync(mut tx: Sender<SyncEvent>) {
         // Restored from the backup (or cleared): update again from there.
         result = run_sync(&mut tx).await;
     }
-    if result.is_ok() {
+    if result.is_ok() && backup_due() {
         // Off the UI thread: it rewrites ~40 MB.
         let _ = tokio::task::spawn_blocking(backup).await;
     }

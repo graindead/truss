@@ -4,7 +4,7 @@
 use crate::library::{ChartType, LocalChart};
 use crate::vlist::VList;
 use iced::widget::{button, column, container, pick_list, row, rule, scrollable, space, text, text_input};
-use iced::{Alignment, Background, Border, Element, Length, Theme};
+use iced::{Alignment, Background, Element, Length, Theme};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -320,27 +320,21 @@ impl Page {
         let dups = cat.iter().filter(|c| self.dup_keys.contains(&c.key)).count();
         let tile = |label: &'static str, n: String, f: Filter| {
             let active = self.filter.unwrap_or(Filter::All) == f;
-            let refined = crate::style::refined();
             let number = text(n).size(20).style(move |t: &Theme| text::Style {
-                color: (refined && active).then(|| crate::style::accent(t)),
+                color: active.then(|| crate::style::accent(t)),
             });
             let caption = text(label).size(11).style(move |t: &Theme| text::Style {
-                color: refined.then(|| crate::style::muted(t)),
+                color: Some(crate::style::muted(t)),
             });
             button(column![number, caption].align_x(Alignment::Center).width(Length::Fill))
                 .width(Length::Fill)
                 .padding([8, 6])
                 .style(move |t: &Theme, s| {
-                    if refined {
-                        // Outlined; the current filter gets an accent outline and number.
-                        let mut st = crate::style::quiet_button(false)(t, s);
-                        if active {
-                            st.border.color = crate::style::accent(t);
-                        }
-                        return st;
+                    // Outlined; the current filter gets an accent outline and number.
+                    let mut st = crate::style::quiet_button(false)(t, s);
+                    if active {
+                        st.border.color = crate::style::accent(t);
                     }
-                    let mut st = if active { button::primary(t, s) } else { button::secondary(t, s) };
-                    st.border = Border::default().rounded(8);
                     st
                 })
                 .on_press(Msg::Filter(f))

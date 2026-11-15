@@ -548,9 +548,9 @@ impl AdvancedForm {
                                     .into(),
                             );
                             st.text_color = p.background.base.text;
-                            st.border = Border::default().rounded(if crate::style::refined() { 5 } else { 12 }).width(1).color(p.background.strong.color);
+                            st.border = Border::default().rounded(5).width(1).color(p.background.strong.color);
                         } else {
-                            st.border = st.border.rounded(if crate::style::refined() { 5 } else { 12 });
+                            st.border = st.border.rounded(5);
                         }
                         st
                     }),

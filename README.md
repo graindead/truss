@@ -27,14 +27,16 @@ It's a single .exe. There's no installer and nothing else to set up: download it
 
 **Search and download.** Search Encore, tick as many charts as you like, and download them in one
 go. Downloads run in the background, and a small button in the corner shows how far along they
-are. Charts you already have get a ✓ in the results.
+are. Charts you already have get a ✓ in the results. New uploads show up while Truss is open:
+it checks every few minutes, no restart needed.
 
 **Previews.** Watch a chart scroll by before you download it. For charts you already have, the
 preview plays from your own copy.
 
 **RhythmVerse.** Turn it on in Settings > Chart sources and its Clone Hero charts show up next to
 Encore's. They download from RhythmVerse, Google Drive or MediaFire (.zip, .7z, .rar or .sng).
-Truss keeps a copy of RhythmVerse's chart list on your PC so searching it is instant.
+Truss keeps its own copy of RhythmVerse's chart list on your PC, so searching it is instant,
+and tops it up from RhythmVerse every few minutes.
 RhythmVerse has no public API, so this could stop working if the site changes.
 
 **Leaderboards.** See the top 50 Clone Hero scores for a chart. This works for RhythmVerse charts
@@ -60,13 +62,17 @@ and ends a song, shows your Ouvert request queue, and can skip to the next song 
 a Twitch chat command. It shares its settings with the standalone
 [CH Scene Switcher](https://github.com/graindead/chswitcher).
 
-**Looks.** On the Library tab, song names, artists and charters show the colours charters gave
-them in Clone Hero (you can turn this off). On Windows there's also a frosted glass option that blurs whatever is
-behind the window (Settings > Appearance > Transparency, still in beta).
+**Themes.** Pick a built-in theme, or make your own in Tools > Themes: choose each colour with a
+picker and see a preview as you go. A theme can also decide whether the window is solid or
+frosted glass (which blurs whatever is behind it, on Windows). Export a theme to share it as a
+small file, and import ones other people made.
+
+**Coloured names.** On the Library tab, song names, artists and charters show the colours
+charters gave them in Clone Hero (you can turn this off).
 
 ## Not in Truss yet
 
-A few things from Bridge haven't been ported: Report issue, UI zoom and custom themes.
+A few things from Bridge haven't been ported: Report issue and UI zoom.
 
 ## Credits and licence
 
@@ -136,6 +142,7 @@ it with `truss.exe.sha256`, using the CHANGELOG section as the release notes.
 - `src/advanced.rs`: the Advanced search form
 - `src/library.rs`, `src/library_ui.rs`, `src/lyrics.rs`: scanning your library, its cache, and the Library page
 - `src/tools_ui.rs`: the Tools page
+- `src/theme_maker.rs`: Tools > Themes (custom themes, colour picker, import and export)
 - `src/chopt/`, `src/path_ui.rs`: the Star Power path optimiser (Rust port of CHOpt) and its page
 - `src/fretwork.rs`, `src/curves.rs`, `src/graph.rs`: Fretwork tiers, difficulty curves and the graph
 - `src/rhythmverse.rs`, `src/rv_catalog.rs`, `src/rv_ui.rs`: RhythmVerse search, its local chart list (SQLite) and downloads

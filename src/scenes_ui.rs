@@ -347,13 +347,7 @@ impl ScenesTool {
                 .width(Length::Fill)
                 .padding([7, 12])
                 .style(move |t: &Theme, st| {
-                    if crate::style::refined() {
-                        crate::style::row_button(active, false)(t, st)
-                    } else if active {
-                        button::primary(t, st)
-                    } else {
-                        button::subtle(t, st)
-                    }
+                    crate::style::row_button(active, false)(t, st)
                 })
                 .on_press(Msg::Sub(s))
         };

@@ -1,20 +1,9 @@
-//! The "Refined look" (Settings > Appearance): quieter styling with hairline dividers, muted
-//! secondary text and the accent colour kept for what you act on. Colours come from the
-//! current theme, so it works with every theme.
+//! Truss's look: quiet styling with hairline dividers, muted secondary text and the accent
+//! colour kept for what you act on. Colours come from the current theme, so it works with every
+//! theme.
 
 use iced::widget::{button, container, pick_list, text_input};
 use iced::{Background, Border, Color, Theme};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static REFINED: AtomicBool = AtomicBool::new(false);
-
-pub fn refined() -> bool {
-    REFINED.load(Ordering::Relaxed)
-}
-
-pub fn set_refined(on: bool) {
-    REFINED.store(on, Ordering::Relaxed);
-}
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1.0 }
@@ -138,29 +127,22 @@ pub fn outline_tag(t: &Theme) -> container::Style {
     }
 }
 
-/// `button::secondary`, or the quiet outlined button with the refined look on.
+/// A quiet outlined button.
 pub fn secondary(t: &Theme, s: button::Status) -> button::Style {
-    if refined() { quiet_button(false)(t, s) } else { button::secondary(t, s) }
+    quiet_button(false)(t, s)
 }
 
-/// `container::rounded_box`, or a hairline-outlined panel on the page background.
+/// A hairline-outlined panel on the page background.
 pub fn panel(t: &Theme) -> container::Style {
-    if refined() {
-        container::Style {
-            background: None,
-            border: Border { color: hairline(t), width: 1.0, radius: 6.0.into() },
-            ..Default::default()
-        }
-    } else {
-        container::rounded_box(t)
+    container::Style {
+        background: None,
+        border: Border { color: hairline(t), width: 1.0, radius: 6.0.into() },
+        ..Default::default()
     }
 }
 
-/// `button::subtle`, or plain muted text that brightens on hover.
+/// Plain muted text that brightens on hover.
 pub fn subtle(t: &Theme, s: button::Status) -> button::Style {
-    if !refined() {
-        return button::subtle(t, s);
-    }
     let hover = matches!(s, button::Status::Hovered | button::Status::Pressed);
     button::Style {
         background: hover.then(|| Background::Color(raised(t))),
@@ -173,45 +155,36 @@ pub fn subtle(t: &Theme, s: button::Status) -> button::Style {
 /// Divider lines in the theme's hairline colour.
 pub fn rule(t: &Theme) -> iced::widget::rule::Style {
     let mut st = iced::widget::rule::default(t);
-    if refined() {
-        st.color = hairline(t);
-    }
+    st.color = hairline(t);
     st
 }
 
-/// Shaded panel backgrounds: flat page background with the refined look.
+/// Shaded panel backgrounds: the flat page background.
 pub fn weakest(t: &Theme) -> Color {
-    if refined() { bg(t) } else { t.extended_palette().background.weakest.color }
+    bg(t)
 }
 
 /// Hover and raised surfaces.
 pub fn weak(t: &Theme) -> Color {
-    if refined() { raised(t) } else { t.extended_palette().background.weak.color }
+    raised(t)
 }
 
 /// Placeholders and "off" fills.
 pub fn strong(t: &Theme) -> Color {
-    if refined() { hairline(t) } else { t.extended_palette().background.strong.color }
+    hairline(t)
 }
 
 /// Selected list rows.
 pub fn selected(t: &Theme) -> Color {
-    if refined() { accent_tint(t, 0.16) } else { t.extended_palette().primary.weak.color }
+    accent_tint(t, 0.16)
 }
 
 pub fn selected_text(t: &Theme) -> Color {
-    if refined() { fg(t) } else { t.extended_palette().primary.weak.text }
+    fg(t)
 }
 
-/// A page's tab: a filled button normally, text with an accent underline when refined.
+/// A page's tab: text with an accent underline when active.
 pub fn tab<'a, M: Clone + 'a>(label: &'static str, active: bool, size: u32, msg: M) -> iced::Element<'a, M> {
-    if !refined() {
-        return button(iced::widget::text(label).size(size))
-            .padding([7, 14])
-            .style(move |th: &Theme, s| if active { button::primary(th, s) } else { button::subtle(th, s) })
-            .on_press(msg)
-            .into();
-    }
     iced::widget::column![
         button(iced::widget::text(label).size(size)).padding([6, 4]).style(nav_button(active)).on_press(msg),
         container(iced::widget::space()).height(2).width(iced::Length::Fill).style(move |t: &Theme| container::Style {

@@ -8,57 +8,29 @@ use iced::{Alignment, Border, Element, Length, Theme};
 
 /// Small green check shown on results you already have.
 pub fn library_mark<'a>() -> Element<'a, Message> {
-    if crate::style::refined() {
-        return text("✓").size(13).style(|t: &Theme| text::Style { color: Some(t.extended_palette().success.base.color) }).into();
-    }
-    container(text("✓").size(11))
-        .padding([0, 5])
-        .style(|t: &Theme| {
-            let p = t.extended_palette();
-            container::Style {
-                background: Some(p.success.weak.color.into()),
-                text_color: Some(p.success.weak.text),
-                border: Border::default().rounded(4),
-                ..Default::default()
-            }
-        })
-        .into()
+    text("✓").size(13).style(|t: &Theme| text::Style { color: Some(t.extended_palette().success.base.color) }).into()
 }
 
 /// Small "RV" tag shown on RhythmVerse results.
 pub fn rv_tag<'a>() -> Element<'a, Message> {
-    if crate::style::refined() {
-        // A small blue tag (its own colour, so it doesn't read as an accent or a warning).
-        let tag = container(text("RV").size(10).font(crate::BOLD)).padding([1, 5]).style(|t: &Theme| {
-            let blue = iced::Color::from_rgb8(0x5a, 0xa9, 0xe6);
-            let bg = crate::style::bg(t);
-            let mix = |a: f32| iced::Color { r: bg.r + (blue.r - bg.r) * a, g: bg.g + (blue.g - bg.g) * a, b: bg.b + (blue.b - bg.b) * a, a: 1.0 };
-            container::Style {
-                background: Some(mix(0.22).into()),
-                text_color: Some(mix(0.9)),
-                border: Border::default().rounded(3),
-                ..Default::default()
-            }
-        });
-        return iced::widget::tooltip(
-            tag,
-            container(text("From RhythmVerse").size(12)).padding([4, 8]).style(crate::style::panel_solid),
-            iced::widget::tooltip::Position::Top,
-        )
-        .into();
-    }
-    container(text("RV").size(10))
-        .padding([0, 5])
-        .style(|t: &Theme| {
-            let p = t.extended_palette();
-            container::Style {
-                background: Some(p.secondary.strong.color.into()),
-                text_color: Some(p.secondary.strong.text),
-                border: Border::default().rounded(4),
-                ..Default::default()
-            }
-        })
-        .into()
+    // A small blue tag (its own colour, so it doesn't read as an accent or a warning).
+    let tag = container(text("RV").size(10).font(crate::BOLD)).padding([1, 5]).style(|t: &Theme| {
+        let blue = iced::Color::from_rgb8(0x5a, 0xa9, 0xe6);
+        let bg = crate::style::bg(t);
+        let mix = |a: f32| iced::Color { r: bg.r + (blue.r - bg.r) * a, g: bg.g + (blue.g - bg.g) * a, b: bg.b + (blue.b - bg.b) * a, a: 1.0 };
+        container::Style {
+            background: Some(mix(0.22).into()),
+            text_color: Some(mix(0.9)),
+            border: Border::default().rounded(3),
+            ..Default::default()
+        }
+    });
+    iced::widget::tooltip(
+        tag,
+        container(text("From RhythmVerse").size(12)).padding([4, 8]).style(crate::style::panel_solid),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
 }
 
 fn expander<'a>(label: String, open: bool, msg: Message) -> Element<'a, Message> {

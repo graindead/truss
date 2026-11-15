@@ -162,12 +162,7 @@ impl App {
             button(text(format!("{label}{arrow}")).size(12))
                 .padding([4, 12])
                 .style(move |t: &Theme, st| {
-                    if crate::style::refined() {
-                        return crate::style::quiet_button(active)(t, st);
-                    }
-                    let mut b = if active { button::primary(t, st) } else { button::secondary(t, st) };
-                    b.border = b.border.rounded(14);
-                    b
+                    crate::style::quiet_button(active)(t, st)
                 })
                 .on_press(Message::SortBy(key))
         };
@@ -487,7 +482,7 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            (self.list_rev, crate::style::refined(), self.list_cols(), self.fw.checked, self.dl_rows_key()),
+            (self.list_rev, self.list_cols(), self.fw.checked, self.dl_rows_key()),
         )
     }
 

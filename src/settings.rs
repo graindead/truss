@@ -32,6 +32,8 @@ pub struct Settings {
     pub difficulty: Option<String>,
     /// Name of the iced theme.
     pub theme: String,
+    /// Themes made in Tools > Themes (or imported).
+    pub custom_themes: Vec<crate::theme_maker::CustomTheme>,
     /// Render on the CPU (tiny-skia) instead of the GPU. Uses far less RAM.
     pub cpu_rendering: bool,
     /// Chart preview volume, 0..=1.
@@ -42,8 +44,6 @@ pub struct Settings {
     pub preview_fps: u32,
     /// Look for a new version on GitHub when Truss starts.
     pub check_updates: bool,
-    /// The quieter "Refined look" (see style.rs).
-    pub refined_ui: bool,
     /// The Leaderboard section in the details is open.
     pub show_leaderboard: bool,
     /// The Library page's sort order (see `library_ui::SortBy::key`); empty for the default.
@@ -82,7 +82,6 @@ impl Default for Settings {
             layout: "list".into(),
             preview_fps: 60,
             check_updates: true,
-            refined_ui: true,
             show_leaderboard: false,
             library_sort: String::new(),
             show_fretwork: true,
@@ -92,6 +91,7 @@ impl Default for Settings {
             window_backdrop: if cfg!(windows) { "frosted" } else { "off" }.into(),
             glass_transparency: 0.5,
             chopt_video_lag_ms: 0,
+            custom_themes: Vec::new(),
         }
     }
 }
@@ -164,12 +164,12 @@ mod tests {
     fn new_install_defaults() {
         let s = Settings::default();
         assert!(!s.is_sng && !s.download_videos && !s.cpu_rendering);
-        assert!(s.refined_ui && s.show_fretwork);
+        assert!(s.show_fretwork);
         assert_eq!((s.theme.as_str(), s.layout.as_str(), s.preview_fps), ("Rust", "list", 60));
         #[cfg(windows)]
         assert_eq!(s.window_backdrop, "frosted");
         // A settings file from an older version keeps its values; only missing ones get defaults.
         let old: Settings = serde_json::from_str(r#"{"refined_ui": false, "download_videos": true}"#).unwrap();
-        assert!(!old.refined_ui && old.download_videos && old.show_fretwork && old.text_colors);
+        assert!(old.download_videos && old.show_fretwork && old.text_colors);
     }
 }

@@ -48,8 +48,6 @@ fn rv_undated(date: &str) -> bool {
 
 /// Results per page when searching the local catalogue.
 const LOCAL_PAGE: u32 = 50;
-/// Re-sync on start when the catalogue is older than this.
-const STALE_SECS: i64 = 6 * 3600;
 
 impl App {
     pub fn rv_enabled(&self) -> bool {
@@ -153,14 +151,11 @@ impl App {
         !self.rv.buffer.is_empty() || !self.rv.encore_buffer.is_empty()
     }
 
-    /// Updates the local catalogue on start if it's missing or stale.
+    /// Brings the local catalogue up to date on start (a quick check for new uploads, usually
+    /// one request, or the first full copy).
     pub fn rv_auto_sync(&mut self) -> Task<Message> {
         self.rv.catalog = rv_catalog::status();
-        let stale = self.rv.catalog.last_sync.is_none_or(|t| {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            now - t > STALE_SECS
-        });
-        if self.rv_enabled() && (!self.rv.catalog.ready || stale) { self.rv_start_sync() } else { Task::none() }
+        if self.rv_enabled() { self.rv_start_sync() } else { Task::none() }
     }
 
     pub fn rv_start_sync(&mut self) -> Task<Message> {
@@ -181,12 +176,17 @@ impl App {
             SyncEvent::Finished(r) => {
                 self.rv.syncing = None;
                 let was_ready = self.rv.catalog.ready;
+                let before = self.rv.catalog.charts;
                 self.rv.catalog = rv_catalog::status();
                 if let Err(e) = r {
                     self.rv.sync_error = Some(e);
                 }
                 // The first full copy just finished: show RhythmVerse results from it.
-                if !was_ready && self.rv.catalog.ready { self.search(false) } else { Task::none() }
+                if !was_ready && self.rv.catalog.ready {
+                    return self.search(false);
+                }
+                // New uploads: refresh the list, unless you're busy with it.
+                if self.rv.catalog.charts > before && self.list_idle() { self.search(false) } else { Task::none() }
             }
         }
     }

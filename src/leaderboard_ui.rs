@@ -35,7 +35,7 @@ fn thousands(n: i64) -> String {
 
 fn muted(t: &Theme) -> text::Style {
     text::Style {
-        color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..style::fg(t) } }),
+        color: Some(style::muted(t)),
     }
 }
 
@@ -189,7 +189,7 @@ impl App {
         let cur_diff = diffs.iter().find(|o| o.key == current.difficulty).cloned();
         let diff_now = current.difficulty.clone();
         let inst_now = current.instrument.clone();
-        let picker_style = |t: &Theme, s| if style::refined() { style::quiet_pick_list(t, s) } else { pick_list::default(t, s) };
+        let picker_style = style::quiet_pick_list;
         col = col.push(
             row![
                 pick_list(insts, cur_inst, move |o: Opt| Message::PickLeaderboard(o.key, diff_now.clone()))

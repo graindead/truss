@@ -36,11 +36,11 @@ impl Backdrop {
     }
 
     /// How opaque the app's own background is drawn over what's behind, for a see-through
-    /// amount from Settings (0.1-0.8).
+    /// amount from Settings (0.1-1.0; 1.0 shows only the blur).
     pub fn alpha(self, transparency: f32) -> f32 {
         match self {
             Backdrop::Off => 1.0,
-            Backdrop::Frosted => 1.0 - transparency.clamp(0.1, 0.8),
+            Backdrop::Frosted => 1.0 - transparency.clamp(0.1, 1.0),
         }
     }
 }

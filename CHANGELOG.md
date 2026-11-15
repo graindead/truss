@@ -3,6 +3,20 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.15
+
+- **Make your own themes:** Tools > Themes. Start from the theme you're using, set each colour
+  with a colour picker (click a swatch), and watch a preview as you go. Save and use it, export
+  it as a small .json file to share, or import themes other people made. Your themes are listed
+  in Settings > Theme too.
+- **Themes can set transparency:** a theme can be solid or frosted glass with its own
+  see-through amount, or follow your Transparency setting.
+- **See-through up to 100%:** the frosted glass slider now goes all the way.
+- **New charts without restarting:** Truss checks Encore and RhythmVerse for new uploads on
+  start and every 3 minutes, and refreshes the list when you're at the top of it with nothing
+  open. RhythmVerse charts still come straight from rhythmverse.co into your own copy.
+- **One look:** the Beta UI is now the only UI, and its switch is gone from Settings.
+
 ## v0.1.14
 
 - **Faster start-up:** Truss no longer re-reads every chart's song.ini when it checks your

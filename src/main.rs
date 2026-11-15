@@ -39,6 +39,7 @@ mod textures;
 mod trackhash;
 mod taskbar_icon;
 mod themes;
+mod theme_maker;
 mod backdrop;
 mod icon_paint;
 mod fretwork;
@@ -53,7 +54,7 @@ use iced::widget::{
     button, center, checkbox, column, container, image, pick_list, progress_bar, row, rule, scrollable, space, text,
     text_input, toggler,
 };
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme};
+use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme};
 use extras::{library_mark, rv_tag};
 use settings::Settings;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -119,7 +120,7 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             size: initial_size,
             position: initial_position,
-            icon: app_icon(&theme_by_name(&settings.theme))
+            icon: app_icon(&theme_by_name(&settings.theme, &settings.custom_themes))
                 .or_else(|| iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok()),
             transparent,
             ..Default::default()
@@ -252,6 +253,9 @@ struct Notices {
     /// Downloads that failed since the "failed" notice appeared.
     failed: usize,
 }
+
+/// How often to look for newly uploaded charts while Truss is open.
+const NEW_CHARTS_SECS: u64 = 3 * 60;
 
 /// How long the "done" notice stays after the last download of a batch finishes.
 const NOTICE_SECS: u64 = 6;
@@ -445,7 +449,6 @@ enum Message {
     UpdateEvent(updater::InstallEvent),
     RestartForUpdate,
     ToggleCheckUpdates(bool),
-    ToggleRefined(bool),
     ToggleFretwork(bool),
     ToggleTextColors(bool),
     BackdropPicked(backdrop::Backdrop),
@@ -492,6 +495,10 @@ enum Message {
     ToggleAdvanced,
     Advanced(advanced::Msg),
     SearchDone { generation: u64, append: bool, result: Result<api::SearchResponse, String> },
+    /// Every few minutes: look for charts uploaded since the list loaded.
+    CheckNewCharts,
+    /// The first page of Encore results again, to compare with what's shown.
+    NewChartsChecked(Result<api::SearchResponse, String>),
     Scrolled(scrollable::Viewport),
     Select(usize),
     ArtLoaded(String, Result<(DecodedImage, bytes::Bytes), String>),
@@ -552,20 +559,35 @@ impl std::fmt::Display for ThemeChoice {
     }
 }
 
-fn all_themes() -> Vec<ThemeChoice> {
-    themes::all().into_iter().map(ThemeChoice).collect()
+/// The built-in themes, then the ones made in Tools > Themes.
+fn all_themes(custom: &[theme_maker::CustomTheme]) -> Vec<ThemeChoice> {
+    themes::all().into_iter().chain(custom.iter().map(|t| t.theme())).map(ThemeChoice).collect()
 }
 
 /// The transparency to use this session (none with CPU rendering, which can't show it).
 fn active_backdrop(s: &Settings) -> backdrop::Backdrop {
-    if s.cpu_rendering { backdrop::Backdrop::Off } else { backdrop::Backdrop::from_key(&s.window_backdrop) }
+    if s.cpu_rendering {
+        return backdrop::Backdrop::Off;
+    }
+    match theme_transparency(s) {
+        Some(t) if t > 0.0 => backdrop::Backdrop::Frosted,
+        Some(_) => backdrop::Backdrop::Off,
+        None => backdrop::Backdrop::from_key(&s.window_backdrop),
+    }
+}
+
+/// The transparency the current theme sets (made in Tools > Themes): 0 for solid, otherwise
+/// the frosted glass see-through amount. None when it leaves it to Settings.
+fn theme_transparency(s: &Settings) -> Option<f32> {
+    s.custom_themes.iter().find(|t| t.name == s.theme).and_then(|t| t.transparency)
 }
 
 /// Points this exe's taskbar pins at the theme's icon embedded in truss.exe (see build.rs), or
 /// back at the main icon for the first (Rust) theme.
 fn pin_icon_task(theme: &Theme) -> Task<Message> {
     let name = theme.to_string();
-    let Some(i) = themes::all().iter().position(|t| t.to_string() == name) else { return Task::none() };
+    // Made-in-Truss themes have no icon in the exe, so their pins get the main icon.
+    let i = themes::all().iter().position(|t| t.to_string() == name).unwrap_or(0);
     let id = (i > 0).then(|| themes::ICON_ID_BASE + i as u16);
     Task::perform(async move { tokio::task::spawn_blocking(move || taskbar_icon::apply(id)).await }, |_| {
         Message::PinIconDone
@@ -583,14 +605,13 @@ fn app_icon_rgba(theme: &Theme) -> Option<(Vec<u8>, u32, u32)> {
     icon_paint::recolor(accent, bg)
 }
 
-fn theme_by_name(name: &str) -> Theme {
-    all_themes().into_iter().map(|t| t.0).find(|t| t.to_string() == name).unwrap_or_else(themes::rust_theme)
+fn theme_by_name(name: &str, custom: &[theme_maker::CustomTheme]) -> Theme {
+    all_themes(custom).into_iter().map(|t| t.0).find(|t| t.to_string() == name).unwrap_or_else(themes::rust_theme)
 }
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let settings = Settings::load();
-        style::set_refined(settings.refined_ui);
         rich::set_enabled(settings.text_colors);
         let instrument_opts = instrument_opts();
         let difficulty_opts = difficulty_opts();
@@ -636,7 +657,7 @@ impl App {
             encore_seen: 0,
             #[cfg(feature = "rhythmverse")]
             rv: Default::default(),
-            theme: theme_by_name(&settings.theme),
+            theme: theme_by_name(&settings.theme, &settings.custom_themes),
             backdrop: active_backdrop(&settings),
             instrument: find_opt(&instrument_opts, settings.instrument.as_deref()),
             difficulty: find_opt(&difficulty_opts, settings.difficulty.as_deref()),
@@ -699,7 +720,12 @@ impl App {
         let p = theme.extended_palette();
         let mut bg = p.background.base.color;
         // The window presents pre-multiplied alpha, so the colour is scaled by it too.
-        let a = self.backdrop.alpha(self.settings.glass_transparency);
+        let a = match theme_transparency(&self.settings) {
+            _ if self.backdrop == backdrop::Backdrop::Off => 1.0,
+            Some(t) if t > 0.0 => self.backdrop.alpha(t),
+            Some(_) => 1.0,
+            None => self.backdrop.alpha(self.settings.glass_transparency),
+        };
         bg = Color { r: bg.r * a, g: bg.g * a, b: bg.b * a, a };
         iced::theme::Style { background_color: bg, text_color: p.background.base.text }
     }
@@ -739,6 +765,7 @@ impl App {
             } else {
                 Subscription::none()
             },
+            iced::time::every(std::time::Duration::from_secs(NEW_CHARTS_SECS)).map(|_| Message::CheckNewCharts),
         ]);
         match &self.preview {
             Some(p) => {
@@ -746,6 +773,37 @@ impl App {
             }
             None => Subscription::batch([modifiers, tools]),
         }
+    }
+
+    /// Whether the results can be refreshed without getting in your way: on Browse, at the top
+    /// of the list, nothing open or ticked, and no search or filter typed in.
+    pub fn list_idle(&self) -> bool {
+        self.screen == Screen::Browse
+            && self.query.is_empty()
+            && self.active_advanced.is_none()
+            && self.selected.is_none()
+            && self.checked.is_empty()
+            && self.art_center == 0
+            && !self.fw_active()
+            && !self.loading
+    }
+
+    /// Looks for new uploads: RhythmVerse into the local copy (which refreshes the list when it
+    /// finds some), and Encore by comparing its first page with what's shown.
+    fn check_new_charts(&mut self) -> Task<Message> {
+        #[cfg(feature = "rhythmverse")]
+        let rv = if self.rv_enabled() && self.rv.catalog.ready { self.rv_start_sync() } else { Task::none() };
+        #[cfg(not(feature = "rhythmverse"))]
+        let rv = Task::none();
+        if !self.settings.source_encore || !self.list_idle() {
+            return rv;
+        }
+        let mut common = api::Common::new(1, self.instrument.key.map(String::from), self.difficulty.key.map(String::from), self.sort);
+        if self.instrument.key == Some("drums") {
+            common.drum_type = self.drum_type.key.map(String::from);
+            common.drums_reviewed = self.drums_reviewed.key.is_some();
+        }
+        Task::batch([rv, Task::perform(api::search(String::new(), common), Message::NewChartsChecked)])
     }
 
     fn library_ctx(&self) -> library_ui::Ctx<'_> {
@@ -759,8 +817,40 @@ impl App {
         }
     }
 
+    /// Saves, deletes or imports themes made in Tools > Themes.
+    fn custom_theme_change(&mut self, o: theme_maker::Out) -> Task<Message> {
+        let list = &mut self.settings.custom_themes;
+        let mut switch_to = None;
+        match o {
+            theme_maker::Out::None => return Task::none(),
+            theme_maker::Out::Save { theme, old_name, apply } => {
+                let was = old_name.as_deref().and_then(|n| list.iter().position(|t| t.name == n));
+                let in_use = old_name.as_deref().is_some_and(|n| self.settings.theme == n);
+                match was {
+                    Some(i) => list[i] = theme.clone(),
+                    None => list.push(theme.clone()),
+                }
+                // Editing the theme in use (or asking to use it) shows the change straight away.
+                if apply || in_use {
+                    switch_to = Some(theme.theme());
+                }
+            }
+            theme_maker::Out::Delete(name) => {
+                list.retain(|t| t.name != name);
+                if self.settings.theme == name {
+                    switch_to = Some(themes::rust_theme());
+                }
+            }
+            theme_maker::Out::Import(added) => list.extend(added),
+        }
+        match switch_to {
+            Some(t) => self.update(Message::ThemePicked(ThemeChoice(t))),
+            None => self.save_settings(),
+        }
+    }
+
     fn tools_ctx(&self) -> tools_ui::Ctx<'_> {
-        tools_ui::Ctx { settings: &self.settings, catalog: &self.catalog }
+        tools_ui::Ctx { settings: &self.settings, catalog: &self.catalog, theme: &self.theme, glass_window: self.backdrop != backdrop::Backdrop::Off }
     }
 
     /// Re-filters the Library list after the catalog or lyrics data changed.
@@ -889,7 +979,7 @@ impl App {
             }
             row![
                 text(label).size(13).width(58).style(|t: &Theme| text::Style {
-                    color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
+                    color: Some(style::muted(t)),
                 }),
                 if link { search_link(v, 13) } else { tagged(&v, 13, false) },
             ]
@@ -1461,6 +1551,18 @@ impl App {
                 self.difficulty = o;
                 Task::batch([self.search(false), self.save_settings()])
             }
+            Message::CheckNewCharts => self.check_new_charts(),
+            Message::NewChartsChecked(Ok(page)) => {
+                // Charts already loaded, counting older versions and ones held back to mix
+                // with RhythmVerse by date.
+                let mut seen: std::collections::HashSet<&str> =
+                    self.versions.values().flatten().map(|c| c.md5.as_str()).collect();
+                #[cfg(feature = "rhythmverse")]
+                seen.extend(self.rv.encore_buffer.iter().map(|c| c.md5.as_str()));
+                let new = page.data.iter().take(20).any(|c| !seen.contains(c.md5.as_str()));
+                if new && self.list_idle() { self.search(false) } else { Task::none() }
+            }
+            Message::NewChartsChecked(Err(_)) => Task::none(),
             Message::SearchDone { generation, append, result } => {
                 if generation != self.generation {
                     return Task::none();
@@ -1748,12 +1850,6 @@ impl App {
                 Task::none()
             }
             Message::SaveSettings => self.save_settings(),
-            Message::ToggleRefined(b) => {
-                self.settings.refined_ui = b;
-                style::set_refined(b);
-                self.list_rev += 1;
-                self.save_settings()
-            }
             Message::ToggleChangelog => {
                 self.show_changelog = !self.show_changelog;
                 Task::none()
@@ -2132,6 +2228,7 @@ impl App {
                         self.settings.chopt_video_lag_ms = v;
                         self.save_settings()
                     }
+                    tools_ui::Out::Theme(o) => self.custom_theme_change(o),
                 };
                 Task::batch([task, extra])
             }
@@ -2272,93 +2369,6 @@ impl App {
     }
 
     fn view_topbar(&self) -> Element<'_, Message> {
-        if style::refined() {
-            return self.view_topbar_refined();
-        }
-        let placeholder = if self.active_advanced.is_some() {
-            "Showing advanced search results — type here to go back to quick search"
-        } else {
-            "Search songs, artists, albums, charters…"
-        };
-        let search = text_input(placeholder, &self.query)
-            .id(SEARCH_ID)
-            .on_input(Message::QueryChanged)
-            .on_submit(Message::SubmitSearch)
-            .padding([9, 14])
-            .size(15)
-            .style(|t: &Theme, s| {
-                let mut st = text_input::default(t, s);
-                st.border.radius = 8.0.into();
-                st
-            });
-
-        let nav = |label: &'static str, screen: Screen| {
-            let active = self.screen == screen;
-            button(text(label).size(14))
-                .padding([8, 14])
-                .style(move |t: &Theme, s| if active { button::primary(t, s) } else { button::subtle(t, s) })
-                .on_press(Message::ShowScreen(screen))
-        };
-
-        let filters = row![
-                {
-                    let n = self.advanced.active_count();
-                    let label = if n > 0 { format!("Advanced ({n})") } else { "Advanced".to_string() };
-                    let highlighted = self.advanced_open || self.active_advanced.is_some();
-                    button(text(label).size(14))
-                        .padding([8, 14])
-                        .style(move |t: &Theme, s| {
-                            if highlighted { button::primary(t, s) } else { button::secondary(t, s) }
-                        })
-                        .on_press(Message::ToggleAdvanced)
-                },
-                pick_list(self.instrument_opts.as_slice(), Some(&self.instrument), Message::InstrumentPicked)
-                    .padding([8, 12])
-                    .text_size(14),
-                pick_list(self.difficulty_opts.as_slice(), Some(&self.difficulty), Message::DifficultyPicked)
-                    .padding([8, 12])
-                    .text_size(14),
-            ]
-            .extend((self.instrument.key == Some("drums")).then(|| -> Element<'_, Message> {
-                pick_list(self.drum_type_opts.as_slice(), Some(&self.drum_type), Message::DrumTypePicked)
-                    .padding([8, 12])
-                    .text_size(14)
-                    .into()
-            }))
-            .extend((self.instrument.key == Some("drums")).then(|| -> Element<'_, Message> {
-                pick_list(self.reviewed_opts.as_slice(), Some(&self.drums_reviewed), Message::DrumsReviewedPicked)
-                    .padding([8, 12])
-                    .text_size(14)
-                    .into()
-            }))
-            .spacing(10)
-            .align_y(Alignment::Center);
-        let main = row![
-            text("Truss").font(BOLD).size(20),
-            nav("Browse", Screen::Browse),
-            nav("Library", Screen::Library),
-            nav("Tools", Screen::Tools),
-            nav("Settings", Screen::Settings),
-            search,
-        ]
-        .push(self.update_button())
-        .spacing(10)
-        .align_y(Alignment::Center);
-        let bar: Element<'_, Message> = if self.narrow_topbar() {
-            column![main, filters].spacing(8).into()
-        } else {
-            main.push(filters).into()
-        };
-        container(bar)
-        .padding([10, 14])
-        .style(|t: &Theme| container::Style {
-            background: Some(crate::style::weak(t).into()),
-            ..Default::default()
-        })
-        .into()
-    }
-
-    fn view_topbar_refined(&self) -> Element<'_, Message> {
         let placeholder = if self.active_advanced.is_some() {
             "Showing advanced search results — type here to go back to quick search"
         } else {
@@ -2452,91 +2462,12 @@ impl App {
             variants::UiVariant::Default => {}
         }
         let expanded = self.preview.as_ref().is_some_and(|p| p.expanded());
-        if style::refined() {
-            let sidebar = container(self.view_sidebar()).width(if expanded { 720.0_f32.min(self.win.width * 0.6) } else { self.sidebar_width() }).height(Length::Fill).padding([18, 20]);
-            return row![self.lazy_results(), style::divider(true), sidebar].height(Length::Fill).into();
-        }
-        let sidebar = container(self.view_sidebar())
-            .width(if expanded { 720.0_f32.min(self.win.width * 0.6) } else { self.sidebar_width() })
-            .height(Length::Fill)
-            .padding(16)
-            .style(|t: &Theme| container::Style {
-                background: Some(crate::style::weakest(t).into()),
-                ..Default::default()
-            });
-        row![self.lazy_results(), sidebar].height(Length::Fill).into()
+        let sidebar = container(self.view_sidebar()).width(if expanded { 720.0_f32.min(self.win.width * 0.6) } else { self.sidebar_width() }).height(Length::Fill).padding([18, 20]);
+        row![self.lazy_results(), style::divider(true), sidebar].height(Length::Fill).into()
     }
 
     /// Default layout's results list (header + rows), built with owned data for `lazy`.
     fn list_results(&self) -> Element<'static, Message> {
-        use api::{SortDir, SortKey};
-        if style::refined() {
-            return self.list_results_refined();
-        }
-        let col = |label: &'static str, key: SortKey, width: Length| {
-            let arrow = match self.sort {
-                Some(s) if s.key == key && s.direction == SortDir::Asc => " ▲",
-                Some(s) if s.key == key => " ▼",
-                _ => "",
-            };
-            button(text(format!("{label}{arrow}")).font(BOLD).size(13))
-                .padding(0)
-                .width(width)
-                .style(|t: &Theme, s| {
-                    let p = t.extended_palette();
-                    button::Style {
-                        text_color: if matches!(s, button::Status::Hovered) {
-                            p.primary.strong.color
-                        } else {
-                            p.background.base.text
-                        },
-                        ..Default::default()
-                    }
-                })
-                .on_press(Message::SortBy(key))
-        };
-        let cols = self.list_cols();
-        let header = row![
-            self.check_all_box(),
-            space().width(44),
-            col("Name", SortKey::Name, Length::FillPortion(4)),
-            col("Artist", SortKey::Artist, Length::FillPortion(3)),
-        ]
-        .push((cols < 1).then(|| col("Album", SortKey::Album, Length::FillPortion(3))))
-        .push((cols < 2).then(|| col("Charter", SortKey::Charter, Length::FillPortion(2))))
-        .push(col("Length", SortKey::Length, Length::Fixed(72.0)))
-        .spacing(12)
-        .padding([6, 12]);
-
-        let rows = self.results.iter().enumerate().map(|(i, c)| self.view_row(i, c));
-        let mut list = column(rows).spacing(2).padding([0, 6]);
-
-        let status: Option<String> = if let Some(e) = &self.error {
-            Some(if e.starts_with("No chart sources") { e.clone() } else { format!("Error: {e}") })
-        } else if self.searching() {
-            Some("Searching…".into())
-        } else if self.results.is_empty() {
-            Some("No charts found".into())
-        } else if !self.more_available() {
-            let n = self.results.len();
-            Some(format!("{n} chart{}", if n == 1 { "" } else { "s" }))
-        } else {
-            None
-        };
-        if let Some(s) = status {
-            list = list.push(container(text(s).size(13)).padding(14).center_x(Length::Fill));
-        }
-
-        column![
-            header,
-            rule::horizontal(1).style(crate::style::rule),
-            scrollable(list).on_scroll(Message::Scrolled).height(Length::Fill).width(Length::Fill),
-        ]
-        .width(Length::Fill)
-        .into()
-    }
-
-    fn list_results_refined(&self) -> Element<'static, Message> {
         use api::{SortDir, SortKey};
         let col = |label: &'static str, key: SortKey, width: Length, right: bool| -> Element<'static, Message> {
             let sorted = self.sort.filter(|s| s.key == key);
@@ -2602,7 +2533,7 @@ impl App {
         .into()
     }
 
-    fn view_row_refined(&self, i: usize, c: &Chart) -> Element<'static, Message> {
+    fn view_row(&self, i: usize, c: &Chart) -> Element<'static, Message> {
         let selected = self.selected == Some(i);
         let checked = self.checked.contains(&i);
         let owned = self.in_library(c);
@@ -2659,7 +2590,7 @@ impl App {
 
     /// The tick box that marks a result for "Download N".
     pub fn check_box(&self, i: usize) -> Element<'static, Message> {
-        checkbox(self.checked.contains(&i)).size(if style::refined() { 14 } else { 16 }).on_toggle(move |_| Message::ToggleChecked(i)).into()
+        checkbox(self.checked.contains(&i)).size(14).on_toggle(move |_| Message::ToggleChecked(i)).into()
     }
 
     /// The header tick box: ticks every loaded result, or clears them all.
@@ -2667,79 +2598,7 @@ impl App {
         // "All" means every chart you don't already have (those can't be downloaded again from here).
         let wanted: Vec<usize> = self.results.iter().enumerate().filter(|(_, c)| !self.in_library(c)).map(|(i, _)| i).collect();
         let all = !wanted.is_empty() && wanted.iter().all(|i| self.checked.contains(i));
-        checkbox(all).size(if style::refined() { 14 } else { 16 }).on_toggle(Message::CheckAll).into()
-    }
-
-    fn view_row(&self, i: usize, c: &Chart) -> Element<'static, Message> {
-        if style::refined() {
-            return self.view_row_refined(i, c);
-        }
-        let selected = self.selected == Some(i);
-        let checked = self.checked.contains(&i);
-        let owned = self.in_library(c);
-        let cell = |s: &Option<String>, portion: u16| {
-            container(tagged(s.as_deref().unwrap_or(""), 14, false))
-                .width(Length::FillPortion(portion))
-                .clip(true)
-        };
-
-        let thumb: Element<_> = match c.album_art_md5.as_ref().and_then(|m| self.art.get(m)) {
-            Some(Art::Ready { thumb, .. }) => image(thumb.clone()).width(44).height(44).into(),
-            _ => container(space())
-                .width(44)
-                .height(44)
-                .style(|t: &Theme| container::Style {
-                    background: Some(crate::style::strong(t).into()),
-                    border: Border::default().rounded(4),
-                    ..Default::default()
-                })
-                .into(),
-        };
-
-        let name: Element<_> = match (owned, c.is_rv()) {
-            (false, false) => cell(&c.name, 4).into(),
-            (o, rv) => row![]
-                .push(o.then(library_mark))
-                .push(rv.then(rv_tag))
-                .push(cell(&c.name, 1))
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .width(Length::FillPortion(4))
-                .into(),
-        };
-        let name = with_progress(name, self.dl_progress(&c.md5), 4);
-        button(
-            row![
-                self.check_box(i),
-                thumb,
-                name,
-                cell(&c.artist, 3),
-            ]
-            .push((self.list_cols() < 1).then(|| cell(&c.album, 3)))
-            .push((self.list_cols() < 2).then(|| cell(&c.charter, 2)))
-            .push(text(c.length_str()).size(14).width(72))
-            .spacing(12)
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .padding([4, 6])
-        .on_press(Message::Select(i))
-        .style(move |t: &Theme, s| {
-            let p = t.extended_palette();
-            let bg = match (selected, s) {
-                (true, _) => Some(crate::style::selected(t)),
-                (false, _) if checked => Some(crate::style::selected(t).scale_alpha(0.45)),
-                (false, button::Status::Hovered) => Some(crate::style::weak(t)),
-                _ => None,
-            };
-            button::Style {
-                background: bg.map(Background::Color),
-                text_color: if selected { crate::style::selected_text(t) } else { p.background.base.text },
-                border: Border::default().rounded(6),
-                ..Default::default()
-            }
-        })
-        .into()
+        checkbox(all).size(14).on_toggle(Message::CheckAll).into()
     }
 
     /// A chart's difficulties (with Fretwork tiers), in two columns when `inner` px allows.
@@ -2767,22 +2626,12 @@ impl App {
         let pip_w = if two_cols { (((inner - 10.0) / 2.0 - 62.0 - 12.0 - fw_w - 14.0 - 10.0) / 6.0).clamp(5.0, 12.0) } else { 0.0 };
         for (key, label) in instruments {
             if let Some(d) = c.diff_for(key) {
-                let refined = style::refined();
-                let pips = (0..6).fold(row![].spacing(if refined { 2 } else { 3 }), |r, n| {
+                let pips = (0..6).fold(row![].spacing(2), |r, n| {
                     let on = n < d.min(6);
-                    r.push(container(space()).width(if two_cols { pip_w } else if refined { 12.0 } else { 14.0 }).height(if refined { 5 } else { 7 }).style(
+                    r.push(container(space()).width(if two_cols { pip_w } else { 12.0 }).height(5).style(
                         move |t: &Theme| container::Style {
-                            background: Some(
-                                if on {
-                                    t.extended_palette().primary.base.color
-                                } else if refined {
-                                    style::hairline(t)
-                                } else {
-                                    crate::style::strong(t)
-                                }
-                                .into(),
-                            ),
-                            border: Border::default().rounded(if refined { 1 } else { 2 }),
+                            background: Some(if on { t.extended_palette().primary.base.color } else { style::hairline(t) }.into()),
+                            border: Border::default().rounded(1),
                             ..Default::default()
                         },
                     ))
@@ -2829,7 +2678,7 @@ impl App {
         };
 
         // Album art fills the sidebar width at most, and shrinks in short windows.
-        let inner = self.sidebar_width() - if style::refined() { 40.0 } else { 32.0 } - 16.0;
+        let inner = self.sidebar_width() - 40.0 - 16.0;
         let art_size = inner.min((self.win.height * 0.38).max(120.0));
         let icon_size = (art_size * 0.2).clamp(36.0, 64.0);
         let sized_art = |h: iced::widget::image::Handle| -> Element<'static, Message> {
@@ -2859,7 +2708,7 @@ impl App {
             } else {
                 row![
                     text(label).size(13).width(58).style(|t: &Theme| text::Style {
-                        color: Some(if style::refined() { style::muted(t) } else { Color { a: 0.6, ..Color::WHITE } }),
+                        color: Some(style::muted(t)),
                     }),
                     if link { search_link(v, 13) } else { tagged(&v, 13, false) },
                 ]
@@ -2931,7 +2780,7 @@ impl App {
             column![
                 art,
                 column![
-                    container(rich::view(c.name.as_deref().unwrap_or(""), 19, if style::refined() { Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT } } else { BOLD }, None)).clip(true),
+                    container(rich::view(c.name.as_deref().unwrap_or(""), 19, Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }, None)).clip(true),
                     search_link(raw(&c.artist), 15),
                 ]
                 .spacing(2),
@@ -3005,7 +2854,7 @@ impl App {
                 .style(crate::style::panel)
         };
 
-        let themes = all_themes();
+        let themes = all_themes(&self.settings.custom_themes);
         let current = ThemeChoice(self.theme.clone());
 
         let content = column![
@@ -3065,9 +2914,6 @@ impl App {
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
-                    toggler(self.settings.refined_ui)
-                        .label("Beta UI")
-                        .on_toggle(Message::ToggleRefined),
                     toggler(self.settings.cpu_rendering)
                         .label("Low memory mode: render on the CPU (~60 MB instead of ~140 MB; applies after restart)")
                         .on_toggle(Message::ToggleCpuRendering),
@@ -3086,7 +2932,7 @@ impl App {
                         ),
                         text(if self.settings.cpu_rendering {
                             "Needs low memory mode off. Applies after restart."
-                        } else if backdrop::Backdrop::from_key(&self.settings.window_backdrop) != self.backdrop {
+                        } else if active_backdrop(&self.settings) != self.backdrop {
                             "Restart Truss to apply."
                         } else {
                             "Applies after restart."
@@ -3100,7 +2946,7 @@ impl App {
                         let pct = (self.settings.glass_transparency * 100.0).round() as u32;
                         let mut amount = row![
                             text("See-through").size(13),
-                            iced::widget::slider(0.1..=0.8, self.settings.glass_transparency, Message::GlassTransparency)
+                            iced::widget::slider(0.1..=1.0, self.settings.glass_transparency, Message::GlassTransparency)
                                 .step(0.05_f32)
                                 .on_release(Message::SaveSettings)
                                 .width(220),
@@ -3111,7 +2957,12 @@ impl App {
                         if !frosted {
                             amount = amount.push(text("Turn on frosted glass to use this.").size(12));
                         }
-                        amount
+                        let note = theme_transparency(&self.settings).is_some().then(|| {
+                            text(format!("Your theme \u{201c}{}\u{201d} sets its own transparency, so these don't apply while you use it.", self.settings.theme))
+                                .size(12)
+                                .style(|t: &Theme| text::Style { color: Some(style::muted(t)) })
+                        });
+                        column![amount].push(note).spacing(8)
                     },
                 ]
                 .spacing(12)
@@ -3504,15 +3355,7 @@ fn chart_tags<'a>(c: &Chart) -> Element<'a, Message> {
     if c.modchart { tags.push("Modchart"); }
     let tag_row = tags.into_iter().fold(row![].spacing(6), |r, t| {
         r.push(container(text(t).size(11)).padding([2, 8]).style(|th: &Theme| {
-            if style::refined() {
-                style::outline_tag(th)
-            } else {
-                container::Style {
-                    background: Some(crate::style::strong(th).into()),
-                    border: Border::default().rounded(10),
-                    ..Default::default()
-                }
-            }
+            style::outline_tag(th)
         }))
     });
     tag_row.into()
@@ -3646,7 +3489,6 @@ fn tagged<'a>(v: &str, size: u32, quiet: bool) -> Element<'a, Message> {
 
 /// A value that searches for itself when clicked. `v` may carry colour tags (searched without).
 fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
-    let refined = style::refined();
     let content: Element<'a, Message> =
         if rich::is_styled(&v) { rich::view(&v, size, Font::DEFAULT, None) } else { text(strip_tags(&v)).size(size).into() };
     let v = strip_tags(&v);
@@ -3656,7 +3498,7 @@ fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
             background: None,
             text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) {
                 style::accent(t)
-            } else if refined && size > 13 {
+            } else if size > 13 {
                 style::muted(t)
             } else {
                 style::fg(t)
