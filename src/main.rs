@@ -921,7 +921,8 @@ impl App {
                     meta_line("Length", c.length_str(), false),
                 ]
                 .spacing(4),
-                self.difficulty_rows(c, 380.0),
+                // One instrument per line, so the Fretwork tier always has room.
+                self.difficulty_rows(c, 0.0),
                 chart_tags(c),
                 buttons,
             ]

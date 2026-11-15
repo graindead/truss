@@ -3,6 +3,14 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.14
+
+- **Faster start-up:** Truss no longer re-reads every chart's song.ini when it checks your
+  library for changes. It only opens the ones that changed, so on a big library the check after
+  opening takes about a second instead of several (and much less than before after a restart).
+- **Library details:** each instrument now gets its own line, so its Fretwork tier is never
+  squeezed out.
+
 ## v0.1.13
 
 - **New downloads button:** the downloads bar at the bottom is gone. A small button in the
