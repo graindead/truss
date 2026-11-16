@@ -131,10 +131,12 @@ pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item
         let cache = tokio::task::spawn_blocking(load_cache).await.ok().flatten();
         let prev: HashMap<PathBuf, Arc<LocalChart>> = match cache {
             Some(c) => {
-                if use_cache && c.version == CACHE_VERSION && c.folders == folders {
+                if use_cache && c.folders == folders {
                     let _ = tx.send(ScanEvent::Cached(Arc::new(Library::from_catalog(c.charts.clone())))).await;
                 }
-                c.charts.into_iter().filter(|c| c.stamp != 0).map(|c| (c.path.clone(), c)).collect()
+                // Charts read by an older version are read again, in case the reading changed.
+                let reuse = c.version == CACHE_VERSION;
+                c.charts.into_iter().filter(|c| reuse && c.stamp != 0).map(|c| (c.path.clone(), c)).collect()
             }
             None => HashMap::new(),
         };
@@ -167,7 +169,9 @@ struct Cache {
     folders: Vec<PathBuf>,
     charts: Vec<Arc<LocalChart>>,
 }
-const CACHE_VERSION: u32 = 1;
+/// Bumped when the way charts are read changes, so the next scan reads them all again.
+/// 2: a line like `[song] =` no longer starts a new section of song.ini.
+const CACHE_VERSION: u32 = 2;
 
 fn cache_path() -> Option<PathBuf> {
     crate::settings::project_dirs().map(|d| d.cache_dir().join("library.json"))
@@ -392,6 +396,21 @@ fn secs(t: std::io::Result<std::time::SystemTime>) -> Option<u64> {
     t.ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
+/// The key a chart with this song.ini is matched on (as `LocalChart::key`): artist, name and
+/// charter. Used by the pack index.
+#[cfg_attr(not(test), allow(dead_code))] // used by the pack index builder
+pub fn ini_key(bytes: &[u8]) -> String {
+    pairs_key(&parse_ini(&decode(bytes)))
+}
+
+/// The same from song.ini values (a .sng file's metadata, say).
+#[cfg_attr(not(test), allow(dead_code))] // used by the pack index builder
+pub fn pairs_key(pairs: &[(String, String)]) -> String {
+    let get = |k: &str| pairs.iter().find(|(pk, _)| pk.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str()).unwrap_or("");
+    let charter = if get("charter").is_empty() { get("frets") } else { get("charter") };
+    library_key(get("artist"), get("name"), charter)
+}
+
 fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u64, added: u64) -> LocalChart {
     let get = |k: &str| pairs.iter().find(|(pk, _)| pk.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str()).unwrap_or("");
     let charter = if get("charter").is_empty() { get("frets") } else { get("charter") };
@@ -566,8 +585,11 @@ pub fn parse_ini(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim().trim_start_matches('\u{feff}');
-        if line.starts_with('[') {
-            in_song = line.trim_matches(|c| c == '[' || c == ']').trim().eq_ignore_ascii_case("song");
+        // Like Clone Hero, only `[name]` starts a section; a stray `[song] =` is skipped.
+        if line.starts_with('[') && line.ends_with(']') {
+            in_song = line[1..line.len() - 1].trim().eq_ignore_ascii_case("song");
+        } else if line.starts_with('[') {
+            continue;
         } else if in_song && let Some((k, v)) = line.split_once('=') {
             out.push((k.trim().to_string(), v.trim().to_string()));
         }
@@ -586,6 +608,14 @@ mod tests {
         assert_eq!(c.key, "dragonforce|through the fire and flames|neversoft");
         assert_eq!(c.chart_type, ChartType::Mid);
         assert!(c.has_audio && !c.has_album_art);
+    }
+
+    /// A stray `[song] =` line (seen in real charts) doesn't end the [song] section.
+    #[test]
+    fn ini_stray_heading() {
+        let ini = "[song]\r\n[song] = \r\nname = <color=#2e84c9>Summer</color>\r\nartist = Oakwood\r\ncharter = Whip\r\n";
+        let c = make_chart(PathBuf::from("x"), &parse_ini(ini), assets_from_names(["notes.chart"].into_iter()), 0, 0);
+        assert_eq!(c.key, "oakwood|summer|whip");
     }
 
     /// Times loading a saved library cache (TRUSS_TEST_CACHE = path to library.json).

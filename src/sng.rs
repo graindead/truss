@@ -256,6 +256,13 @@ pub fn read_index(path: &Path) -> Result<SngIndex, String> {
     }
 }
 
+/// The metadata (song.ini values) at the start of a .sng file, from its first bytes; `Ok(None)`
+/// if more bytes are needed.
+#[cfg_attr(not(test), allow(dead_code))] // used by the pack index builder
+pub fn header_metadata(head: &[u8]) -> Result<Option<Vec<(String, String)>>, String> {
+    Ok(try_parse_header(head)?.map(|h| h.3))
+}
+
 /// Reads and unmasks one (small) entry fully into memory, e.g. the chart file.
 pub fn read_entry(path: &Path, idx: &SngIndex, e: &SngEntry) -> Result<Vec<u8>, String> {
     use std::io::Read;

@@ -8,6 +8,8 @@ pub struct Settings {
     pub library_path: Option<PathBuf>,
     /// More song folders that are checked for charts you already have.
     pub extra_library_folders: Vec<PathBuf>,
+    /// Where chart packs (Packs page) are saved; the default songs folder when not set.
+    pub pack_path: Option<PathBuf>,
     /// Drum type filter (API key, e.g. "fourLanePro"); only used when searching drums.
     pub drum_type: Option<String>,
     /// Only show drum charts that passed Encore's quality review.
@@ -65,6 +67,7 @@ impl Default for Settings {
         Self {
             library_path: None,
             extra_library_folders: Vec::new(),
+            pack_path: None,
             drum_type: None,
             drums_reviewed: false,
             source_encore: true,
@@ -137,6 +140,29 @@ impl Settings {
         self.library_path.iter().chain(self.extra_library_folders.iter()).cloned().collect()
     }
 
+    /// Where chart packs are saved: the pack folder if one is set, else the default songs folder.
+    pub fn pack_folder(&self) -> Option<PathBuf> {
+        self.pack_path.clone().or_else(|| self.library_path.clone())
+    }
+
+    /// The folders scanned for charts you have: the library folders, plus the pack folder when
+    /// it isn't inside one of them.
+    pub fn scan_folders(&self) -> Vec<PathBuf> {
+        let mut out = self.all_library_folders();
+        if let Some(p) = &self.pack_path {
+            let low = |p: &std::path::Path| p.to_string_lossy().to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
+            let pl = low(p);
+            let inside = out.iter().any(|f| {
+                let fl = low(f);
+                pl == fl || pl.starts_with(&format!("{fl}\\"))
+            });
+            if !inside {
+                out.push(p.clone());
+            }
+        }
+        out
+    }
+
     pub fn load() -> Self {
         settings_file()
             .and_then(|p| std::fs::read(p).ok())
@@ -171,5 +197,25 @@ mod tests {
         // A settings file from an older version keeps its values; only missing ones get defaults.
         let old: Settings = serde_json::from_str(r#"{"refined_ui": false, "download_videos": true}"#).unwrap();
         assert!(old.download_videos && old.show_fretwork && old.text_colors);
+        assert!(old.pack_path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod pack_folder_tests {
+    use super::*;
+
+    #[test]
+    fn pack_folder_defaults_to_songs() {
+        let mut s = Settings { library_path: Some(PathBuf::from("C:\\Songs")), ..Default::default() };
+        assert_eq!(s.pack_folder(), Some(PathBuf::from("C:\\Songs")));
+        assert_eq!(s.scan_folders().len(), 1);
+        s.pack_path = Some(PathBuf::from("C:\\Songs\\Packs"));
+        assert_eq!(s.pack_folder(), Some(PathBuf::from("C:\\Songs\\Packs")));
+        assert_eq!(s.scan_folders().len(), 1, "inside the songs folder: already scanned");
+        s.pack_path = Some(PathBuf::from("D:\\Packs"));
+        assert_eq!(s.scan_folders(), vec![PathBuf::from("C:\\Songs"), PathBuf::from("D:\\Packs")]);
+        s.pack_path = Some(PathBuf::from("C:\\SongsPacks"));
+        assert_eq!(s.scan_folders().len(), 2, "a folder whose name only starts the same isn't inside");
     }
 }

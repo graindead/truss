@@ -396,6 +396,136 @@ fn any_file(_: &str) -> bool {
     true
 }
 
+/// Downloads a chart pack (Packs page) into `unpacked`: an archive from any direct link, a
+/// Google Drive file or folder, or a MediaFire file. Archives inside are unpacked by
+/// `unpack_nested` afterwards.
+pub(crate) async fn fetch_pack(
+    url: &str,
+    work: &Path,
+    unpacked: &Path,
+    keep_video: bool,
+    tx: &mut Sender<crate::download::Progress>,
+) -> Result<(), String> {
+    use crate::download::Progress;
+    if crate::mega::parse_link(url).is_some() {
+        let file = crate::mega::download_to(url, work, tx).await?;
+        let _ = tx.send(Progress::Status("Unpacking...".into())).await;
+        return unpack_any(file, unpacked, keep_video).await;
+    }
+    match host_kind(url) {
+        Host::DriveFile => {
+            let id = drive_id(url).ok_or("Couldn't read the Google Drive link")?;
+            let _ = tx.send(Progress::Status("Downloading from Google Drive...".into())).await;
+            let u = format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t");
+            get_archive(&u, work, unpacked, keep_video, "pack.bin", tx).await
+        }
+        Host::DriveFolder => {
+            let id = drive_id(url).ok_or("Couldn't read the Google Drive link")?;
+            let _ = tx.send(Progress::Status("Reading the Google Drive folder...".into())).await;
+            download_drive_folder(&id, unpacked, keep_video, 0, any_file, tx).await
+        }
+        Host::MediaFire => {
+            let _ = tx.send(Progress::Status("Finding the MediaFire download...".into())).await;
+            let u = mediafire_link(url).await?;
+            get_archive(&u, work, unpacked, keep_video, "pack.bin", tx).await
+        }
+        _ => {
+            let _ = tx.send(Progress::Status("Connecting...".into())).await;
+            get_archive(&encode_url(url), work, unpacked, keep_video, "pack.bin", tx).await
+        }
+    }
+}
+
+/// True for the hosts `fetch_pack` can download from (anything else opens in the browser).
+pub(crate) fn pack_host_ok(url: &str) -> bool {
+    if crate::mega::parse_link(url).is_some() {
+        return true;
+    }
+    let l = url.to_ascii_lowercase();
+    match host_kind(url) {
+        Host::DriveFile | Host::DriveFolder | Host::MediaFire => true,
+        _ => {
+            let path = l.split(['?', '#']).next().unwrap_or(&l);
+            [".zip", ".7z", ".rar"].iter().any(|e| path.ends_with(e)) || l.contains(".b-cdn.net/")
+        }
+    }
+}
+
+/// Unpacks the .zip / .7z / .rar files found under `dir` (a pack can hold one archive per
+/// song, or a Drive folder of archives) into folders named after them, deleting the archives.
+/// .sng files are left as they are: Clone Hero reads them directly.
+pub(crate) async fn unpack_nested(dir: &Path, keep_video: bool) -> Result<(), String> {
+    for _ in 0..3 {
+        let found = {
+            let dir = dir.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let mut out = Vec::new();
+                collect_archives(&dir, 0, &mut out);
+                out
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        };
+        if found.is_empty() {
+            break;
+        }
+        for file in found {
+            let name = file.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+            // Later parts of a split .rar are read through its first part.
+            if rar_part(&name).is_some_and(|n| n > 1) {
+                continue;
+            }
+            let stem = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let stem = match rar_part(&name) {
+                Some(_) => stem.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(stem),
+                None => stem,
+            };
+            let target = file.with_file_name(stem.trim());
+            unpack_any(file.clone(), &target, keep_video).await?;
+            let _ = std::fs::remove_file(&file);
+        }
+        // Remove the split .rar parts that were read through their first part.
+        let dir2 = dir.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            let mut out = Vec::new();
+            collect_archives(&dir2, 0, &mut out);
+            for f in out {
+                let n = f.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+                if rar_part(&n).is_some_and(|p| p > 1) {
+                    let _ = std::fs::remove_file(f);
+                }
+            }
+        })
+        .await;
+    }
+    Ok(())
+}
+
+/// "x.part2.rar" → 2.
+fn rar_part(lower: &str) -> Option<u32> {
+    let stem = lower.strip_suffix(".rar")?;
+    let (_, part) = stem.rsplit_once(".part")?;
+    part.parse().ok()
+}
+
+fn collect_archives(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            collect_archives(&p, depth + 1, out);
+        } else {
+            let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+            if [".zip", ".7z", ".rar"].iter().any(|x| n.ends_with(x)) {
+                out.push(p);
+            }
+        }
+    }
+}
+
 /// Files a chart's leaderboard hashes come from (lowercase file name).
 fn is_note_file(name: &str) -> bool {
     let f = name.rsplit(['/', '\\']).next().unwrap_or(name);
@@ -602,7 +732,11 @@ async fn list_drive_folder(id: &str) -> Result<Vec<(String, String, bool)>, Stri
             s.find('"').map(|e| html_unescape(&s[..e]))
         });
         let label = label.unwrap_or_else(|| fid.clone());
-        // Labels look like "song.ini" or "song.ini Text"; folders have no extension.
+        // Google Docs, Sheets and the like (a pack's credits, say) aren't files to download.
+        if GOOGLE_DOCS.iter().any(|d| label.contains(d)) {
+            continue;
+        }
+        // Labels look like "song.ini Text Shared", "Tier 1 Shared folder".
         let name = label
             .split_whitespace()
             .scan(String::new(), |acc, w| {
@@ -615,7 +749,8 @@ async fn list_drive_folder(id: &str) -> Result<Vec<(String, String, bool)>, Stri
             .filter(|cand| has_extension(cand))
             .last()
             .unwrap_or(label.clone());
-        let is_folder = !has_extension(&name);
+        // Drive labels folders "... Shared folder" / "... Folder"; files carry their type.
+        let is_folder = label.to_ascii_lowercase().ends_with(" folder");
         let name = if is_folder {
             label.trim_end_matches(" Shared folder").trim_end_matches(" Folder").to_string()
         } else {
@@ -629,14 +764,63 @@ async fn list_drive_folder(id: &str) -> Result<Vec<(String, String, bool)>, Stri
     Ok(entries)
 }
 
+/// How Drive labels its own document types (these can't be downloaded as files).
+const GOOGLE_DOCS: &[&str] = &[
+    " Google Docs",
+    " Google Sheets",
+    " Google Slides",
+    " Google Forms",
+    " Google Drawings",
+    " Google Sites",
+    " Google My Maps",
+    " Google Jamboard",
+    " Google Apps Script",
+];
+
+/// Every file in a public Drive folder and its subfolders: (file id, path inside the folder).
+#[cfg_attr(not(test), allow(dead_code))] // used by the pack index builder
+pub(crate) async fn drive_tree(url: &str) -> Result<Vec<(String, String)>, String> {
+    let id = drive_id(url).ok_or("Couldn't read the Google Drive link")?;
+    let mut out = Vec::new();
+    let mut folders = vec![(id, String::new(), 0u32)];
+    let mut listed = 0;
+    while let Some((fid, rel, d)) = folders.pop() {
+        if d > DRIVE_MAX_DEPTH {
+            continue;
+        }
+        let entries = match list_drive_folder(&fid).await {
+            Ok(e) => e,
+            Err(e) if listed > 0 && e.starts_with("The Google Drive folder is empty") => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        listed += 1;
+        for (eid, name, is_folder) in entries {
+            let path = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            if is_folder {
+                folders.push((eid, path, d + 1));
+            } else {
+                out.push((eid, path));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn has_extension(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (2..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (2..=8).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 fn html_unescape(s: &str) -> String {
     s.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">")
 }
 
+/// Files fetched from a Google Drive folder at the same time.
+const DRIVE_PARALLEL: usize = 4;
+/// How deep into a Drive folder's subfolders (a pack's tier folders, say) files are fetched.
+const DRIVE_MAX_DEPTH: u32 = 6;
+
+/// Downloads a public Google Drive folder into `dest`, keeping its subfolders as they are. The
+/// whole tree is listed first, then the files are fetched a few at a time.
 fn download_drive_folder<'a>(
     id: &'a str,
     dest: &'a Path,
@@ -647,31 +831,121 @@ fn download_drive_folder<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
         use crate::download::Progress;
-        if depth > 3 {
-            return Ok(());
-        }
-        let entries = list_drive_folder(id).await?;
-        std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-        let files: Vec<_> = entries.iter().filter(|e| !e.2).collect();
-        for (n, (fid, name, _)) in files.iter().enumerate() {
-            let lower = name.to_ascii_lowercase();
-            if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) || !want(&lower) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        let mut folders = vec![(id.to_string(), dest.to_path_buf(), depth)];
+        let mut listed = 0;
+        while let Some((fid, dir, d)) = folders.pop() {
+            if d > DRIVE_MAX_DEPTH {
                 continue;
             }
-            let _ = tx.send(Progress::Status(format!("Downloading {name} ({}/{})", n + 1, files.len()))).await;
-            let url = format!("https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t");
-            let got = fetch_to_dir(&url, dest, name, tx).await?;
-            // Keep Drive's listed name (the server's may differ in case/characters).
-            let want = dest.join(name);
-            if got != want {
-                let _ = std::fs::rename(&got, &want);
+            let entries = match list_drive_folder(&fid).await {
+                Ok(e) => e,
+                // An empty subfolder is fine; only the folder itself has to have something in it.
+                Err(e) if listed > 0 && e.starts_with("The Google Drive folder is empty") => Vec::new(),
+                Err(e) => return Err(e),
+            };
+            listed += 1;
+            if listed > 1 {
+                let _ = tx.send(Progress::Status(format!("Reading the Google Drive folder ({listed} folders)..."))).await;
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            for (eid, name, is_folder) in entries {
+                if is_folder {
+                    folders.push((eid, dir.join(&name), d + 1));
+                    continue;
+                }
+                let lower = name.to_ascii_lowercase();
+                if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) || !want(&lower) {
+                    continue;
+                }
+                files.push((eid, dir.join(&name)));
             }
         }
-        for (fid, name, _) in entries.iter().filter(|e| e.2) {
-            download_drive_folder(fid, &dest.join(name), keep_video, depth + 1, want, tx).await?;
+
+        let total = files.len();
+        let bytes = Arc::new(AtomicU64::new(0));
+        let status = |done: usize, b: u64| {
+            Progress::Status(format!("Downloading from Google Drive: {done} of {total} files, {}...", size_text(b)))
+        };
+        let _ = tx.send(status(0, 0)).await;
+        let mut jobs = futures::stream::iter(files.into_iter().map(|(fid, path)| {
+            let bytes = bytes.clone();
+            async move { fetch_drive_file(&fid, &path, &bytes).await }
+        }))
+        .buffer_unordered(DRIVE_PARALLEL);
+        let mut done = 0;
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(400));
+        loop {
+            tokio::select! {
+                r = jobs.next() => match r {
+                    Some(r) => {
+                        r?;
+                        done += 1;
+                        let _ = tx.send(status(done, bytes.load(Ordering::Relaxed))).await;
+                    }
+                    None => break,
+                },
+                _ = tick.tick() => {
+                    let _ = tx.try_send(status(done, bytes.load(Ordering::Relaxed)));
+                }
+            }
         }
         Ok(())
     })
+}
+
+/// Fetches one file of a Drive folder to `path`, adding what arrives to `bytes`. Drive turns
+/// away bursts of requests now and then (503 or 429), so those are tried again after a wait.
+async fn fetch_drive_file(fid: &str, path: &Path, bytes: &std::sync::atomic::AtomicU64) -> Result<(), String> {
+    let mut wait = 2;
+    for attempt in 1.. {
+        match fetch_drive_file_once(fid, path, bytes).await {
+            Err(e) if attempt < 6 && is_busy(&e) => {
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                wait *= 2;
+            }
+            r => return r,
+        }
+    }
+    unreachable!()
+}
+
+/// A host turning requests away for now (worth trying again), not a missing or private file.
+fn is_busy(e: &str) -> bool {
+    e.contains("returned 503") || e.contains("returned 500") || e.contains("returned 502") || e.contains("limiting downloads") || e.starts_with("Connection lost") || e.contains("didn't hand over the file")
+}
+
+async fn fetch_drive_file_once(fid: &str, path: &Path, bytes: &std::sync::atomic::AtomicU64) -> Result<(), String> {
+    use crate::download::Progress;
+    let dir = path.parent().ok_or("Bad download path")?;
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let url = format!("https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t");
+    let (ftx, mut frx) = futures::channel::mpsc::channel::<Progress>(8);
+    let fetch = async move {
+        let mut ftx = ftx;
+        fetch_to_dir(&url, dir, &name, &mut ftx).await
+    };
+    let count = async move {
+        let mut last = 0;
+        while let Some(p) = frx.next().await {
+            if let Progress::Bytes { done, .. } = p {
+                bytes.fetch_add(done.saturating_sub(last), std::sync::atomic::Ordering::Relaxed);
+                last = done;
+            }
+        }
+    };
+    let (got, ()) = futures::join!(fetch, count);
+    let got = got?;
+    // Keep Drive's listed name (the server's may differ in case/characters).
+    if got != path {
+        let _ = std::fs::rename(&got, path);
+    }
+    Ok(())
+}
+
+fn size_text(n: u64) -> String {
+    if n >= 1_000_000_000 { format!("{:.1} GB", n as f64 / 1e9) } else { format!("{:.0} MB", n as f64 / 1e6) }
 }
 
 /// A plain message for a failed request to a chart's host: a missing file means the chart is
@@ -1150,4 +1424,5 @@ mod tests {
         assert!(!p.charts.is_empty());
     }
 }
+
 

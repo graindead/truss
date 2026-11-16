@@ -30,6 +30,16 @@ go. Downloads run in the background, and a small button in the corner shows how 
 are. Charts you already have get a ✓ in the results. New uploads show up while Truss is open:
 it checks every few minutes, no restart needed.
 
+**Packs.** The Packs tab lists the chart packs, setlists, monthly packs and full albums posted on
+[Custom Songs Central](https://customsongscentral.com/), newest first, with a filter and
+categories. Click one to read its description and download it: packs go through the same
+download queue as charts, into a folder named after the pack. Packs go to your songs folder,
+or to a separate pack folder if you choose one in Settings > Library folders. Truss downloads
+from the site's own server, Google Drive (files and folders) and MEGA (file links), and unpacks
+.zip, .7z and .rar for you. The odd pack hosted anywhere else opens in your browser instead.
+Each pack shows whether you already have it ("Installed", or "12 of 18 charts"), wherever
+your charts are and however they're organised, and you can hide the ones you have.
+
 **Previews.** Watch a chart scroll by before you download it. For charts you already have, the
 preview plays from your own copy.
 
@@ -141,6 +151,11 @@ it with `truss.exe.sha256`, using the CHANGELOG section as the release notes.
 - `src/preview.rs`, `src/preview_panel.rs`, `src/textures.rs`: the chart preview and its controls
 - `src/advanced.rs`: the Advanced search form
 - `src/library.rs`, `src/library_ui.rs`, `src/lyrics.rs`: scanning your library, its cache, and the Library page
+- `src/packs.rs`: the Packs page (reads Custom Songs Central's pack list)
+- `src/mega.rs`: downloading MEGA file links (MEGA's public API, files decrypted as they arrive)
+- `src/pack_index.rs`, `data/pack-index.json`: which charts are in each pack. Built with
+  `TRUSS_BUILD_PACK_INDEX=data/pack-index.json cargo test --release build_pack_index -- --nocapture`,
+  which reads only each chart's song.ini where the archive allows it and skips packs already indexed
 - `src/tools_ui.rs`: the Tools page
 - `src/theme_maker.rs`: Tools > Themes (custom themes, colour picker, import and export)
 - `src/chopt/`, `src/path_ui.rs`: the Star Power path optimiser (Rust port of CHOpt) and its page

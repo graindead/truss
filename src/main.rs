@@ -46,6 +46,10 @@ mod fretwork;
 mod fretwork_filter;
 mod tools_ui;
 mod path_ui;
+mod packs;
+mod pack_index;
+#[cfg(feature = "rhythmverse")]
+mod mega;
 mod variants;
 mod vlist;
 
@@ -266,6 +270,8 @@ struct DownloadEntry {
     chart: Arc<Chart>,
     /// Old copies to replace once this download succeeds (a redownload).
     replace: Vec<PathBuf>,
+    /// A chart pack (Packs page) instead of a chart.
+    pack: Option<packs::Job>,
     title: String,
     status: DlStatus,
     handle: Option<iced::task::Handle>,
@@ -291,6 +297,7 @@ struct LibDetails {
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Screen {
     Browse,
+    Packs,
     Library,
     Tools,
     Settings,
@@ -380,6 +387,7 @@ struct App {
     library_error: Option<String>,
     library_page: library_ui::Page,
     tools_page: tools_ui::Page,
+    packs_page: packs::Page,
     /// Search generation whose old results were already cleared (results are replaced by the
     /// first page to arrive from any source).
     cleared_generation: u64,
@@ -484,10 +492,14 @@ enum Message {
     ToggleRhythmVerse(bool),
     LibraryPage(library_ui::Msg),
     ToolsPage(tools_ui::Msg),
+    PacksPage(packs::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
     LibraryDeleted(Result<(), String>),
     RescanLibrary,
     AddLibraryFolder,
+    PickPackFolder,
+    PackFolderPicked(Option<PathBuf>),
+    ClearPackFolder,
     LibraryFolderAdded(Option<PathBuf>),
     RemoveLibraryFolder(usize),
     MakeDefaultLibrary(usize),
@@ -653,6 +665,7 @@ impl App {
             library_error: None,
             library_page: library_ui::Page::with_sort(&settings.library_sort),
             tools_page: Default::default(),
+            packs_page: Default::default(),
             cleared_generation: 0,
             encore_seen: 0,
             #[cfg(feature = "rhythmverse")]
@@ -870,7 +883,7 @@ impl App {
     }
 
     fn scan_library(&mut self) -> Task<Message> {
-        let folders = self.settings.all_library_folders();
+        let folders = self.settings.scan_folders();
         if folders.is_empty() {
             self.library.clear();
             self.library_charts = 0;
@@ -1107,7 +1120,7 @@ impl App {
 
     /// The library copies of a chart that may safely be removed.
     pub fn library_paths(&self, c: &Chart) -> Vec<PathBuf> {
-        let roots = self.settings.all_library_folders();
+        let roots = self.settings.scan_folders();
         self.library
             .get(&c.library_key())
             .map(|ps| ps.iter().filter(|p| library::is_deletable_chart(p, &roots)).cloned().collect())
@@ -1174,10 +1187,50 @@ impl App {
             md5: chart.md5.clone(),
             chart,
             replace,
+            pack: None,
             title,
             status: DlStatus::Queued,
             handle: None,
         });
+    }
+
+    /// Adds a chart pack to the download queue (ignored if it's already queued or downloading).
+    fn enqueue_pack(&mut self, job: packs::Job) {
+        let key = format!("pack:{}", job.url);
+        if self.downloads.iter().any(|d| d.md5 == key && matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued)) {
+            return;
+        }
+        let id = self.next_dl_id;
+        self.next_dl_id += 1;
+        self.downloads.push(DownloadEntry {
+            id,
+            md5: key,
+            chart: Arc::new(Chart::default()),
+            replace: Vec::new(),
+            title: format!("{} (pack)", job.folder),
+            pack: Some(job),
+            status: DlStatus::Queued,
+            handle: None,
+        });
+    }
+
+    /// Each pack download's state, by link, for the Packs page.
+    fn pack_states(&self) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for d in &self.downloads {
+            let Some(job) = &d.pack else { continue };
+            let s = match &d.status {
+                DlStatus::Queued => "Queued".to_string(),
+                DlStatus::Active { status, done, total } => match total {
+                    Some(t) if *t > 0 && status == "Downloading" => format!("Downloading {}%", done * 100 / t),
+                    _ => status.clone(),
+                },
+                DlStatus::Done(_) => "Downloaded".to_string(),
+                DlStatus::Failed(e) => format!("Failed: {e}"),
+            };
+            out.insert(job.url.clone(), s);
+        }
+        out
     }
 
     /// Starts queued downloads while fewer than `MAX_ACTIVE_DOWNLOADS` are running.
@@ -1192,9 +1245,15 @@ impl App {
                 continue;
             }
             let id = d.id;
-            let (task, handle) = Task::run(download::start(d.chart.clone(), self.settings.clone(), d.replace.clone()), move |p| {
-                Message::DlProgress(id, p)
-            })
+            let (task, handle) = match &d.pack {
+                #[cfg(feature = "rhythmverse")]
+                Some(job) => Task::run(packs::download(job.clone(), self.settings.clone()), move |p| Message::DlProgress(id, p)),
+                #[cfg(not(feature = "rhythmverse"))]
+                Some(_) => Task::done(Message::DlProgress(id, download::Progress::Finished(Err("This build of Truss can't download packs.".into())))),
+                None => Task::run(download::start(d.chart.clone(), self.settings.clone(), d.replace.clone()), move |p| {
+                    Message::DlProgress(id, p)
+                }),
+            }
             .abortable();
             d.status = DlStatus::Active { status: "Starting...".into(), done: 0, total: None };
             d.handle = Some(handle);
@@ -1907,7 +1966,15 @@ impl App {
                                 DlStatus::Done(p) => Some(p.clone()),
                                 _ => None,
                             };
-                            let (key, replace, title) = (d.chart.library_key(), d.replace.clone(), d.title.clone());
+                            let (key, replace, title, is_pack) = (d.chart.library_key(), d.replace.clone(), d.title.clone(), d.pack.is_some());
+                            if is_pack {
+                                // A pack adds many charts: read the library again.
+                                self.note_download(title, dest.clone());
+                                if dest.is_some() {
+                                    return Task::batch([self.scan_library(), self.pump_downloads()]);
+                                }
+                                return self.pump_downloads();
+                            }
                             if let Some(dest) = &dest {
                                 self.apply_library_change((key, Some(dest.clone()), replace));
                             }
@@ -2169,7 +2236,7 @@ impl App {
                     library_ui::Out::Expanded(c) => self.open_library_details(c),
                     library_ui::Out::Delete(paths) => {
                         // Only charts inside the library folders can be removed (to the Recycle Bin).
-                        let roots = self.settings.all_library_folders();
+                        let roots = self.settings.scan_folders();
                         let ok: Vec<PathBuf> = paths.into_iter().filter(|p| library::is_deletable_chart(p, &roots)).collect();
                         Task::perform(library::recycle(ok), Message::LibraryDeleted)
                     }
@@ -2207,6 +2274,29 @@ impl App {
             Message::LibraryDeleted(r) => {
                 self.library_error = r.err();
                 self.scan_library()
+            }
+            Message::PacksPage(m) => {
+                let (task, out) = self.packs_page.update(m);
+                let task = task.map(Message::PacksPage);
+                match out {
+                    packs::Out::None => task,
+                    packs::Out::Download(job) => {
+                        self.enqueue_pack(job);
+                        Task::batch([task, self.pump_downloads()])
+                    }
+                    packs::Out::Remove(id) => Task::batch([task, self.update(Message::CancelDownload(id))]),
+                    packs::Out::Retry(id) => {
+                        let job = self.downloads.iter().position(|d| d.id == id).and_then(|i| self.downloads.remove(i).pack);
+                        if let Some(job) = job {
+                            self.enqueue_pack(job);
+                        }
+                        Task::batch([task, self.pump_downloads()])
+                    }
+                    packs::Out::ClearFinished => {
+                        self.downloads.retain(|d| d.pack.is_none() || matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued));
+                        task
+                    }
+                }
             }
             Message::ToolsPage(m) => {
                 let mut page = std::mem::take(&mut self.tools_page);
@@ -2254,6 +2344,21 @@ impl App {
                 Task::batch([self.save_settings(), self.scan_library()])
             }
             Message::LibraryFolderAdded(None) => Task::none(),
+            Message::PickPackFolder => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Choose where packs are downloaded")
+                        .pick_folder()
+                        .await
+                        .map(|h| h.path().to_path_buf())
+                },
+                Message::PackFolderPicked,
+            ),
+            Message::PackFolderPicked(p) => {
+                let Some(p) = p else { return Task::none() };
+                self.set_pack_folder(Some(p))
+            }
+            Message::ClearPackFolder => self.set_pack_folder(None),
             Message::RemoveLibraryFolder(idx) => {
                 if idx == 0 {
                     self.settings.library_path = if self.settings.extra_library_folders.is_empty() {
@@ -2281,6 +2386,9 @@ impl App {
                 // A library chart's preview only shows on the Library page.
                 if s != Screen::Library && self.preview.as_ref().is_some_and(|p| p.md5.starts_with(library::LOCAL_MD5)) {
                     tasks.push(self.close_preview());
+                }
+                if s == Screen::Packs {
+                    tasks.push(self.packs_page.opened().map(Message::PacksPage));
                 }
                 if s == Screen::Library {
                     if self.catalog_stale && !self.library_scanning {
@@ -2356,6 +2464,32 @@ impl App {
             Screen::Settings => self.view_settings(),
             Screen::Library => self.library_page.view(&self.library_ctx(), self.library_details_view().map(|d| (self.library_details_height(), d))),
             Screen::Tools => self.tools_page.view(&self.tools_ctx()).map(Message::ToolsPage),
+            Screen::Packs => {
+                let status = self.pack_states();
+                let downloads: Vec<packs::DlRow> = self
+                    .downloads
+                    .iter()
+                    .filter_map(|d| {
+                        let job = d.pack.as_ref()?;
+                        let state = match &d.status {
+                            DlStatus::Queued => packs::DlState::Queued,
+                            DlStatus::Active { status, done, total } => {
+                                packs::DlState::Active { status: status.clone(), done: *done, total: *total }
+                            }
+                            DlStatus::Done(p) => packs::DlState::Done(p.clone()),
+                            DlStatus::Failed(e) => packs::DlState::Failed(e.clone()),
+                        };
+                        Some(packs::DlRow { id: d.id, name: job.folder.clone(), state })
+                    })
+                    .collect();
+                let pack_folder = self.settings.pack_folder();
+                let lib = &self.library;
+                let in_library = |k: &str| lib.get(k).is_some_and(|p| !p.is_empty());
+                let cx = packs::Ctx { status: &status, downloads: &downloads, library: pack_folder.as_deref(), in_library: &in_library };
+                // The page borrows `status` only while it's built.
+                let page: Element<'_, packs::Msg> = self.packs_page.view(&cx);
+                page.map(Message::PacksPage)
+            }
         };
         let mut layout = column![self.view_topbar()];
         if self.advanced_open && self.screen == Screen::Browse {
@@ -2408,6 +2542,7 @@ impl App {
             text("Truss").font(Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }).size(17),
             space().width(10),
             nav("Browse", Screen::Browse),
+            nav("Packs", Screen::Packs),
             nav("Library", Screen::Library),
             nav("Tools", Screen::Tools),
             nav("Settings", Screen::Settings),
@@ -2808,6 +2943,34 @@ impl App {
         .into()
     }
 
+    /// Sets where packs are saved. A folder outside the library is scanned too, so the charts
+    /// in its packs are marked as downloaded.
+    fn set_pack_folder(&mut self, p: Option<PathBuf>) -> Task<Message> {
+        let before = self.settings.scan_folders();
+        self.settings.pack_path = p;
+        if self.settings.scan_folders() != before { Task::batch([self.save_settings(), self.scan_library()]) } else { self.save_settings() }
+    }
+
+    /// Settings > Downloads: where chart packs (Packs page) are saved.
+    fn pack_folder_setting(&self) -> Element<'static, Message> {
+        let (path, note) = match (&self.settings.pack_path, &self.settings.library_path) {
+            (Some(p), _) => (p.display().to_string(), None),
+            (None, Some(l)) => (l.display().to_string(), Some("Same as your songs folder")),
+            (None, None) => ("Not set".to_string(), Some("Same as your songs folder, once you choose one")),
+        };
+        let mut info = column![text("Pack downloads folder").size(13), text(path).size(12).wrapping(text::Wrapping::WordOrGlyph)].spacing(2);
+        if let Some(n) = note {
+            info = info.push(text(n).size(11).style(|t: &Theme| text::Style { color: Some(style::muted(t)) }));
+        }
+        let mut r = row![info.width(Length::Fill), button(text("Choose…").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::PickPackFolder)]
+            .spacing(10)
+            .align_y(Alignment::Center);
+        if self.settings.pack_path.is_some() {
+            r = r.push(button(text("Use songs folder").size(12)).padding([4, 10]).style(crate::style::subtle).on_press(Message::ClearPackFolder));
+        }
+        r.into()
+    }
+
     fn view_settings(&self) -> Element<'_, Message> {
         let folders = self.settings.all_library_folders();
         let mut lib_col = column![].spacing(8);
@@ -2846,6 +3009,7 @@ impl App {
             .spacing(10)
             .align_y(Alignment::Center),
         );
+        lib_col = lib_col.push(rule::horizontal(1).style(crate::style::rule)).push(self.pack_folder_setting());
 
         let section = |title: &'static str, content: Element<'static, Message>| {
             container(column![text(title).font(BOLD).size(15), content].spacing(10))

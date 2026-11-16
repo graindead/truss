@@ -28,9 +28,11 @@ cosmic-text = "0.15"
 trash = "5.3.0"
 rust_xlsxwriter = { version = "0.102.0", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate", "deflate64"], optional = true }
 sevenz-rust2 = { version = "0.25.0", optional = true, default-features = false }
 unrar = { version = "0.5.8", optional = true }
+aes = { version = "0.8", optional = true }
+ctr = { version = "0.9", optional = true }
 rusqlite = { version = "0.41.1", features = ["bundled"], optional = true }
 flate2 = { version = "1", optional = true }
 crc32fast = { version = "1", optional = true }
@@ -50,7 +52,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com"
 # RhythmVerse search/downloads are part of the normal build. To build without them:
 #   cargo build --release --no-default-features
 default = ["rhythmverse"]
-rhythmverse = ["dep:zip", "dep:sevenz-rust2", "dep:unrar", "dep:rusqlite", "dep:flate2", "dep:crc32fast"]
+rhythmverse = ["dep:zip", "dep:sevenz-rust2", "dep:unrar", "dep:rusqlite", "dep:flate2", "dep:crc32fast", "dep:aes", "dep:ctr"]
 
 [profile.release]
 opt-level = 3
