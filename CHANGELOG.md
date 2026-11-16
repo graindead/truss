@@ -3,6 +3,25 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.17
+
+- **Better "already downloaded" marks:** Browse now recognises a chart in your library by its
+  chart file, and by its notes, not only by artist, title and charter. A pack's copy with its
+  song.ini written differently now shows as downloaded when its notes are identical.
+- **Other versions:** a yellow ✓ marks songs where you have a different version of the chart
+  (an update, say) but not this one.
+- **Merge pack duplicates (Library):** finds charts sitting loose in your songs folder that are
+  also in a pack, with notes identical track for track, and moves the loose copies to the
+  Recycle Bin after you review them. Nothing inside a pack or any other folder is touched.
+  After a pack download, Truss offers the same for that pack's charts.
+- **Remove videos (Library):** moves every chart's video background to the Recycle Bin.
+- **Packs tab:** each pack shows its own progress bar while it downloads; the downloads side
+  panel is gone (the floating downloads button still lists everything).
+- **Advanced search updates as you go:** results follow the filters as you fill them in, like
+  the main search box.
+- **Credits:** Settings > Credits has a Chart Sources section for Chorus Encore, RhythmVerse
+  and Custom Songs Central, and the Packs tab links to Custom Songs Central.
+
 ## v0.1.16
 
 - **Packs tab:** every chart pack, setlist and full album from Custom Songs Central, newest
