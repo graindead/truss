@@ -209,6 +209,7 @@ impl App {
             let checked = self.checked.contains(&i);
             let title: Element<'static, Message> = row![self.check_box(i)]
                 .push(self.in_library(c).then(crate::library_mark))
+                .push(self.other_version_in_library(c).then(crate::other_version_mark))
                 .push(c.is_rv().then(crate::rv_tag))
                 .push(text(s(&c.name)).font(BOLD).size(13).wrapping(text::Wrapping::None))
                 .spacing(5)

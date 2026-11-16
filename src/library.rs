@@ -78,6 +78,10 @@ pub struct LocalChart {
     /// chart instead of reading the file again while it's unchanged. 0 when unknown.
     #[serde(default)]
     pub stamp: u64,
+    /// The chart file's hash as Chorus Encore lists it (`chartHash`), so a copy whose song.ini
+    /// reads differently (from a pack, say) still counts as this chart.
+    #[serde(default)]
+    pub chart_hash: Option<String>,
 }
 
 impl LocalChart {
@@ -98,18 +102,141 @@ impl LocalChart {
 pub struct Library {
     /// Library key -> every chart folder / .sng file with that key.
     pub keys: HashMap<String, Vec<PathBuf>>,
+    /// Chart file hash -> every chart folder / .sng file with that chart.
+    pub hashes: HashMap<String, Vec<PathBuf>>,
+    /// `song_key` -> the artist words of each chart with it: another version of a song (an
+    /// updated chart, or a pack's copy with its song.ini written differently).
+    pub songs: HashMap<String, Vec<(Vec<String>, PathBuf)>>,
     pub charts: usize,
     pub catalog: Vec<Arc<LocalChart>>,
 }
 
 impl Library {
     fn from_catalog(catalog: Vec<Arc<LocalChart>>) -> Self {
-        let mut keys: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut lib = Library::default();
         for c in &catalog {
-            keys.entry(c.key.clone()).or_default().push(c.path.clone());
+            lib.add(c);
         }
-        Library { keys, charts: catalog.len(), catalog }
+        lib.charts = catalog.len();
+        lib.catalog = catalog;
+        lib
     }
+
+    fn add(&mut self, c: &LocalChart) {
+        self.keys.entry(c.key.clone()).or_default().push(c.path.clone());
+        if let Some(h) = &c.chart_hash {
+            self.hashes.entry(h.clone()).or_default().push(c.path.clone());
+        }
+        let raw = |t: &Option<Box<Tagged>>, f: fn(&Tagged) -> &str, plain: &str| t.as_deref().map(f).unwrap_or(plain).to_string();
+        let name = raw(&c.tagged, |t| &t.name, &c.name);
+        let charter = raw(&c.tagged, |t| &t.charter, &c.charter);
+        if let Some(k) = song_key(&name, &charter) {
+            self.songs.entry(k).or_default().push((artist_words(&c.artist), c.path.clone()));
+        }
+    }
+}
+
+/// A song's title and charter with the details versions of a chart tend to disagree on
+/// dropped: formatting tags, "feat." credits, punctuation, and the order of the charters.
+/// `None` without a title or charter.
+pub fn song_key(name: &str, charter: &str) -> Option<String> {
+    let title = words(&drop_feat(&crate::api::strip_tags(name).to_lowercase())).join(" ");
+    let charter = crate::api::strip_tags(charter).to_lowercase().replace(" and ", ",");
+    let mut charters: Vec<String> =
+        charter.split([',', '&', '/', '+']).map(|c| words(c).join(" ")).filter(|c| !c.is_empty()).collect();
+    charters.sort();
+    charters.dedup();
+    (!title.is_empty() && !charters.is_empty()).then(|| format!("{title}|{}", charters.join("+")))
+}
+
+/// The words of an artist without any "feat." credit, for a loose comparison ("Hikaru Utada"
+/// and "Utada Hikaru (feat. Skrillex)" share theirs).
+pub fn artist_words(artist: &str) -> Vec<String> {
+    words(&drop_feat(&crate::api::strip_tags(artist).to_lowercase()))
+}
+
+/// Whether two charts' artists (from `artist_words`) could be the same: they share a word, or
+/// one is blank.
+pub fn same_artist(a: &[String], b: &[String]) -> bool {
+    a.is_empty() || b.is_empty() || a.iter().any(|w| b.contains(w))
+}
+
+/// Lower-case text without "(feat. X)" / "[ft. X]" groups or a trailing "feat. X".
+fn drop_feat(s: &str) -> String {
+    let is_feat = |t: &str| ["feat.", "feat ", "ft.", "ft ", "featuring "].iter().any(|p| t.trim_start().starts_with(p));
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find(['(', '[']) {
+        let close = if rest.as_bytes()[i] == b'(' { ')' } else { ']' };
+        out.push_str(&rest[..i]);
+        match rest[i + 1..].find(close) {
+            Some(j) => {
+                let inner = &rest[i + 1..i + 1 + j];
+                if !is_feat(inner) {
+                    out.push_str(&rest[i..i + 2 + j]);
+                }
+                rest = &rest[i + 2 + j..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    for p in [" feat. ", " feat ", " ft. ", " ft ", " featuring "] {
+        if let Some(i) = out.find(p) {
+            out.truncate(i);
+        }
+    }
+    out
+}
+
+fn words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+/// The note hashes of every track of a library chart (as Encore lists them in `trackHashes`,
+/// without padding), sorted; empty if it can't be read.
+pub fn track_hashes(path: &Path) -> Vec<String> {
+    let computed = if path.is_dir() {
+        let files: Vec<(String, Vec<u8>)> = std::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                let l = n.to_ascii_lowercase();
+                (l.ends_with(".chart") || l.ends_with(".mid") || l.ends_with(".ini")).then_some(n)
+            })
+            .filter_map(|n| Some((n.clone(), std::fs::read(path.join(&n)).ok()?)))
+            .collect();
+        crate::trackhash::hash_tracks(&files, None)
+    } else {
+        crate::sng::read_index(path).and_then(|idx| {
+            let files = idx
+                .files
+                .iter()
+                .filter(|f| {
+                    let l = f.name.to_ascii_lowercase();
+                    l.ends_with(".chart") || l.ends_with(".mid")
+                })
+                .map(|f| Ok((f.name.clone(), crate::sng::read_entry(path, &idx, f)?)))
+                .collect::<Result<Vec<_>, String>>()?;
+            crate::trackhash::hash_tracks(&files, Some(&idx.metadata))
+        })
+    };
+    // instrument/difficulty/hash, so two charts only match track for track.
+    let mut out: Vec<String> =
+        computed.map(|c| c.into_iter().map(|(i, d, h)| format!("{i}/{d}/{}", h.trim_end_matches('='))).collect()).unwrap_or_default();
+    out.sort();
+    out
+}
+
+/// Encore's `chartHash`: blake3 of the chart file, in padded URL-safe base64.
+pub fn chart_hash(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE.encode(blake3::hash(bytes).as_bytes())
 }
 
 #[derive(Debug, Clone)]
@@ -236,7 +363,7 @@ fn scan_with(folders: &[PathBuf], found: &AtomicUsize, prev: &HashMap<PathBuf, A
         for (subdirs, charts) in results {
             frontier.extend(subdirs);
             for c in charts {
-                lib.keys.entry(c.key.clone()).or_default().push(c.path.clone());
+                lib.add(&c);
                 lib.catalog.push(c);
             }
         }
@@ -255,7 +382,7 @@ fn stem_of(name: &str) -> String {
 }
 const AUDIO_EXT: &[&str] = &["ogg", "mp3", "wav", "opus"];
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg"];
-const VIDEO_EXT: &[&str] = &["mp4", "avi", "webm", "vp8", "ogv", "mpeg"];
+pub const VIDEO_EXT: &[&str] = &["mp4", "avi", "webm", "vp8", "ogv", "mpeg"];
 
 struct Assets {
     chart_type: ChartType,
@@ -331,7 +458,14 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
             .or_else(|| std::fs::metadata(dir).ok().and_then(|m| secs(m.created())))
             .unwrap_or(modified);
         let stamp = ini.and_then(|(_, m)| m.as_ref()).map(stamp_of).unwrap_or(0);
-        let chart = match prev.get(dir.as_path()) {
+        // The chart file is hashed again only when it changed.
+        let hash = match prev.get(dir.as_path()) {
+            Some(old) if old.chart_hash.is_some() && old.modified == modified && modified != 0 && old.chart_file == assets.chart_file => {
+                old.chart_hash.clone()
+            }
+            _ => assets.chart_file.as_ref().and_then(|f| std::fs::read(dir.join(f)).ok()).map(|b| chart_hash(&b)),
+        };
+        let mut chart = match prev.get(dir.as_path()) {
             Some(old) if stamp != 0 && old.stamp == stamp => {
                 // Same song.ini: keep what was read from it, refresh what comes from the listing.
                 let mut c = LocalChart::clone(old);
@@ -355,6 +489,7 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
                 c
             }
         };
+        chart.chart_hash = hash;
         charts.push(Arc::new(chart));
     } else {
         subdirs.extend(dirs);
@@ -363,7 +498,7 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
         let stamp = meta.as_ref().map(stamp_of).unwrap_or(0);
         let modified = meta.as_ref().and_then(|m| secs(m.modified())).unwrap_or(0);
         let added = meta.as_ref().and_then(|m| secs(m.created())).unwrap_or(modified);
-        if let Some(old) = prev.get(&sng).filter(|o| stamp != 0 && o.stamp == stamp) {
+        if let Some(old) = prev.get(&sng).filter(|o| stamp != 0 && o.stamp == stamp && o.chart_hash.is_some()) {
             let mut c = LocalChart::clone(old);
             c.added = added;
             charts.push(Arc::new(c));
@@ -372,8 +507,15 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
         if let Ok(index) = crate::sng::read_index(&sng) {
             let mut assets = assets_from_names(index.files.iter().map(|f| f.name.as_str()));
             assets.chart_type = ChartType::Sng;
+            let hash = assets
+                .chart_file
+                .as_ref()
+                .and_then(|n| index.files.iter().find(|f| &f.name == n))
+                .and_then(|e| crate::sng::read_entry(&sng, &index, e).ok())
+                .map(|b| chart_hash(&b));
             let mut c = make_chart(sng, &index.metadata, assets, modified, added);
             c.stamp = stamp;
+            c.chart_hash = hash;
             charts.push(Arc::new(c));
         }
     }
@@ -446,6 +588,7 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         modified,
         added,
         stamp: 0,
+        chart_hash: None,
         path,
     }
 }
@@ -612,6 +755,22 @@ mod tests {
 
     /// A stray `[song] =` line (seen in real charts) doesn't end the [song] section.
     #[test]
+    fn other_versions() {
+        let fears_drive = song_key("Face My Fears (feat. Skrillex) (English Version)", "Angevil & Stickheadz32");
+        let fears_pack = song_key("Face My Fears (English Version)", "Angevil & <color=#FF0>Stickheadz32</color>");
+        assert_eq!(fears_drive, fears_pack);
+        assert!(same_artist(&artist_words("Utada Hikaru"), &artist_words("Hikaru Utada (feat. Skrillex)")));
+        assert_eq!(
+            song_key("Herald of Darkness (feat. Alan Wake & Mr. Door)", "Angevil & ZetaPhoenix"),
+            song_key("Herald of Darkness", "ZetaPhoenix, Angevil")
+        );
+        assert_ne!(song_key("Herald of Darkness - Radio Edit", "Angevil"), song_key("Herald of Darkness", "Angevil"));
+        assert_eq!(artist_words("Old Gods of Asgard feat. Alan Wake"), ["old", "gods", "of", "asgard"]);
+        assert!(!same_artist(&artist_words("Metallica"), &artist_words("Megadeth")));
+        assert_eq!(song_key("", "Angevil"), None);
+    }
+
+    #[test]
     fn ini_stray_heading() {
         let ini = "[song]\r\n[song] = \r\nname = <color=#2e84c9>Summer</color>\r\nartist = Oakwood\r\ncharter = Whip\r\n";
         let c = make_chart(PathBuf::from("x"), &parse_ini(ini), assets_from_names(["notes.chart"].into_iter()), 0, 0);
@@ -659,6 +818,7 @@ mod tests {
         let back: Vec<Arc<LocalChart>> = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.len(), lib.charts);
         println!("cache {} KB, round trip {:?}", json.len() / 1024, t2.elapsed());
+        println!("{} chart hashes, e.g. {:?}", lib.hashes.len(), lib.hashes.keys().next());
         let some = lib.keys.values().next().unwrap()[0].clone();
         assert!(is_deletable_chart(&some, std::slice::from_ref(&root)));
         assert!(!is_deletable_chart(&root, std::slice::from_ref(&root)));

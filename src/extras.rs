@@ -11,6 +11,18 @@ pub fn library_mark<'a>() -> Element<'a, Message> {
     text("✓").size(13).style(|t: &Theme| text::Style { color: Some(t.extended_palette().success.base.color) }).into()
 }
 
+/// Marks a result when the library has a different version of the chart (an update, or a
+/// pack's copy).
+pub fn other_version_mark<'a>() -> Element<'a, Message> {
+    let mark = text("✓").size(13).style(|t: &Theme| text::Style { color: Some(t.extended_palette().warning.base.color) });
+    iced::widget::tooltip(
+        mark,
+        container(text("You have another version of this chart").size(12)).padding([4, 8]).style(container::rounded_box),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
 /// Small "RV" tag shown on RhythmVerse results.
 pub fn rv_tag<'a>() -> Element<'a, Message> {
     // A small blue tag (its own colour, so it doesn't read as an accent or a warning).

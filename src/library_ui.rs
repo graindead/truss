@@ -97,6 +97,10 @@ pub enum Msg {
     Rescan,
     Open(PathBuf),
     Scrolled(scrollable::Viewport),
+    /// Look for loose charts that are also in a pack.
+    FindPackDuplicates,
+    /// Remove every video background (asks again first).
+    RemoveVideos,
 }
 
 /// Requests for the app.
@@ -109,6 +113,8 @@ pub enum Out {
     Open(PathBuf),
     /// The chart whose details are open below its row changed (`None`: closed).
     Expanded(Option<Arc<LocalChart>>),
+    FindPackDuplicates,
+    RemoveVideos,
 }
 
 /// What the page reads from the app.
@@ -120,6 +126,10 @@ pub struct Ctx<'a> {
     pub lyrics_scanning: bool,
     pub has_folders: bool,
     pub error: Option<&'a str>,
+    /// What the last clean-up did, or that one is running.
+    pub notice: Option<&'a str>,
+    /// A clean-up is running.
+    pub busy: bool,
 }
 
 #[derive(Default)]
@@ -132,6 +142,7 @@ pub struct Page {
     /// The chart whose details are open below its row.
     open: Option<PathBuf>,
     confirm_delete: bool,
+    confirm_videos: bool,
     list: VList,
     /// Indices into the catalog that pass the filters, in display order.
     shown: Vec<usize>,
@@ -226,6 +237,9 @@ impl Page {
         if !matches!(msg, Msg::Delete | Msg::Scrolled(_)) {
             self.confirm_delete = false;
         }
+        if !matches!(msg, Msg::RemoveVideos | Msg::Scrolled(_)) {
+            self.confirm_videos = false;
+        }
         match msg {
             Msg::Query(q) => {
                 self.query = q;
@@ -287,6 +301,15 @@ impl Page {
                 }
             }
             Msg::Rescan => return Out::Rescan,
+            Msg::FindPackDuplicates => return Out::FindPackDuplicates,
+            Msg::RemoveVideos => {
+                if !self.confirm_videos {
+                    self.confirm_videos = true;
+                } else {
+                    self.confirm_videos = false;
+                    return Out::RemoveVideos;
+                }
+            }
             Msg::Open(p) => return Out::Open(p),
             Msg::Scrolled(vp) => self.list.on_scroll(vp),
         }
@@ -360,32 +383,58 @@ impl Page {
         } else {
             format!("{} of {} charts", self.shown.len(), cat.len())
         };
+        // The status takes the room the buttons leave, and is cut short rather than squeezing them.
         let mut bar = row![
             text_input("Search artist, song, charter, album…", &self.query).on_input(Msg::Query).padding(8).width(320),
             pick_list(KindOpt::ALL, Some(KindOpt(self.kind)), Msg::Kind).padding(8),
             pick_list(SortBy::ALL, Some(self.sort.unwrap_or(SortBy::Artist)), Msg::SortPicked).padding(8),
-            text(status).size(12),
-            space().width(Length::Fill),
+            container(text(status).size(12).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
         if !self.selected.is_empty() {
             let n = self.selected.len();
             bar = bar
-                .push(text(format!("{n} selected")).size(13))
+                .push(text(format!("{n} selected")).size(13).wrapping(text::Wrapping::None))
                 .push(
-                    button(text(if self.confirm_delete { format!("Confirm: delete {n}") } else { format!("Delete {n}") }).size(13))
+                    button(text(if self.confirm_delete { format!("Confirm: delete {n}") } else { format!("Delete {n}") }).size(13).wrapping(text::Wrapping::None))
                         .padding([6, 12])
                         .style(move |t: &Theme, s| if self.confirm_delete { button::danger(t, s) } else { button::secondary(t, s) })
                         .on_press(Msg::Delete),
                 )
-                .push(button(text("Clear").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::ClearSelection));
+                .push(button(text("Clear").size(13).wrapping(text::Wrapping::None)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::ClearSelection));
         } else {
             bar = bar.push(
-                button(text("Select all shown").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::SelectAllShown),
+                button(text("Select all shown").size(13).wrapping(text::Wrapping::None)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::SelectAllShown),
             );
         }
-        bar = bar.push(button(text("Rescan").size(13)).padding([6, 12]).on_press(Msg::Rescan));
+        let videos = cat.iter().filter(|c| c.has_video && !c.is_sng()).count();
+        let idle = !cx.busy && !cx.scanning;
+        bar = bar
+            .push(
+                button(text("Merge pack duplicates").size(13).wrapping(text::Wrapping::None))
+                    .padding([6, 12])
+                    .style(crate::style::secondary)
+                    .on_press_maybe(idle.then_some(Msg::FindPackDuplicates)),
+            )
+            .push(
+                button(
+                    text(if self.confirm_videos { format!("Confirm: remove {videos} videos") } else { "Remove videos".to_string() })
+                        .size(13)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([6, 12])
+                .style(move |t: &Theme, s| if self.confirm_videos { button::danger(t, s) } else { button::secondary(t, s) })
+                .on_press_maybe((idle && videos > 0).then_some(Msg::RemoveVideos)),
+            );
+        bar = bar.push(button(text("Rescan").size(13).wrapping(text::Wrapping::None)).padding([6, 12]).on_press(Msg::Rescan));
+        // What the last clean-up did, on its own line.
+        let top: Element<'_, Msg> = match cx.notice.filter(|_| !cx.scanning) {
+            Some(n) => column![tiles, bar, text(n.to_string()).size(12).style(|t: &Theme| text::Style { color: Some(crate::style::muted(t)) })]
+                .spacing(10)
+                .into(),
+            None => column![tiles, bar].spacing(10).into(),
+        };
 
         // Header and rows share these widths, so every column lines up with its heading.
         const CHECK_W: f32 = 22.0;
@@ -537,7 +586,7 @@ impl Page {
         );
 
         column![
-            Element::from(container(column![tiles, bar].spacing(10)).padding([12, 14])).map(M),
+            Element::from(container(top).padding([12, 14])).map(M),
             Element::from(head).map(M),
             rule::horizontal(1).style(crate::style::rule),
             list,
@@ -558,7 +607,16 @@ mod tests {
             .map(|(a, n, t)| Arc::new(crate::library::test_chart(a, n, t)))
             .collect();
         let lyrics = HashMap::new();
-        let cx = Ctx { catalog: &cat, lyrics: &lyrics, scanning: false, lyrics_scanning: false, has_folders: true, error: None };
+        let cx = Ctx {
+            catalog: &cat,
+            lyrics: &lyrics,
+            scanning: false,
+            lyrics_scanning: false,
+            has_folders: true,
+            error: None,
+            notice: None,
+            busy: false,
+        };
         let names = |p: &Page| p.shown.iter().map(|&i| cat[i].name.clone()).collect::<Vec<_>>();
 
         let mut p = Page::with_sort("newest");

@@ -222,24 +222,7 @@ pub struct Computed {
 /// song.ini unless `ini` (e.g. a .sng's metadata) is given. Picks the chart file the way
 /// scan-chart does.
 pub fn hash_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<Computed, String> {
-    let lower = |n: &str| n.rsplit(['/', '\\']).next().unwrap_or(n).to_ascii_lowercase();
-    let is_chart = |n: &str| n.ends_with(".chart") || n.ends_with(".mid");
-    let mut charts: Vec<&(String, Vec<u8>)> = files.iter().filter(|(n, _)| is_chart(&lower(n))).collect();
-    // notes.* first, then .mid before .chart.
-    charts.sort_by_key(|(n, _)| {
-        let n = lower(n);
-        (!(n == "notes.chart" || n == "notes.mid"), !n.ends_with(".mid"))
-    });
-    let (name, data) = charts.first().ok_or("This chart has no notes.chart or notes.mid.")?;
-    let mods = match ini {
-        Some(pairs) => modifiers_from_ini(pairs),
-        None => {
-            let inis: Vec<&(String, Vec<u8>)> = files.iter().filter(|(n, _)| lower(n).ends_with(".ini")).collect();
-            let ini = inis.iter().find(|(n, _)| lower(n) == "song.ini").or(inis.last());
-            ini.map(|(_, d)| modifiers_from_ini(&ini_pairs(d))).unwrap_or_default()
-        }
-    };
-    let parsed = crate::chart::parse_chart_file(data, lower(name).ends_with(".mid"), &mods)?;
+    let parsed = parse_files(files, ini)?;
     Ok(Computed {
         tracks: parsed
             .tracks
@@ -260,6 +243,37 @@ pub fn hash_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>)
             .filter_map(|t| Some((t.instrument.to_string(), std::sync::Arc::new(crate::curves::curves(t.instrument, t)?))))
             .collect(),
     })
+}
+
+/// Just the track hashes (instrument, difficulty, hash) of `hash_files`.
+pub fn hash_tracks(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<Vec<(String, String, String)>, String> {
+    let parsed = parse_files(files, ini)?;
+    Ok(parsed
+        .tracks
+        .iter()
+        .map(|t| (t.instrument.to_string(), t.difficulty.to_string(), track_hash(&parsed, t, CURRENT)))
+        .collect())
+}
+
+fn parse_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<crate::chart::ParsedChart, String> {
+    let lower = |n: &str| n.rsplit(['/', '\\']).next().unwrap_or(n).to_ascii_lowercase();
+    let is_chart = |n: &str| n.ends_with(".chart") || n.ends_with(".mid");
+    let mut charts: Vec<&(String, Vec<u8>)> = files.iter().filter(|(n, _)| is_chart(&lower(n))).collect();
+    // notes.* first, then .mid before .chart.
+    charts.sort_by_key(|(n, _)| {
+        let n = lower(n);
+        (!(n == "notes.chart" || n == "notes.mid"), !n.ends_with(".mid"))
+    });
+    let (name, data) = charts.first().ok_or("This chart has no notes.chart or notes.mid.")?;
+    let mods = match ini {
+        Some(pairs) => modifiers_from_ini(pairs),
+        None => {
+            let inis: Vec<&(String, Vec<u8>)> = files.iter().filter(|(n, _)| lower(n).ends_with(".ini")).collect();
+            let ini = inis.iter().find(|(n, _)| lower(n) == "song.ini").or(inis.last());
+            ini.map(|(_, d)| modifiers_from_ini(&ini_pairs(d))).unwrap_or_default()
+        }
+    };
+    crate::chart::parse_chart_file(data, lower(name).ends_with(".mid"), &mods)
 }
 
 #[cfg(test)]

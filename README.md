@@ -86,6 +86,17 @@ A few things from Bridge haven't been ported: Report issue and UI zoom.
 
 ## Credits and licence
 
+Truss would have nothing to show without the sites it reads from, and the charters and pack
+makers whose work they host:
+
+- [Chorus Encore](https://www.enchor.us) (by Geomitron): Browse's search, chart downloads,
+  previews and chart details.
+- [RhythmVerse](https://rhythmverse.co): the extra search results marked RV, and their downloads.
+- [Custom Songs Central](https://customsongscentral.com/): the Packs tab's list, pack pages and
+  download links.
+
+Truss only finds and downloads charts; they belong to the people who made them.
+
 Truss is licensed GPL-3.0 (see `LICENSE`), like [Bridge](https://github.com/Geomitron/Bridge),
 which it's a port of. The chart parser, issue checks and preview are ported from Geomitron's
 [scan-chart](https://github.com/Geomitron/scan-chart) and

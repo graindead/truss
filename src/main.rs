@@ -16,6 +16,7 @@ mod issues;
 mod leaderboard;
 mod leaderboard_ui;
 mod library;
+mod library_tools;
 mod library_ui;
 mod lyrics;
 mod preview;
@@ -59,7 +60,7 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme};
-use extras::{library_mark, rv_tag};
+use extras::{library_mark, other_version_mark, rv_tag};
 use settings::Settings;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -361,6 +362,13 @@ struct App {
 
     /// Charts already in the library folders (see `library::Library`).
     library: HashMap<String, Vec<PathBuf>>,
+    /// The same by chart file hash (Encore's `chartHash`).
+    library_hashes: HashMap<String, Vec<PathBuf>>,
+    /// Songs in the library, for spotting other versions (see `library::Library::songs`).
+    library_songs: HashMap<String, Vec<(Vec<String>, PathBuf)>>,
+    /// Track hashes of library charts, read when a search result might be the same notes with
+    /// different metadata (see `same_notes_copies`).
+    local_tracks: std::sync::Mutex<HashMap<PathBuf, Vec<String>>>,
     library_charts: usize,
     /// Chart (md5) whose Delete button was clicked once and is waiting for the confirming click.
     confirm_delete: Option<String>,
@@ -385,6 +393,14 @@ struct App {
     /// Downloads/deletes happened since the last scan.
     catalog_stale: bool,
     library_error: Option<String>,
+    /// What the last library clean-up did (shown on the Library page).
+    library_notice: Option<String>,
+    /// A library clean-up (duplicate search, video removal) is running.
+    library_busy: bool,
+    /// Loose charts found to be in a pack too, waiting for the user to decide.
+    merge_offer: Option<MergeOffer>,
+    /// Folders of packs just downloaded, checked for loose duplicates once the library is read.
+    pack_dup_check: Vec<PathBuf>,
     library_page: library_ui::Page,
     tools_page: tools_ui::Page,
     packs_page: packs::Page,
@@ -425,6 +441,8 @@ struct App {
 enum Message {
     QueryChanged(String),
     Debounced(u64),
+    /// An Advanced search filter changed a moment ago (this generation): search again.
+    AdvancedDebounced(u64),
     SubmitSearch,
     /// Clicked an artist, charter, genre… in the details: search for it.
     SearchFor(String),
@@ -495,6 +513,12 @@ enum Message {
     PacksPage(packs::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
     LibraryDeleted(Result<(), String>),
+    /// Loose copies of pack charts were found (`Some`: the pack just downloaded).
+    PackDuplicates(Vec<library_tools::Duplicate>, Option<String>),
+    MergeToggle(usize),
+    MergeConfirm,
+    MergeCancel,
+    VideosRemoved(Result<usize, String>),
     RescanLibrary,
     AddLibraryFolder,
     PickPackFolder,
@@ -648,6 +672,9 @@ impl App {
             board_pick: None,
             hashes: HashMap::new(),
             library: HashMap::new(),
+            library_hashes: HashMap::new(),
+            library_songs: HashMap::new(),
+            local_tracks: Default::default(),
             confirm_delete: None,
             delete_error: None,
             library_charts: 0,
@@ -663,6 +690,10 @@ impl App {
             lyrics_scanning: false,
             catalog_stale: false,
             library_error: None,
+            library_notice: None,
+            library_busy: false,
+            merge_offer: None,
+            pack_dup_check: Vec::new(),
             library_page: library_ui::Page::with_sort(&settings.library_sort),
             tools_page: Default::default(),
             packs_page: Default::default(),
@@ -827,6 +858,8 @@ impl App {
             lyrics_scanning: self.lyrics_scanning,
             has_folders: !self.settings.all_library_folders().is_empty(),
             error: self.library_error.as_deref(),
+            notice: self.library_notice.as_deref(),
+            busy: self.library_busy,
         }
     }
 
@@ -886,6 +919,8 @@ impl App {
         let folders = self.settings.scan_folders();
         if folders.is_empty() {
             self.library.clear();
+            self.library_hashes.clear();
+            self.library_songs.clear();
             self.library_charts = 0;
             self.list_rev += 1;
             return Task::none();
@@ -915,13 +950,54 @@ impl App {
     }
 
     pub fn in_library(&self, c: &Chart) -> bool {
-        !self.library.is_empty() && self.library.get(&c.library_key()).is_some_and(|p| !p.is_empty())
+        !self.library_matches(c).is_empty()
+    }
+
+    /// Library charts of the same song and charter as this one (another version, perhaps).
+    fn same_song(&self, c: &Chart) -> Vec<PathBuf> {
+        let Some(k) = library::song_key(c.name.as_deref().unwrap_or(""), c.charter.as_deref().unwrap_or("")) else { return Vec::new() };
+        let Some(have) = self.library_songs.get(&k) else { return Vec::new() };
+        let artist = library::artist_words(c.artist.as_deref().unwrap_or(""));
+        have.iter().filter(|(a, _)| library::same_artist(a, &artist)).map(|(_, p)| p.clone()).collect()
+    }
+
+    /// True when the library has a different version of this chart (same song and charter,
+    /// different notes) but not this one.
+    pub fn other_version_in_library(&self, c: &Chart) -> bool {
+        !self.same_song(c).is_empty() && !self.in_library(c)
+    }
+
+    /// Library copies of the same song whose notes match this chart's track for track, though
+    /// the files differ (a pack's copy with its metadata written differently, say).
+    fn same_notes_copies(&self, c: &Chart) -> Vec<PathBuf> {
+        let Some(nd) = &c.notes_data else { return Vec::new() };
+        let mut want: Vec<String> =
+            nd.track_hashes.iter().map(|t| format!("{}/{}/{}", t.instrument, t.difficulty, t.hash.trim_end_matches('='))).collect();
+        if want.is_empty() {
+            return Vec::new();
+        }
+        want.sort();
+        let mut cache = self.local_tracks.lock().unwrap_or_else(|e| e.into_inner());
+        self.same_song(c)
+            .into_iter()
+            .filter(|p| *cache.entry(p.clone()).or_insert_with(|| library::track_hashes(p)) == want)
+            .collect()
+    }
+
+    /// Library copies of a chart: with the same chart file (Encore's `chartHash`), the same
+    /// artist, name and charter, or the same notes.
+    fn library_matches(&self, c: &Chart) -> Vec<PathBuf> {
+        let by_hash = c.chart_hash.as_ref().and_then(|h| self.library_hashes.get(h)).filter(|p| !p.is_empty());
+        match by_hash.or_else(|| self.library.get(&c.library_key()).filter(|p| !p.is_empty())) {
+            Some(p) => p.clone(),
+            None => self.same_notes_copies(c),
+        }
     }
 
     /// A copy of the chart already on this computer (in the library), to read instead of
     /// downloading it again for previews, leaderboards and Fretwork ratings.
     pub fn library_copy(&self, c: &Chart) -> Option<PathBuf> {
-        self.library.get(&c.library_key())?.first().cloned()
+        self.library_matches(c).first().cloned()
     }
 
     /// The chart whose details are showing: the open library chart on the Library page, else
@@ -1113,6 +1189,16 @@ impl App {
         if after == 0 {
             self.library.remove(&key);
         }
+        if !removed.is_empty() {
+            self.library_hashes.retain(|_, ps| {
+                ps.retain(|p| !removed.contains(p));
+                !ps.is_empty()
+            });
+            self.library_songs.retain(|_, ps| {
+                ps.retain(|(_, p)| !removed.contains(p));
+                !ps.is_empty()
+            });
+        }
         self.library_charts = (self.library_charts + after).saturating_sub(before);
         self.catalog_stale = true;
         self.list_rev += 1;
@@ -1121,10 +1207,7 @@ impl App {
     /// The library copies of a chart that may safely be removed.
     pub fn library_paths(&self, c: &Chart) -> Vec<PathBuf> {
         let roots = self.settings.scan_folders();
-        self.library
-            .get(&c.library_key())
-            .map(|ps| ps.iter().filter(|p| library::is_deletable_chart(p, &roots)).cloned().collect())
-            .unwrap_or_default()
+        self.library_matches(c).iter().filter(|p| library::is_deletable_chart(p, &roots)).cloned().collect()
     }
 
     /// Adds search results, folding extra versions of a song into its existing row.
@@ -1261,6 +1344,31 @@ impl App {
             active += 1;
         }
         Task::batch(tasks)
+    }
+
+    /// Searches with the Advanced filters. A filter that can't be read yet (half typed) keeps
+    /// the current results; `show_error` (the Search button) says what's wrong with it.
+    fn run_advanced(&mut self, show_error: bool) -> Task<Message> {
+        match self.advanced.to_filters().and_then(|f| Ok((f, self.advanced.fretwork_filter()?))) {
+            Ok((filters, fw)) => {
+                // Nothing filled in and no Advanced search showing: nothing to change.
+                if !show_error && self.advanced.active_count() == 0 && self.active_advanced.is_none() {
+                    return Task::none();
+                }
+                self.advanced.error = None;
+                self.fw.filter = fw;
+                // An empty form means a normal search (which includes RhythmVerse).
+                self.active_advanced = (self.advanced.active_count() > 0).then(|| Arc::new(filters));
+                self.query.clear();
+                self.search(false)
+            }
+            Err(e) => {
+                if show_error {
+                    self.advanced.error = Some(e);
+                }
+                Task::none()
+            }
+        }
     }
 
     fn search(&mut self, append: bool) -> Task<Message> {
@@ -1552,20 +1660,7 @@ impl App {
                 self.advanced_open = false;
                 Task::none()
             }
-            Message::Advanced(advanced::Msg::Search) => match self.advanced.to_filters().and_then(|f| Ok((f, self.advanced.fretwork_filter()?))) {
-                Ok((filters, fw)) => {
-                    self.advanced.error = None;
-                    self.fw.filter = fw;
-                    // An empty form means a normal search (which includes RhythmVerse).
-                    self.active_advanced = (self.advanced.active_count() > 0).then(|| Arc::new(filters));
-                    self.query.clear();
-                    self.search(false)
-                }
-                Err(e) => {
-                    self.advanced.error = Some(e);
-                    Task::none()
-                }
-            },
+            Message::Advanced(advanced::Msg::Search) => self.run_advanced(true),
             // Reset also ends an Advanced search that's showing, back to the normal results.
             Message::Advanced(advanced::Msg::Reset) if self.active_advanced.is_some() => {
                 self.advanced.update(advanced::Msg::Reset);
@@ -1576,8 +1671,13 @@ impl App {
             Message::Advanced(msg) => {
                 self.advanced.update(msg);
                 self.advanced.error = None;
-                Task::none()
+                // Results follow the filters as they're filled in, like the main search box.
+                self.generation += 1;
+                let g = self.generation;
+                Task::perform(tokio::time::sleep(Duration::from_millis(350)), move |_| Message::AdvancedDebounced(g))
             }
+            Message::AdvancedDebounced(g) if g == self.generation => self.run_advanced(false),
+            Message::AdvancedDebounced(_) => Task::none(),
             Message::QueryChanged(q) => {
                 self.query = q;
                 self.screen = Screen::Browse;
@@ -1968,7 +2068,11 @@ impl App {
                             };
                             let (key, replace, title, is_pack) = (d.chart.library_key(), d.replace.clone(), d.title.clone(), d.pack.is_some());
                             if is_pack {
-                                // A pack adds many charts: read the library again.
+                                // A pack adds many charts: read the library again, then look for
+                                // loose copies of its charts.
+                                if let Some(d) = &dest {
+                                    self.pack_dup_check.push(d.clone());
+                                }
                                 self.note_download(title, dest.clone());
                                 if dest.is_some() {
                                     return Task::batch([self.scan_library(), self.pump_downloads()]);
@@ -2171,6 +2275,8 @@ impl App {
                 self.library_scan_expected = Some(lib.charts);
                 self.library_charts = lib.charts;
                 self.library = lib.keys;
+                self.library_hashes = lib.hashes;
+                self.library_songs = lib.songs;
                 self.catalog = lib.catalog;
                 // Downloads and deletions since start-up are replayed onto the cached library.
                 // (Each is recorded again for the scan's result.)
@@ -2188,6 +2294,9 @@ impl App {
                 let lib = Arc::unwrap_or_clone(lib);
                 self.library_charts = lib.charts;
                 self.library = lib.keys;
+                self.library_hashes = lib.hashes;
+                self.library_songs = lib.songs;
+                self.local_tracks.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 self.catalog = lib.catalog;
                 self.list_rev += 1;
                 // Downloads and deletions that finished during the scan may be missing from it.
@@ -2203,10 +2312,14 @@ impl App {
                     }
                 }
                 self.refresh_pages();
+                let dup_check = if self.pack_dup_check.is_empty() { Task::none() } else {
+                    let packs = std::mem::take(&mut self.pack_dup_check);
+                    self.find_pack_duplicates(Some(packs))
+                };
                 if matches!(self.screen, Screen::Library | Screen::Tools) || !self.lyrics_map.is_empty() {
-                    return self.scan_lyrics();
+                    return Task::batch([dup_check, self.scan_lyrics()]);
                 }
-                Task::none()
+                dup_check
             }
             Message::LyricsScanned(map) => {
                 self.lyrics_scanning = false;
@@ -2234,6 +2347,18 @@ impl App {
                         Task::none()
                     }
                     library_ui::Out::Expanded(c) => self.open_library_details(c),
+                    library_ui::Out::FindPackDuplicates => {
+                        self.library_busy = true;
+                        self.library_notice = Some("Comparing your loose charts with your packs' copies…".into());
+                        self.find_pack_duplicates(None)
+                    }
+                    library_ui::Out::RemoveVideos => {
+                        self.library_busy = true;
+                        self.library_notice = Some("Moving video backgrounds to the Recycle Bin…".into());
+                        let files = library_tools::video_files(&self.catalog);
+                        let n = files.len();
+                        Task::perform(library::recycle(files), move |r| Message::VideosRemoved(r.map(|_| n)))
+                    }
                     library_ui::Out::Delete(paths) => {
                         // Only charts inside the library folders can be removed (to the Recycle Bin).
                         let roots = self.settings.scan_folders();
@@ -2271,6 +2396,65 @@ impl App {
                 self.preview = Some(panel);
                 Task::batch([save, task.map(Message::Preview)])
             }
+            Message::PackDuplicates(dups, pack) => {
+                self.library_busy = false;
+                if dups.is_empty() {
+                    if pack.is_none() {
+                        self.library_notice = Some("No loose charts match a pack's copy exactly.".into());
+                    }
+                    return Task::none();
+                }
+                self.library_notice = None;
+                let keep = vec![true; dups.len()];
+                self.merge_offer = Some(MergeOffer { dups, keep, pack, confirm: false });
+                Task::none()
+            }
+            Message::MergeToggle(i) => {
+                if let Some(o) = &mut self.merge_offer
+                    && let Some(k) = o.keep.get_mut(i)
+                {
+                    *k = !*k;
+                    o.confirm = false;
+                }
+                Task::none()
+            }
+            Message::MergeCancel => {
+                self.merge_offer = None;
+                Task::none()
+            }
+            Message::MergeConfirm => {
+                let Some(o) = &mut self.merge_offer else { return Task::none() };
+                if !o.confirm {
+                    o.confirm = true;
+                    return Task::none();
+                }
+                let o = self.merge_offer.take().unwrap();
+                let roots = self.settings.scan_folders();
+                let paths: Vec<PathBuf> = o
+                    .dups
+                    .iter()
+                    .zip(&o.keep)
+                    .filter(|(d, k)| **k && d.pack.exists() && library::is_deletable_chart(&d.loose, &roots))
+                    .map(|(d, _)| d.loose.clone())
+                    .collect();
+                self.library_notice = Some(format!("Moved {} loose copies to the Recycle Bin; the pack copies stay.", paths.len()));
+                Task::perform(library::recycle(paths), Message::LibraryDeleted)
+            }
+            Message::VideosRemoved(r) => {
+                self.library_busy = false;
+                match r {
+                    Ok(n) => {
+                        let sng = library_tools::video_counts(&self.catalog).1;
+                        let mut s = format!("Moved {n} video files to the Recycle Bin.");
+                        if sng > 0 {
+                            s.push_str(&format!(" {sng} .sng charts keep theirs (the video is inside the file)."));
+                        }
+                        self.library_notice = Some(s);
+                    }
+                    Err(e) => self.library_error = Some(e),
+                }
+                self.scan_library()
+            }
             Message::LibraryDeleted(r) => {
                 self.library_error = r.err();
                 self.scan_library()
@@ -2283,18 +2467,6 @@ impl App {
                     packs::Out::Download(job) => {
                         self.enqueue_pack(job);
                         Task::batch([task, self.pump_downloads()])
-                    }
-                    packs::Out::Remove(id) => Task::batch([task, self.update(Message::CancelDownload(id))]),
-                    packs::Out::Retry(id) => {
-                        let job = self.downloads.iter().position(|d| d.id == id).and_then(|i| self.downloads.remove(i).pack);
-                        if let Some(job) = job {
-                            self.enqueue_pack(job);
-                        }
-                        Task::batch([task, self.pump_downloads()])
-                    }
-                    packs::Out::ClearFinished => {
-                        self.downloads.retain(|d| d.pack.is_none() || matches!(d.status, DlStatus::Active { .. } | DlStatus::Queued));
-                        task
                     }
                 }
             }
@@ -2458,6 +2630,87 @@ impl App {
 
     // ---------- View ----------
 
+    /// Looks for loose charts whose notes match a pack's copy exactly; with `only`, just copies
+    /// of the charts in those (newly downloaded) pack folders.
+    fn find_pack_duplicates(&self, only: Option<Vec<PathBuf>>) -> Task<Message> {
+        let catalog = self.catalog.clone();
+        let roots = self.settings.scan_folders();
+        let label = only.as_ref().map(|ps| {
+            ps.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect::<Vec<_>>().join(", ")
+        });
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut d = library_tools::find_pack_duplicates(&catalog, &roots);
+                    if let Some(only) = &only {
+                        d.retain(|x| only.iter().any(|p| x.pack.starts_with(p)));
+                    }
+                    d
+                })
+                .await
+                .unwrap_or_default()
+            },
+            move |d| Message::PackDuplicates(d, label.clone()),
+        )
+    }
+
+    /// The list of loose copies to remove, shown above the Library or Packs page.
+    fn view_merge_offer(&self) -> Option<Element<'_, Message>> {
+        let o = self.merge_offer.as_ref()?;
+        let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+        let n = o.keep.iter().filter(|k| **k).count();
+        let title = match &o.pack {
+            Some(p) => format!("{} charts from {p} were already in your library outside the pack", o.dups.len()),
+            None => format!("{} loose charts are also in a pack", o.dups.len()),
+        };
+        let rows = o.dups.iter().enumerate().fold(column![].spacing(4), |col, (i, d)| {
+            let short = |p: &std::path::Path| {
+                let parts: Vec<String> = p.components().rev().take(3).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                parts.into_iter().rev().collect::<Vec<_>>().join("\\")
+            };
+            col.push(
+                row![
+                    button(text(if o.keep[i] { "☑" } else { "☐" }).size(14)).padding(0).style(button::text).on_press(Message::MergeToggle(i)),
+                    column![
+                        text(format!("{} - {} ({})", d.artist, d.name, d.charter)).size(13),
+                        text(format!("Remove: …\\{}", short(&d.loose))).size(11).style(muted),
+                        text(format!("Keep: …\\{}", short(&d.pack))).size(11).style(muted),
+                    ]
+                    .spacing(1),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Start),
+            )
+        });
+        let confirm = button(
+            text(if o.confirm { format!("Confirm: remove {n} loose copies") } else { format!("Remove {n} loose copies") }).size(13),
+        )
+        .padding([6, 12])
+        .style(move |t: &Theme, s| if o.confirm { button::danger(t, s) } else { button::primary(t, s) })
+        .on_press_maybe((n > 0).then_some(Message::MergeConfirm));
+        let panel = column![
+            text(title).size(15),
+            text("Their notes match the pack's copies exactly, track for track. Only charts sitting straight in your songs folder are listed; nothing inside a pack or other folder is ever removed. Removed copies go to the Recycle Bin.")
+                .size(12)
+                .style(muted),
+            container(scrollable(rows).height(Length::Shrink)).max_height(220),
+            row![confirm, button(text("Keep both").size(13)).padding([6, 12]).style(style::secondary).on_press(Message::MergeCancel)]
+                .spacing(8),
+        ]
+        .spacing(8);
+        Some(
+            container(panel)
+                .padding(12)
+                .width(Length::Fill)
+                .style(|t: &Theme| container::Style {
+                    background: Some(style::weakest(t).into()),
+                    border: Border { color: style::accent(t), width: 1.0, radius: 6.0.into() },
+                    ..Default::default()
+                })
+                .into(),
+        )
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let body = match self.screen {
             Screen::Browse => self.view_browse(),
@@ -2476,10 +2729,10 @@ impl App {
                             DlStatus::Active { status, done, total } => {
                                 packs::DlState::Active { status: status.clone(), done: *done, total: *total }
                             }
-                            DlStatus::Done(p) => packs::DlState::Done(p.clone()),
-                            DlStatus::Failed(e) => packs::DlState::Failed(e.clone()),
+                            DlStatus::Done(_) => packs::DlState::Done,
+                            DlStatus::Failed(_) => packs::DlState::Failed,
                         };
-                        Some(packs::DlRow { id: d.id, name: job.folder.clone(), state })
+                        Some(packs::DlRow { page: job.page.clone(), state })
                     })
                     .collect();
                 let pack_folder = self.settings.pack_folder();
@@ -2490,6 +2743,10 @@ impl App {
                 let page: Element<'_, packs::Msg> = self.packs_page.view(&cx);
                 page.map(Message::PacksPage)
             }
+        };
+        let body: Element<'_, Message> = match self.view_merge_offer().filter(|_| matches!(self.screen, Screen::Library | Screen::Packs)) {
+            Some(offer) => column![container(offer).padding([10, 14]), body].into(),
+            None => body,
         };
         let mut layout = column![self.view_topbar()];
         if self.advanced_open && self.screen == Screen::Browse {
@@ -2685,6 +2942,7 @@ impl App {
         };
         let name: Element<_> = row![]
             .push(owned.then(library_mark))
+            .push((!owned && self.other_version_in_library(c)).then(other_version_mark))
             .push(c.is_rv().then(rv_tag))
             .push(cell(&c.name, Length::Fill, false))
             .spacing(6)
@@ -2889,6 +3147,19 @@ impl App {
                 .on_press(Message::Download(i))
                 .into(),
         } };
+        let dl_button: Element<_> = if dl_state.is_none() && self.other_version_in_library(c) {
+            column![
+                text("You have another version of this chart. Downloading adds this one beside it.")
+                    .size(12)
+                    .style(|t: &Theme| text::Style { color: Some(t.extended_palette().warning.base.color) }),
+                dl_button,
+            ]
+            .spacing(6)
+            .width(Length::Fill)
+            .into()
+        } else {
+            dl_button
+        };
         let previewing = self.preview.as_ref().is_some_and(|p| p.md5 == c.md5);
         let preview_button = button(
             text(if previewing { "Stop preview" } else { "Preview" })
@@ -3577,6 +3848,17 @@ fn changelog_view(open: bool, current: &str) -> Element<'static, Message> {
     column![toggle, container(list).padding(iced::Padding { left: 14.0, ..Default::default() })].spacing(8).into()
 }
 
+/// Loose copies of pack charts, waiting for the user to remove them or keep them.
+struct MergeOffer {
+    dups: Vec<library_tools::Duplicate>,
+    /// Which to remove (all at first).
+    keep: Vec<bool>,
+    /// The pack just downloaded, when the check followed a download.
+    pack: Option<String>,
+    /// The remove button was clicked once and waits for the confirming click.
+    confirm: bool,
+}
+
 /// Settings > Credits: the projects Truss is ported from, uses, or is built with.
 fn credits_section() -> Element<'static, Message> {
     let link = |name: &'static str, url: &'static str| {
@@ -3622,6 +3904,21 @@ fn credits_section() -> Element<'static, Message> {
     let libs = libraries.iter().fold(row![].spacing(12), |r, (n, u)| r.push(link(n, u))).wrap().vertical_spacing(6);
 
     column![
+        heading("Chart Sources"),
+        entry(
+            "Chorus Encore",
+            "https://www.enchor.us",
+            "by Geomitron. Browse's search, chart downloads, previews, chart details and the files Truss checks charts against.",
+        ),
+        entry("RhythmVerse", "https://rhythmverse.co", "Extra search results (marked RV) and their downloads."),
+        entry(
+            "Custom Songs Central",
+            "https://customsongscentral.com",
+            "The Packs tab: the list of packs, their pages and their download links.",
+        ),
+        text("Every chart and pack is the work of its charters and pack makers. Truss only finds and downloads them; please support the sites that host them.")
+            .size(12)
+            .style(muted),
         heading("Ported from"),
         entry("Bridge", "https://github.com/Geomitron/Bridge", "by Geomitron (GPL-3.0). Truss is a rewrite of Bridge; its search, downloads and folder naming follow it."),
         entry("scan-chart", "https://github.com/Geomitron/scan-chart", "by Geomitron (MIT). Chart reading, the issue checks, and the track hashes leaderboards use."),
@@ -3633,7 +3930,7 @@ fn credits_section() -> Element<'static, Message> {
         entry("CH Scene Switcher", "https://github.com/graindead/chswitcher", "Shares its settings with the Scene Switcher tool."),
         heading("Built with"),
         libs,
-        text("Charts and scores come from Chorus Encore, RhythmVerse and the Clone Hero leaderboards; song requests from Ouvert.")
+        text("Scores come from the Clone Hero leaderboards; song requests from Ouvert.")
             .size(12)
             .style(muted),
     ]

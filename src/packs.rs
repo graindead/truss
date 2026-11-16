@@ -510,6 +510,8 @@ pub struct Job {
     pub url: String,
     /// The folder it goes into, in the library.
     pub folder: String,
+    /// The pack's page, so its row can show the download's progress.
+    pub page: String,
 }
 
 /// Downloads a pack into `<library>/<folder>`, unpacking its archives.
@@ -643,10 +645,6 @@ pub enum Msg {
     Open(String),
     Download(Job),
     Retry,
-    RemoveDl(u64),
-    RetryDl(u64),
-    OpenFolder(PathBuf),
-    ClearFinished,
     Index(Option<crate::pack_index::PackIndex>),
     HideInstalled(bool),
 }
@@ -655,24 +653,20 @@ pub enum Msg {
 pub enum Out {
     None,
     Download(Job),
-    /// Cancels a download, or removes a finished one from the list.
-    Remove(u64),
-    Retry(u64),
-    ClearFinished,
 }
 
 /// A pack download's state, as the app's download queue has it.
 pub enum DlState {
     Queued,
     Active { status: String, done: u64, total: Option<u64> },
-    Done(PathBuf),
-    Failed(String),
+    Done,
+    Failed,
 }
 
 /// A pack download in the queue.
 pub struct DlRow {
-    pub id: u64,
-    pub name: String,
+    /// The pack's page.
+    pub page: String,
     pub state: DlState,
 }
 
@@ -770,13 +764,6 @@ impl Page {
                 Task::none()
             }
             Msg::Download(job) => return (Task::none(), Out::Download(job)),
-            Msg::RemoveDl(id) => return (Task::none(), Out::Remove(id)),
-            Msg::RetryDl(id) => return (Task::none(), Out::Retry(id)),
-            Msg::ClearFinished => return (Task::none(), Out::ClearFinished),
-            Msg::OpenFolder(p) => {
-                let _ = open::that_detached(p);
-                Task::none()
-            }
             Msg::Retry => self.opened(),
             Msg::Index(i) => {
                 self.index = i.map(std::sync::Arc::new);
@@ -865,7 +852,24 @@ impl Page {
             row![text("Packs from Custom Songs Central").size(16), space().width(Length::Fill), status, search]
                 .spacing(12)
                 .align_y(Alignment::Center),
-            text("Click a pack to read about it and download it.").size(12).style(muted),
+            row![
+                text("Packs, their pages and their downloads are from").size(12).style(muted),
+                button(text("customsongscentral.com ↗").size(12))
+                    .padding(0)
+                    .style(|t: &Theme, st| button::Style {
+                        background: None,
+                        text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) {
+                            crate::style::fg(t)
+                        } else {
+                            crate::style::accent(t)
+                        },
+                        ..Default::default()
+                    })
+                    .on_press(Msg::Open(SITE.to_string())),
+                text("— thanks to its pack makers. Click a pack to read about it and download it.").size(12).style(muted),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
             chips.wrap(),
         ]
         .spacing(10);
@@ -885,93 +889,7 @@ impl Page {
             });
             scrollable(container(rows).padding(list_pad())).height(Length::Fill).into()
         };
-        let body: Element<'_, Msg> = if cx.downloads.is_empty() {
-            body
-        } else {
-            row![body, crate::style::divider(true), self.view_downloads(cx)].height(Length::Fill).into()
-        };
         column![container(header).padding([14, 18]), crate::style::divider(false), body].height(Length::Fill).into()
-    }
-
-    /// The pack downloads: progress, and what can be done with each.
-    fn view_downloads<'a>(&'a self, cx: &Ctx<'_>) -> Element<'a, Msg> {
-        let small = |label: &'static str, msg: Msg| -> Element<'a, Msg> {
-            button(text(label).size(11)).padding([3, 9]).style(crate::style::quiet_button(false)).on_press(msg).into()
-        };
-        let finished = cx.downloads.iter().filter(|d| matches!(d.state, DlState::Done(_) | DlState::Failed(_))).count();
-        let active = cx.downloads.len() - finished;
-        let mut head = row![text("Downloads").size(14), space().width(Length::Fill)].align_y(Alignment::Center).spacing(8);
-        if active > 0 {
-            head = head.push(text(format!("{active} in progress")).size(11).style(muted));
-        }
-        if finished > 0 {
-            head = head.push(small("Clear finished", Msg::ClearFinished));
-        }
-        let mut list = column![].spacing(14);
-        // Newest first.
-        for d in cx.downloads.iter().rev() {
-            let name = text(d.name.clone()).size(13);
-            let item: Element<'a, Msg> = match &d.state {
-                DlState::Queued => column![
-                    name,
-                    row![text("Waiting for other downloads").size(11).style(muted), space().width(Length::Fill), small("Cancel", Msg::RemoveDl(d.id))]
-                        .align_y(Alignment::Center),
-                ]
-                .spacing(4)
-                .into(),
-                DlState::Active { status, done, total } => {
-                    let downloading = status == "Downloading";
-                    let line = match total {
-                        Some(t) if downloading && *t > 0 => format!("{} of {}", human_size(*done), human_size(*t)),
-                        _ if downloading => format!("{} so far", human_size(*done)),
-                        _ => status.clone(),
-                    };
-                    let frac = match total {
-                        Some(t) if downloading && *t > 0 => *done as f32 / *t as f32,
-                        _ if downloading => 0.0,
-                        _ => 1.0,
-                    };
-                    column![
-                        name,
-                        progress_bar(0.0..=1.0, frac).girth(4),
-                        row![text(line).size(11).style(muted), space().width(Length::Fill), small("Cancel", Msg::RemoveDl(d.id))]
-                            .align_y(Alignment::Center),
-                    ]
-                    .spacing(4)
-                    .into()
-                }
-                DlState::Done(path) => column![
-                    name,
-                    row![
-                        text("Done").size(11).style(|t: &Theme| text::Style { color: Some(t.extended_palette().success.base.color) }),
-                        space().width(Length::Fill),
-                        small("Open folder", Msg::OpenFolder(path.clone())),
-                        small("Remove", Msg::RemoveDl(d.id)),
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-                ]
-                .spacing(4)
-                .into(),
-                DlState::Failed(e) => column![
-                    name,
-                    text(e.clone()).size(11).style(danger),
-                    row![space().width(Length::Fill), small("Retry", Msg::RetryDl(d.id)), small("Remove", Msg::RemoveDl(d.id))]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                ]
-                .spacing(4)
-                .into(),
-            };
-            list = list.push(item);
-        }
-        column![
-            container(head).padding(iced::Padding { top: 12.0, right: 16.0, bottom: 8.0, left: 16.0 }),
-            scrollable(container(list).padding(iced::Padding { top: 4.0, right: 16.0, bottom: 16.0, left: 16.0 })).height(Length::Fill),
-        ]
-        .width(320)
-        .height(Length::Fill)
-        .into()
     }
 
     fn view_pack<'a>(&'a self, p: &'a Pack, cx: &Ctx<'_>) -> Element<'a, Msg> {
@@ -991,9 +909,33 @@ impl Page {
             Some(h) if h.have > 0 => text(format!("{} of {} charts", h.have, h.total)).size(12).style(accent).into(),
             _ => space().width(0).into(),
         };
-        let content = row![thumb, info, badge, text(&p.age).size(12).style(muted), text(if open { "▴" } else { "▾" }).size(12).style(muted)]
+        // This pack's downloads (one per link): a bar while any is waiting or running.
+        let mine: Vec<&DlState> = cx.downloads.iter().filter(|d| d.page == p.url).map(|d| &d.state).collect();
+        let running = mine.iter().any(|s| matches!(s, DlState::Queued | DlState::Active { .. }));
+        let progress = running.then(|| {
+            let part = |s: &DlState| match s {
+                DlState::Active { status, done, total: Some(t) } if status == "Downloading" && *t > 0 => *done as f32 / *t as f32,
+                // Unpacking and moving come after the download.
+                DlState::Active { status, .. } if status != "Downloading" && !status.starts_with("Starting") => 1.0,
+                DlState::Done => 1.0,
+                _ => 0.0,
+            };
+            mine.iter().map(|s| part(s)).sum::<f32>() / mine.len().max(1) as f32
+        });
+        let badge: Element<'a, Msg> = match mine.iter().rev().find(|s| !matches!(s, DlState::Done)) {
+            Some(DlState::Queued) if !mine.iter().any(|s| matches!(s, DlState::Active { .. })) => text("Waiting…").size(12).style(muted).into(),
+            Some(DlState::Active { status, .. }) if status != "Downloading" => text(status.clone()).size(12).style(accent).into(),
+            Some(DlState::Active { .. }) => text(format!("{:.0}%", progress.unwrap_or(0.0) * 100.0)).size(12).style(accent).into(),
+            Some(DlState::Failed) if !running => text("Download failed").size(12).style(danger).into(),
+            _ => badge,
+        };
+        let line = row![thumb, info, badge, text(&p.age).size(12).style(muted), text(if open { "▴" } else { "▾" }).size(12).style(muted)]
             .spacing(14)
             .align_y(Alignment::Center);
+        let content: Element<'a, Msg> = match progress {
+            Some(f) => column![line, progress_bar(0.0..=1.0, f).girth(3)].spacing(4).into(),
+            None => line.into(),
+        };
         button(content)
             .padding([6, 8])
             .width(Length::Fill)
@@ -1032,7 +974,7 @@ impl Page {
                         None => l.label.clone(),
                     };
                     let action: Element<'a, Msg> = if can_download(&l.url) {
-                        let job = Job { url: l.url.clone(), folder };
+                        let job = Job { url: l.url.clone(), folder, page: p.url.clone() };
                         let b = button(text(if several { "Download" } else { "Download pack" }).size(12))
                             .padding([5, 12])
                             .style(crate::style::quiet_button(true));
@@ -1212,7 +1154,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&lib);
         std::fs::create_dir_all(&lib).unwrap();
         let settings = crate::settings::Settings { library_path: Some(lib.clone()), ..Default::default() };
-        let job = Job { url, folder: "Test Pack".into() };
+        let job = Job { url, folder: "Test Pack".into(), page: String::new() };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (mut tx, mut rx) = futures::channel::mpsc::channel(64);
         let printer = std::thread::spawn(move || {
