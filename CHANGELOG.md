@@ -3,6 +3,24 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.16
+
+- **Packs tab:** every chart pack, setlist and full album from Custom Songs Central, newest
+  first, with categories and a filter. Click a pack to read its description and download it.
+- **Download whole packs:** packs go through the download queue into a folder named after the
+  pack, keeping the pack's own folders (tiers and all) as they are. Truss downloads from the
+  site's own server, Google Drive (files and folders) and MEGA, and unpacks .zip, .7z and .rar
+  for you. The Packs tab has its own downloads panel with progress, Cancel, Retry and Open
+  folder.
+- **Pack folder:** packs can go to their own folder (Settings > Library folders); if you don't
+  set one, they go to your songs folder.
+- **See which packs you have:** each pack shows Installed, or how many of its charts you have
+  ("12 of 18 charts"), wherever your charts are and however they're organised. Hide installed
+  hides the ones you already have.
+- **Faster Google Drive folders:** charts in Drive folders download several files at a time
+  (RhythmVerse charts too), and Drive folders holding documents or archives now work.
+- **Fix:** charts whose song.ini has a stray `[song] =` line now show as downloaded.
+
 ## v0.1.15
 
 - **Make your own themes:** Tools > Themes. Start from the theme you're using, set each colour
