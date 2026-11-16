@@ -3,6 +3,18 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.18
+
+- **Repair bad songs (Tools):** reads the badsongs.txt Clone Hero writes after a scan and fixes
+  what it can without changing how any chart plays: it shortens chart folder names that are too
+  long for Windows, renames misnamed chart files (`note.mid`, `song.chart`…) to `notes.*`,
+  writes a missing song.ini or song name, and moves loose duplicates whose notes match exactly
+  to the Recycle Bin. It never edits notes, never touches the folders inside packs, and undoes
+  any fix that would change a chart's leaderboard hashes. Songs it can't fix are listed with
+  the reason (a broken download, a notes file Clone Hero can't read…).
+- **Undo any repair:** every repair is remembered (renames, new files, the old song.ini text,
+  recycled copies), and Repair history can undo one or all of them.
+
 ## v0.1.17
 
 - **Better "already downloaded" marks:** Browse now recognises a chart in your library by its
