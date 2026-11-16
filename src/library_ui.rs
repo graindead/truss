@@ -74,7 +74,7 @@ impl std::fmt::Display for SortBy {
 }
 
 /// A chart's date added, as shown in the list.
-fn added_date(secs: u64) -> String {
+pub(crate) fn added_date(secs: u64) -> String {
     chrono::DateTime::from_timestamp(secs as i64, 0)
         .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
         .unwrap_or_default()

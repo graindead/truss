@@ -18,6 +18,7 @@ pub enum Tab {
     Paths,
     Scenes,
     Themes,
+    Repair,
     Issues,
 }
 
@@ -40,6 +41,8 @@ pub enum Out {
     SetVideoLag(i32),
     /// Save, delete or import custom themes.
     Theme(crate::theme_maker::Out),
+    /// Charts changed on disk: read the library again.
+    Rescan,
 }
 
 fn toggle_chip<'a, M: Clone + 'a>(label: &'static str, active: bool, msg: M) -> Element<'a, M> {
@@ -365,6 +368,7 @@ pub struct Page {
     scenes: crate::scenes_ui::ScenesTool,
     paths: crate::path_ui::PathTool,
     themes: crate::theme_maker::ThemeMaker,
+    repair: crate::repair::RepairTool,
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +378,7 @@ pub enum Msg {
     Scenes(crate::scenes_ui::Msg),
     Paths(crate::path_ui::Msg),
     Themes(crate::theme_maker::Msg),
+    Repair(crate::repair::Msg),
 }
 
 impl Page {
@@ -392,6 +397,10 @@ impl Page {
             Msg::Paths(m) => {
                 let (t, lag) = self.paths.update(m, cx.settings.chopt_video_lag_ms);
                 (t.map(Msg::Paths), lag.map_or(Out::None, Out::SetVideoLag))
+            }
+            Msg::Repair(m) => {
+                let (t, rescan) = self.repair.update(m, cx.settings);
+                (t.map(Msg::Repair), if rescan { Out::Rescan } else { Out::None })
             }
             Msg::Themes(m) => {
                 let taken: Vec<String> = crate::themes::all().iter().map(|t| t.to_string()).collect();
@@ -416,7 +425,7 @@ impl Page {
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes)];
+        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Repair bad songs", Tab::Repair)];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -426,6 +435,7 @@ impl Page {
             Tab::Scenes => self.scenes.view().map(Msg::Scenes),
             Tab::Paths => self.paths.view(cx.catalog).map(Msg::Paths),
             Tab::Themes => self.themes.view(&cx.settings.custom_themes, cx.theme, cx.glass_window).map(Msg::Themes),
+            Tab::Repair => self.repair.view(cx.settings).map(Msg::Repair),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }

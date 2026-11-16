@@ -17,6 +17,7 @@ mod leaderboard;
 mod leaderboard_ui;
 mod library;
 mod library_tools;
+mod repair;
 mod library_ui;
 mod lyrics;
 mod preview;
@@ -2477,6 +2478,7 @@ impl App {
                 let task = task.map(Message::ToolsPage);
                 let extra = match out {
                     tools_ui::Out::None => Task::none(),
+                    tools_ui::Out::Rescan => self.scan_library(),
                     tools_ui::Out::Open(p) => {
                         let _ = open::that_detached(p);
                         Task::none()
