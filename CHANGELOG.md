@@ -3,6 +3,23 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.19
+
+- **Game setlists (Packs):** every Guitar Hero and Rock Band game's setlist, DLC and extras
+  from the community Master List, each in its own folder in Game Setlists.
+- **Install chart by chart:** each game download can now be installed from Chorus (a few charts
+  from RhythmVerse), skipping the charts you already have. All 4,316 setlist charts have a
+  source; the Google Drive archive is still there as "Download archive".
+- **Installed downloads:** a download you already have reads "Installed (N charts)", and buttons
+  you can't press are greyed out.
+- **Guitar Hero III Explicit Patch:** Apply patch puts the uncensored vocals into the GH3 charts
+  you have. Any file it would replace is moved into Truss's cache first, and Revert puts the
+  originals back.
+- **Packs in wrapper folders** ("Rock Band 3/Rock Band 3/...") unpack one level up; tier
+  folders inside packs are kept.
+- **Testing:** `TRUSS_CACHE_DIR` gives a second copy of Truss its own cache, alongside
+  `TRUSS_CONFIG_DIR` for its settings.
+
 ## v0.1.18
 
 - **Repair bad songs (Tools):** reads the badsongs.txt Clone Hero writes after a scan and fixes

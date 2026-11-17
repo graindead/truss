@@ -199,7 +199,7 @@ fn note_texture_list(itype: InstrumentType) -> Vec<(u8, u32, String)> {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("preview-textures"))
+    crate::settings::cache_dir().map(|d| d.join("preview-textures"))
 }
 
 async fn fetch(file: String) -> Result<(String, bytes::Bytes), String> {

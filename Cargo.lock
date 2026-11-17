@@ -4708,7 +4708,7 @@ dependencies = [
 
 [[package]]
 name = "truss"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "aes",
  "base64 0.22.1",

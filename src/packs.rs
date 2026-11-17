@@ -177,7 +177,7 @@ fn parse_cards(html: &str) -> Vec<Pack> {
 // ---------- Caches ----------
 
 fn cache_dir() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("packs"))
+    crate::settings::cache_dir().map(|d| d.join("packs"))
 }
 
 fn save_cache(packs: &[Pack]) {

@@ -15,7 +15,7 @@ pub struct IconEntry {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("icons"))
+    crate::settings::cache_dir().map(|d| d.join("icons"))
 }
 
 /// Downloads the icon list, falling back to the last saved copy when offline.

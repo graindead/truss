@@ -20,7 +20,7 @@ const OVERLAP_SECS: i64 = 24 * 3600;
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 
 fn db_path() -> Option<std::path::PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("rhythmverse.sqlite"))
+    crate::settings::cache_dir().map(|d| d.join("rhythmverse.sqlite"))
 }
 
 /// The database and its WAL files.

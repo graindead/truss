@@ -547,7 +547,7 @@ pub struct Record {
 
 /// Kept in Truss's data folder (not its cache, which may be cleared).
 fn history_path() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.data_dir().join("repair-history.json"))
+    crate::settings::data_dir().map(|d| d.join("repair-history.json"))
 }
 
 static HISTORY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

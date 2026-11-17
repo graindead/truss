@@ -74,7 +74,7 @@ impl PackIndex {
 }
 
 fn cache_path() -> Option<std::path::PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("packs").join("pack-index.json"))
+    crate::settings::cache_dir().map(|d| d.join("packs").join("pack-index.json"))
 }
 
 /// The index: the newest of the copy built into Truss, the last one downloaded, and the one

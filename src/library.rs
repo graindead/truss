@@ -301,7 +301,7 @@ struct Cache {
 const CACHE_VERSION: u32 = 2;
 
 fn cache_path() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("library.json"))
+    crate::settings::cache_dir().map(|d| d.join("library.json"))
 }
 
 fn load_cache() -> Option<Cache> {

@@ -1361,7 +1361,7 @@ mod tests {
         if std::env::var("TRUSS_TEST_RV_HOSTED").is_err() {
             return;
         }
-        let db = crate::settings::project_dirs().unwrap().cache_dir().join("rhythmverse.sqlite");
+        let db = crate::settings::cache_dir().unwrap().join("rhythmverse.sqlite");
         let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let mut st = con
             .prepare("select name, download_url from charts where download_url != '' order by random() limit 60")

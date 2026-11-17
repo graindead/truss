@@ -82,7 +82,7 @@ impl Sources {
 }
 
 fn cache_path() -> Option<std::path::PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("packs").join("game-sources.json"))
+    crate::settings::cache_dir().map(|d| d.join("packs").join("game-sources.json"))
 }
 
 /// The list: the newest of the copy built into Truss, the last one downloaded, and the one

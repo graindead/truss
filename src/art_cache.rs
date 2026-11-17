@@ -23,7 +23,7 @@ pub enum Cached {
 }
 
 fn dir() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("art"))
+    crate::settings::cache_dir().map(|d| d.join("art"))
 }
 
 fn path(key: &str, px: u32) -> Option<PathBuf> {

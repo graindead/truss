@@ -94,7 +94,7 @@ fn snapshot() -> Vec<Game> {
 }
 
 fn cache_path() -> Option<std::path::PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("packs").join("game-setlists.json"))
+    crate::settings::cache_dir().map(|d| d.join("packs").join("game-setlists.json"))
 }
 
 fn save_cache(games: &[Game]) {

@@ -47,7 +47,7 @@ pub struct Library {
 }
 
 fn root() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("patch-backups"))
+    crate::settings::cache_dir().map(|d| d.join("patch-backups"))
 }
 
 /// A stable folder name for a patch link (FNV-1a of the URL).

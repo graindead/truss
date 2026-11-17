@@ -48,7 +48,7 @@ fn mid_has_lyrics(data: &[u8]) -> bool {
 }
 
 fn cache_file() -> Option<PathBuf> {
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("lyrics-scan.json"))
+    crate::settings::cache_dir().map(|d| d.join("lyrics-scan.json"))
 }
 
 /// Which charts have lyrics, by path. Uses a cache keyed on the chart file's modified time, so

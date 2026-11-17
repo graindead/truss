@@ -38,7 +38,7 @@ pub struct FwSearch {
 
 fn cache_file() -> Option<std::path::PathBuf> {
     // v2: full ratings (v1 kept only the tier).
-    crate::settings::project_dirs().map(|d| d.cache_dir().join("fretwork-ratings-v2.json"))
+    crate::settings::cache_dir().map(|d| d.join("fretwork-ratings-v2.json"))
 }
 
 impl App {

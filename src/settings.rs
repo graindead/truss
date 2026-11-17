@@ -104,6 +104,23 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "", "truss")
 }
 
+/// Truss's cache folder. TRUSS_CACHE_DIR gives a second copy (for testing, say) its own, the
+/// way TRUSS_CONFIG_DIR gives it its own settings.
+pub fn cache_dir() -> Option<PathBuf> {
+    match std::env::var_os("TRUSS_CACHE_DIR") {
+        Some(d) => Some(PathBuf::from(d)),
+        None => project_dirs().map(|d| d.cache_dir().to_path_buf()),
+    }
+}
+
+/// Truss's data folder (repair history); under TRUSS_CACHE_DIR when that's set.
+pub fn data_dir() -> Option<PathBuf> {
+    match std::env::var_os("TRUSS_CACHE_DIR") {
+        Some(d) => Some(PathBuf::from(d).join("data")),
+        None => project_dirs().map(|d| d.data_dir().to_path_buf()),
+    }
+}
+
 /// The app used to be called "Bridge RS". Moves its settings, caches and backups over to the
 /// new folders the first time Truss starts (nothing is moved if Truss already has its own).
 pub fn migrate_old_data() {
