@@ -37,6 +37,12 @@ download queue as charts, into a folder named after the pack. Packs go to your s
 or to a separate pack folder if you choose one in Settings > Library folders. Truss downloads
 from the site's own server, Google Drive (files and folders) and MEGA (file links), and unpacks
 .zip, .7z and .rar for you. The odd pack hosted anywhere else opens in your browser instead.
+Under "Game setlists" are the Guitar Hero and Rock Band games (and their DLC) converted for
+Clone Hero, as listed in the community's Master List spreadsheet; they go into a Game Setlists
+folder. Install gets each of a game's charts on its own from Chorus Encore (a handful from
+RhythmVerse), so only the ones you don't have are downloaded; Download archive gets the
+spreadsheet's whole archive from Google Drive instead, which can hit Drive's daily download
+limit (Truss tells you when it has).
 Each pack shows whether you already have it ("Installed", or "12 of 18 charts"), wherever
 your charts are and however they're organised, and you can hide the ones you have.
 
@@ -94,6 +100,8 @@ makers whose work they host:
 - [RhythmVerse](https://rhythmverse.co): the extra search results marked RV, and their downloads.
 - [Custom Songs Central](https://customsongscentral.com/): the Packs tab's list, pack pages and
   download links.
+- [Clone Hero Songs, Setlists, and Backgrounds/Highways Master List](https://docs.google.com/spreadsheets/d/13B823ukxdVMocowo1s5XnT3tzciOfruhUVePENKc01o/edit?gid=1870223413#gid=1870223413):
+  the Packs tab's game setlists (Guitar Hero and Rock Band converted for Clone Hero).
 
 Truss only finds and downloads charts; they belong to the people who made them.
 
@@ -163,6 +171,13 @@ it with `truss.exe.sha256`, using the CHANGELOG section as the release notes.
 - `src/advanced.rs`: the Advanced search form
 - `src/library.rs`, `src/library_ui.rs`, `src/lyrics.rs`: scanning your library, its cache, and the Library page
 - `src/packs.rs`: the Packs page (reads Custom Songs Central's pack list)
+- `src/game_setlists.rs`, `data/game-setlists.json`: the Packs page's game setlists, read from
+  the Clone Hero Master List spreadsheet (the JSON is the built-in copy for when it can't be read)
+- `src/game_sources.rs`, `data/game-sources.json`, `data/game-source-overrides.json`: where each
+  game setlist chart is on Chorus Encore or RhythmVerse (official charters only). Built with
+  `TRUSS_BUILD_GAME_SOURCES=data/game-sources.json cargo test --release build_game_sources -- --ignored --nocapture`
+  from the pack index, Chorus and Truss's local RhythmVerse catalogue; it lists any chart it can't
+  place, for the overrides' `names`
 - `src/mega.rs`: downloading MEGA file links (MEGA's public API, files decrypted as they arrive)
 - `src/pack_index.rs`, `data/pack-index.json`: which charts are in each pack. Built with
   `TRUSS_BUILD_PACK_INDEX=data/pack-index.json cargo test --release build_pack_index -- --nocapture`,

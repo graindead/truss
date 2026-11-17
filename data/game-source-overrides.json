@@ -1,0 +1,133 @@
+{
+  "skip_labels": [
+    "Prototype",
+    "Endless"
+  ],
+  "skip_games": [
+    "DJ Hero (Guitar Charts)",
+    "Band Hero 2 Prototype",
+    "Rock Band Network"
+  ],
+  "charters": [
+    "Harmonix",
+    "Neversoft",
+    "Vicarious Visions",
+    "FreeStyleGames",
+    "Beenox",
+    "Budcat",
+    "RedOctane",
+    "HMX",
+    "HourCast",
+    "OffbeatEntertainment"
+  ],
+  "packs": {
+    "Guitar Hero": [
+      "Guitar Hero I"
+    ],
+    "Guitar Hero II": [
+      "Guitar Hero II",
+      "Guitar Hero II DLC",
+      "Guitar Hero II (Late 06 Retail Demo)",
+      "Guitar Hero II (Official PlayStation Magazine Demo)",
+      "Guitar Hero II (Tutorials)"
+    ],
+    "Guitar Hero Encore: Rocks the 80s": [
+      "Guitar Hero Encore: Rocks the 80s"
+    ],
+    "Guitar Hero III: Legends of Rock": [
+      "Guitar Hero III - Legends of Rock",
+      "Guitar Hero III DLC"
+    ],
+    "Guitar Hero: On Tour": [
+      "Guitar Hero On Tour (Individual Songs)"
+    ],
+    "Guitar Hero On Tour: Decades": [
+      "Guitar Hero On Tour - Decades (Individual Songs)"
+    ],
+    "Guitar Hero On Tour: Modern Hits": [
+      "Guitar Hero On Tour - Modern Hits (Individual Songs)"
+    ],
+    "Guitar Hero: Aerosmith": [
+      "Guitar Hero Aerosmith"
+    ],
+    "Guitar Hero World Tour": [
+      "Guitar Hero World Tour",
+      "Guitar Hero World Tour DLC"
+    ],
+    "Guitar Hero: Metallica": [
+      "Guitar Hero Metallica",
+      "Guitar Hero Metallica DLC"
+    ],
+    "Guitar Hero Smash Hits": [
+      "Guitar Hero: Smash Hits"
+    ],
+    "Guitar Hero 5": [
+      "Guitar Hero 5",
+      "Guitar Hero 5 DLC",
+      "Guitar Hero 5 Hidden Songs"
+    ],
+    "Band Hero": [
+      "Band Hero"
+    ],
+    "Guitar Hero: Van Halen": [
+      "Guitar Hero: Van Halen"
+    ],
+    "Guitar Hero: Warriors of Rock": [
+      "Guitar Hero: Warriors of Rock",
+      "Guitar Hero: Warriors of Rock DLC"
+    ],
+    "Guitar Hero Live": [
+      "Guitar Hero Live",
+      "Guitar Hero TV"
+    ],
+    "Rock Band": [
+      "Rock Band 1",
+      "Rock Band 1 DLC"
+    ],
+    "Rock Band 2": [
+      "Rock Band 2",
+      "Rock Band 2 DLC"
+    ],
+    "Rock Band 3": [
+      "Rock Band 3",
+      "Rock Band 3 DLC"
+    ],
+    "Rock Band 4": [
+      "Rock Band 4",
+      "Rock Band Rivals"
+    ],
+    "AC/DC Live: Rock Band Track Pack": [
+      "Rock Band ACDC Live Track Pack"
+    ],
+    "Green Day: Rock Band": [
+      "Green Day Rock Band",
+      "Green Day Rock Band DLC"
+    ],
+    "LEGO Rock Band": [
+      "Lego Rock Band"
+    ],
+    "Rock Band Blitz": [
+      "Rock Band Blitz"
+    ],
+    "The Beatles: Rock Band": [
+      "The Beatles Rock Band",
+      "The Beatles Rock Band DLC"
+    ]
+  },
+  "names": {
+    "styx & reo speedwagon - can't stop rockin'": "Styx/REO Speedwagon - Can't Stop Rockin'",
+    "the jimi hendrix experience - bold as love": "The Jimi Hendrix Experience - Bold as Loves",
+    "tom petty and the heartbreakers - a woman in love (it's not me) (live)": "Tom Petty and the Heartbreakers - A Woman in Love (Live)",
+    "you - basic 2 playing notes (late 2006 retail demo)": "You - Basic 2 Playing Notes",
+    "you - basic 3 different notes (late 2006 retail demo)": "You - Basic 3 Different Notes",
+    "you - basic 4 durations (late 2006 retail demo)": "You - Basic 4 Durations",
+    "you - basic 5 chords (late 2006 retail demo)": "You - Basic 5 Chords",
+    "you - starpower 2 combos (late 2006 retail demo)": "You - StarPower 2 Combos",
+    "you - starpower 3 whammy bar (late 2006 retail demo)": "You - StarPower 3 Whammy Bar",
+    "you - starpower 4 wail (late 2006 retail demo)": "You - StarPower 4 Wail",
+    "you - starpower 5 hammer-ons (late 2006 retail demo)": "You - StarPower 5 Hammer-Ons",
+    "you - starpower 6 pull-offs (late 2006 retail demo)": "You - StarPower 6 Pull-Offs",
+    "jimi hendrix - stone free": "The Jimi Hendrix Experience - Stone Free",
+    "the jimi hendrix experience - up from the skies": "Jimi Hendrix - Up from the Skies"
+  }
+}

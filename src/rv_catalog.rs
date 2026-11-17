@@ -416,6 +416,19 @@ fn diff_column(instrument: &str) -> Option<&'static str> {
     })
 }
 
+/// Every chart whose charter contains one of `words` (any case), for building the game setlist
+/// sources (`game_sources`).
+#[cfg(test)]
+pub fn by_charter(words: &[&str]) -> Result<Vec<Chart>, String> {
+    with_db(|c| {
+        let cond = (1..=words.len()).map(|i| format!("lower(charter) LIKE ?{i}")).collect::<Vec<_>>().join(" OR ");
+        let mut st = c.prepare(&format!("SELECT * FROM charts WHERE {cond}"))?;
+        let params: Vec<String> = words.iter().map(|w| format!("%{}%", w.to_lowercase())).collect();
+        let rows = st.query_map(rusqlite::params_from_iter(params.iter()), row_to_chart)?;
+        rows.collect()
+    })
+}
+
 fn row_to_chart(r: &rusqlite::Row) -> rusqlite::Result<Chart> {
     let uid: String = r.get("uid")?;
     Ok(Chart {

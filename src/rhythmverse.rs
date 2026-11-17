@@ -630,10 +630,14 @@ async fn fetch_to_dir(url: &str, dir: &Path, fallback: &str, tx: &mut Sender<cra
             c => format!("Download failed: the host returned {c}"),
         });
     }
-    let headers = resp.headers();
-    if headers.get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/html")) {
+    if resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/html")) {
+        let body = resp.text().await.unwrap_or_default();
+        if crate::game_setlists::is_quota_page(&body) {
+            return Err("Google Drive's download limit for this file has been reached: too many people downloaded it recently. Try again later (it can take up to a day).".into());
+        }
         return Err("Google Drive didn't hand over the file (it may be over its download limit or need a sign-in). Open the link in your browser.".into());
     }
+    let headers = resp.headers();
     let name = headers
         .get("content-disposition")
         .and_then(|v| v.to_str().ok())
@@ -1039,7 +1043,7 @@ fn first_archive(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Unpacks a downloaded .zip / .7z (or places a .sng's files) into `dest`.
-async fn unpack_any(file: PathBuf, dest: &Path, keep_video: bool) -> Result<(), String> {
+pub(crate) async fn unpack_any(file: PathBuf, dest: &Path, keep_video: bool) -> Result<(), String> {
     let dest = dest.to_path_buf();
     tokio::task::spawn_blocking(move || {
         std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;

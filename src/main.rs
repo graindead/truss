@@ -49,6 +49,9 @@ mod fretwork_filter;
 mod tools_ui;
 mod path_ui;
 mod packs;
+mod game_setlists;
+mod game_sources;
+mod patches;
 mod pack_index;
 #[cfg(feature = "rhythmverse")]
 mod mega;
@@ -274,6 +277,8 @@ struct DownloadEntry {
     replace: Vec<PathBuf>,
     /// A chart pack (Packs page) instead of a chart.
     pack: Option<packs::Job>,
+    /// The folder the chart goes into instead of the library folder (a game setlist's).
+    into: Option<PathBuf>,
     title: String,
     status: DlStatus,
     handle: Option<iced::task::Handle>,
@@ -516,6 +521,11 @@ enum Message {
     LibraryDeleted(Result<(), String>),
     /// Loose copies of pack charts were found (`Some`: the pack just downloaded).
     PackDuplicates(Vec<library_tools::Duplicate>, Option<String>),
+    /// A game setlist's charts, looked up for installing into this folder (and how many Chorus
+    /// no longer has).
+    GameCharts(PathBuf, Result<(Vec<Arc<Chart>>, usize), String>),
+    /// A game setlist patch was applied or reverted: (its link, what happened).
+    PatchDone(String, Result<String, String>),
     MergeToggle(usize),
     MergeConfirm,
     MergeCancel,
@@ -1272,10 +1282,23 @@ impl App {
             chart,
             replace,
             pack: None,
+            into: None,
             title,
             status: DlStatus::Queued,
             handle: None,
         });
+    }
+
+    /// Adds a chart to the download queue to go into `dir` (a game setlist's folder) instead of
+    /// the library folder.
+    fn enqueue_into(&mut self, chart: Arc<Chart>, dir: PathBuf) {
+        let before = self.downloads.len();
+        self.enqueue(chart, Vec::new());
+        if self.downloads.len() > before
+            && let Some(d) = self.downloads.last_mut()
+        {
+            d.into = Some(dir);
+        }
     }
 
     /// Adds a chart pack to the download queue (ignored if it's already queued or downloading).
@@ -1291,8 +1314,9 @@ impl App {
             md5: key,
             chart: Arc::new(Chart::default()),
             replace: Vec::new(),
-            title: format!("{} (pack)", job.folder),
+            title: format!("{} (pack)", job.folder.rsplit('/').next().unwrap_or(&job.folder)),
             pack: Some(job),
+            into: None,
             status: DlStatus::Queued,
             handle: None,
         });
@@ -1334,9 +1358,13 @@ impl App {
                 Some(job) => Task::run(packs::download(job.clone(), self.settings.clone()), move |p| Message::DlProgress(id, p)),
                 #[cfg(not(feature = "rhythmverse"))]
                 Some(_) => Task::done(Message::DlProgress(id, download::Progress::Finished(Err("This build of Truss can't download packs.".into())))),
-                None => Task::run(download::start(d.chart.clone(), self.settings.clone(), d.replace.clone()), move |p| {
-                    Message::DlProgress(id, p)
-                }),
+                None => {
+                    let mut settings = self.settings.clone();
+                    if let Some(dir) = &d.into {
+                        settings.library_path = Some(dir.clone());
+                    }
+                    Task::run(download::start(d.chart.clone(), settings, d.replace.clone()), move |p| Message::DlProgress(id, p))
+                }
             }
             .abortable();
             d.status = DlStatus::Active { status: "Starting...".into(), done: 0, total: None };
@@ -2397,6 +2425,34 @@ impl App {
                 self.preview = Some(panel);
                 Task::batch([save, task.map(Message::Preview)])
             }
+            Message::GameCharts(dir, r) => {
+                match r {
+                    Ok((charts, gone)) => {
+                        let mut n = 0;
+                        for c in charts {
+                            if !self.in_library(&c) {
+                                self.enqueue_into(c, dir.clone());
+                                n += 1;
+                            }
+                        }
+                        let mut note = format!("Added {n} charts to the download queue.");
+                        if gone > 0 {
+                            note.push_str(&format!(" {gone} are no longer on Chorus (replaced or removed); the archive download still has them."));
+                        }
+                        self.packs_page.set_install_note(Some(note));
+                        self.pump_downloads()
+                    }
+                    Err(e) => {
+                        self.packs_page.set_install_note(Some(format!("Couldn't look up the charts on Chorus: {e}")));
+                        Task::none()
+                    }
+                }
+            }
+            Message::PatchDone(url, r) => {
+                let note = r.unwrap_or_else(|e| format!("Couldn't apply or revert the patch: {e}"));
+                self.packs_page.patch_done(&url, note);
+                Task::none()
+            }
             Message::PackDuplicates(dups, pack) => {
                 self.library_busy = false;
                 if dups.is_empty() {
@@ -2468,6 +2524,38 @@ impl App {
                     packs::Out::Download(job) => {
                         self.enqueue_pack(job);
                         Task::batch([task, self.pump_downloads()])
+                    }
+                    packs::Out::InstallCharts(folder, list) => {
+                        let Some(base) = self.settings.pack_folder() else {
+                            self.packs_page.set_install_note(Some("No songs folder set. Choose one in Settings.".into()));
+                            return task;
+                        };
+                        let dir = base.join(&folder);
+                        if let Err(e) = std::fs::create_dir_all(&dir) {
+                            self.packs_page.set_install_note(Some(format!("Cannot write to library: {e}")));
+                            return task;
+                        }
+                        self.packs_page.set_install_note(Some(format!("Looking up {} charts...", list.len())));
+                        Task::batch([task, Task::perform(game_sources::resolve(list), move |r| Message::GameCharts(dir.clone(), r))])
+                    }
+                    packs::Out::ApplyPatch(url, game) => {
+                        let lib = patches::Library {
+                            charts: self.library.iter().flat_map(|(k, ps)| ps.iter().map(move |p| (k.clone(), p.clone()))).collect(),
+                            game_prefix: self
+                                .settings
+                                .pack_folder()
+                                .map(|b| b.join(game_setlists::folder(&game, game_setlists::MAIN))),
+                            official: self.packs_page.game_source_keys(&game),
+                        };
+                        let u = url.clone();
+                        Task::batch([
+                            task,
+                            Task::perform(patches::apply(url, game, lib), move |r| Message::PatchDone(u.clone(), r.map(|rep| rep.message()))),
+                        ])
+                    }
+                    packs::Out::RevertPatch(url) => {
+                        let u = url.clone();
+                        Task::batch([task, Task::perform(patches::revert(url), move |r| Message::PatchDone(u.clone(), r))])
                     }
                 }
             }
@@ -3917,6 +4005,11 @@ fn credits_section() -> Element<'static, Message> {
             "Custom Songs Central",
             "https://customsongscentral.com",
             "The Packs tab: the list of packs, their pages and their download links.",
+        ),
+        entry(
+            "Clone Hero Master List",
+            crate::game_setlists::SHEET_URL,
+            "The Packs tab's game setlists: the community spreadsheet linking the Guitar Hero and Rock Band games converted for Clone Hero.",
         ),
         text("Every chart and pack is the work of its charters and pack makers. Truss only finds and downloads them; please support the sites that host them.")
             .size(12)

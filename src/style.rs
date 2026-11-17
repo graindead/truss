@@ -63,10 +63,12 @@ pub fn nav_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
 pub fn quiet_button(highlighted: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |t, s| {
         let hover = matches!(s, button::Status::Hovered | button::Status::Pressed);
+        // A button that can't be pressed (already done, or busy) reads as greyed out.
+        let lit = highlighted && s != button::Status::Disabled;
         button::Style {
             background: Some(Background::Color(if hover { raised(t) } else { bg(t) })),
-            text_color: if highlighted { accent(t) } else { fg(t) },
-            border: Border { color: if highlighted { accent(t) } else { hairline(t) }, width: 1.0, radius: 6.0.into() },
+            text_color: if s == button::Status::Disabled { muted(t) } else if lit { accent(t) } else { fg(t) },
+            border: Border { color: if lit { accent(t) } else { hairline(t) }, width: 1.0, radius: 6.0.into() },
             ..Default::default()
         }
     }

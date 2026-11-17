@@ -38,7 +38,6 @@ pub struct LinkEntry {
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
-
 /// How much of a pack download is in the library.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Have {
@@ -635,10 +634,28 @@ mod build {
         let index = Arc::new(Mutex::new(
             std::fs::read(&path).ok().and_then(|b| PackIndex::parse(&b)).unwrap_or(PackIndex { version: 1, ..Default::default() }),
         ));
-        let packs = rt.block_on(crate::packs::fetch_all()).unwrap();
-        println!("{} packs on the site", packs.len());
         // Every download link, from each pack's page.
         let mut todo: Vec<(String, String, String)> = Vec::new();
+        // TRUSS_PACK_INDEX_GAMES = a series ("Guitar Hero"): index those game setlists instead.
+        if let Ok(series) = std::env::var("TRUSS_PACK_INDEX_GAMES") {
+            for g in rt.block_on(crate::game_setlists::load()).into_iter().filter(|g| g.series.eq_ignore_ascii_case(&series)) {
+                if only.as_ref().is_some_and(|o| !g.title.contains(o.as_str())) {
+                    continue;
+                }
+                for l in &g.links {
+                    let done = index.lock().unwrap().links.get(&l.url).is_some_and(|e| e.error.is_none());
+                    if !done && crate::packs::can_download(&l.url) {
+                        todo.push((g.key(), format!("{} - {}", g.title, l.label), l.url.clone()));
+                    }
+                }
+            }
+        }
+        let packs = if todo.is_empty() && std::env::var_os("TRUSS_PACK_INDEX_GAMES").is_none() {
+            rt.block_on(crate::packs::fetch_all()).unwrap()
+        } else {
+            Vec::new()
+        };
+        println!("{} packs on the site", packs.len());
         for p in &packs {
             if only.as_ref().is_some_and(|o| !p.url.contains(o.as_str())) {
                 continue;

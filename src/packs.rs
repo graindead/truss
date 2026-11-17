@@ -1,7 +1,8 @@
 //! The Packs page: chart packs, setlists and full albums posted on Custom Songs Central
 //! (customsongscentral.com). The list is read from the site's own pages, newest first. Clicking
 //! a pack shows its description (read from its page) and its downloads, which go through the
-//! download queue into a folder in the library.
+//! download queue into a folder in the library. Game setlists (the official Guitar Hero and Rock
+//! Band games converted for Clone Hero) are listed alongside, from game_setlists.rs.
 
 use iced::widget::{button, column, container, image, progress_bar, row, scrollable, space, text, text_input};
 use iced::{Alignment, ContentFit, Element, Length, Task, Theme};
@@ -17,6 +18,8 @@ const THUMB_H: u32 = 126;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
+    /// Official game setlists (game_setlists.rs), not from Custom Songs Central.
+    Games,
     SongPacks,
     Setlists,
     Monthly,
@@ -26,10 +29,11 @@ pub enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 6] = [Kind::SongPacks, Kind::Setlists, Kind::Monthly, Kind::Community, Kind::Esports, Kind::Other];
+    const ALL: [Kind; 7] = [Kind::Games, Kind::SongPacks, Kind::Setlists, Kind::Monthly, Kind::Community, Kind::Esports, Kind::Other];
 
     fn label(self) -> &'static str {
         match self {
+            Kind::Games => "Game setlists",
             Kind::SongPacks => "Song packs & albums",
             Kind::Setlists => "Setlists",
             Kind::Monthly => "Monthly packs",
@@ -234,6 +238,13 @@ pub struct Link {
     pub url: String,
     pub label: String,
     pub size: Option<u64>,
+    /// The folder it goes into, when it isn't named after the pack (game setlists).
+    pub folder: Option<String>,
+    /// Something to know before downloading it (Google Drive's download limit reached).
+    pub note: Option<String>,
+    /// A game setlist's download: (game title, its label), to find its charts in
+    /// `game_sources`.
+    pub game: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,12 +295,58 @@ async fn resolve_link(href: String) -> Link {
         let file = percent_decode(file);
         if file.contains('.') { file } else { host.clone() }
     };
-    Link { url, label, size }
+    Link { url, label, size, folder: None, note: None, game: None }
+}
+
+/// A game setlist's downloads (read from the spreadsheet), with each Google Drive file's size,
+/// or a note that Drive's download limit for it has been reached.
+async fn game_details(game: crate::game_setlists::Game) -> Result<Details, String> {
+    use crate::game_setlists::{Probe, folder, probe};
+    let probes = futures::future::join_all(game.links.iter().map(|l| probe(&l.url))).await;
+    let links = game
+        .links
+        .iter()
+        .zip(probes)
+        .map(|(l, p)| {
+            let (size, note) = match p {
+                Probe::Size(n) => (Some(n), None),
+                Probe::OverLimit => (
+                    None,
+                    Some("Google Drive's download limit for this file has been reached. Try again later (it can take up to a day).".to_string()),
+                ),
+                Probe::Unknown => (None, None),
+            };
+            let host = if l.url.contains("drive.google.com") {
+                if l.url.contains("/folders/") { "Google Drive folder".to_string() } else { "Google Drive file".to_string() }
+            } else {
+                l.url.split("//").nth(1).and_then(|r| r.split('/').next()).unwrap_or("").trim_start_matches("www.").to_string()
+            };
+            Link {
+                url: l.url.clone(),
+                label: format!("{} ({host})", l.label),
+                size,
+                folder: Some(folder(&game.title, &l.label)),
+                note,
+                game: Some((game.title.clone(), l.label.clone())),
+            }
+        })
+        .collect();
+    let blocks = vec![
+        Block::Para(format!(
+            "{}: the game's own setlist converted for Clone Hero by the community, as linked from the Clone Hero Songs, Setlists, and Backgrounds/Highways Master List.",
+            game.title
+        )),
+        Block::Para(
+            "The main setlist is the game itself; its DLC and extras are separate downloads. Each goes into its own folder in Game Setlists, in your pack downloads folder. Install gets the charts one by one from Chorus (a few from RhythmVerse), skipping the ones you have; Download archive gets the spreadsheet's archive from Google Drive."
+                .into(),
+        ),
+    ];
+    Ok(Details { blocks, links })
 }
 
 /// Where a short link (bit.ly and the like) points, read one hop at a time so a destination
 /// that won't answer (MEGA) is still found.
-async fn follow_short(href: String) -> String {
+pub(crate) async fn follow_short(href: String) -> String {
     static NO_REDIRECT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         reqwest::Client::builder()
             .user_agent(concat!("truss/", env!("CARGO_PKG_VERSION")))
@@ -543,6 +600,10 @@ async fn run(
     if dest.exists() {
         return Err(format!("Already in library: {}", dest.display()));
     }
+    // Game setlists go into a folder of their own ("Game Setlists/<game>").
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot write to library: {e}"))?;
+    }
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let work = library.join(format!(".truss-tmp-pack-{n}-{}", std::process::id()));
@@ -569,14 +630,30 @@ async fn run(
     Ok(dest)
 }
 
-/// A pack's own top folder, if everything is in one (so it isn't nested twice).
+/// A pack's own top folder, if everything is in one (so it isn't nested twice). Wrappers
+/// inside wrappers ("Rock Band 3/Rock Band 3/…") are unwrapped too, down to the first folder
+/// that holds more than one thing, so tier folders are kept; a lone song folder is kept whole.
 #[cfg(feature = "rhythmverse")]
 fn single_folder(dir: &std::path::Path) -> PathBuf {
-    let entries: Vec<_> = std::fs::read_dir(dir).map(|rd| rd.flatten().collect()).unwrap_or_default();
-    match entries.as_slice() {
-        [only] if only.file_type().is_ok_and(|t| t.is_dir()) => only.path(),
-        _ => dir.to_path_buf(),
+    let mut dir = dir.to_path_buf();
+    for _ in 0..4 {
+        let entries: Vec<_> = std::fs::read_dir(&dir).map(|rd| rd.flatten().collect()).unwrap_or_default();
+        match entries.as_slice() {
+            [only] if only.file_type().is_ok_and(|t| t.is_dir()) && !is_chart_folder(&only.path()) => dir = only.path(),
+            [only] if only.file_type().is_ok_and(|t| t.is_dir()) => return only.path(),
+            _ => break,
+        }
     }
+    dir
+}
+
+/// A folder that is itself one chart (song.ini, notes.chart/mid or a .sng directly inside).
+#[cfg(feature = "rhythmverse")]
+fn is_chart_folder(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+        n == "song.ini" || n == "notes.chart" || n == "notes.mid" || n.ends_with(".sng")
+    })
 }
 
 #[cfg(feature = "rhythmverse")]
@@ -630,7 +707,19 @@ pub struct Page {
     /// Which charts are in each pack (see pack_index.rs).
     index: Option<std::sync::Arc<crate::pack_index::PackIndex>>,
     index_requested: bool,
+    /// Where each game setlist chart can be downloaded on its own (see game_sources.rs).
+    sources: Option<std::sync::Arc<crate::game_sources::Sources>>,
+    /// What the last chart-by-chart install did (or why it couldn't).
+    install_note: Option<String>,
+    /// Patch links (see patches.rs): applied or not, as last checked, and the one being
+    /// applied or reverted.
+    patched: HashMap<String, bool>,
+    patch_busy: Option<String>,
     hide_installed: bool,
+    /// Game setlists, as list rows and by their key.
+    games: Vec<Pack>,
+    game_data: HashMap<String, crate::game_setlists::Game>,
+    games_requested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -647,12 +736,25 @@ pub enum Msg {
     Retry,
     Index(Option<crate::pack_index::PackIndex>),
     HideInstalled(bool),
+    Games(Vec<crate::game_setlists::Game>),
+    Sources(Option<crate::game_sources::Sources>),
+    /// Install a game setlist download chart by chart: (folder, its charts).
+    InstallGame(String, Vec<crate::game_sources::Source>),
+    /// Apply a game setlist patch: (its link, the game).
+    ApplyPatch(String, String),
+    RevertPatch(String),
 }
 
 /// What the page asks of the app.
 pub enum Out {
     None,
     Download(Job),
+    /// Download these charts (the ones not already in the library) into this folder of the
+    /// pack downloads folder.
+    InstallCharts(String, Vec<crate::game_sources::Source>),
+    /// Download a patch and put it into the game's charts: (its link, the game).
+    ApplyPatch(String, String),
+    RevertPatch(String),
 }
 
 /// A pack download's state, as the app's download queue has it.
@@ -681,6 +783,27 @@ pub struct Ctx<'a> {
 }
 
 impl Page {
+    /// Shows what a chart-by-chart install did, under the downloads.
+    pub fn set_install_note(&mut self, note: Option<String>) {
+        self.install_note = note;
+    }
+
+    /// Library keys of a game's official charts, from the game sources list (every download).
+    pub fn game_source_keys(&self, game: &str) -> HashSet<String> {
+        self.sources
+            .as_ref()
+            .and_then(|s| s.games.get(game))
+            .map(|labels| labels.values().flatten().map(|s| s.key()).collect())
+            .unwrap_or_default()
+    }
+
+    /// A patch finished applying or reverting: shows what it did and checks its state again.
+    pub fn patch_done(&mut self, url: &str, note: String) {
+        self.patch_busy = None;
+        self.patched.insert(url.to_string(), crate::patches::applied(url).is_some());
+        self.install_note = Some(note);
+    }
+
     /// Called when the page is shown: reads the list once per run (showing the saved one meanwhile).
     pub fn opened(&mut self) -> Task<Msg> {
         let index = if self.index_requested {
@@ -688,6 +811,16 @@ impl Page {
         } else {
             self.index_requested = true;
             Task::perform(crate::pack_index::load(), Msg::Index)
+        };
+        let index = if self.games_requested {
+            index
+        } else {
+            self.games_requested = true;
+            Task::batch([
+                index,
+                Task::perform(crate::game_setlists::load(), Msg::Games),
+                Task::perform(crate::game_sources::load(), Msg::Sources),
+            ])
         };
         if self.fresh || self.loading {
             return index;
@@ -704,7 +837,30 @@ impl Page {
 
     /// How much of a pack is in the library, if the pack index knows its charts.
     fn page_have(&self, page: &str, cx: &Ctx<'_>) -> Option<crate::pack_index::Have> {
+        // A game setlist installed chart by chart: counted by the charts it installs.
+        if let Some(lists) = page.strip_prefix(crate::game_setlists::KEY_PREFIX).and_then(|t| self.sources.as_ref()?.games.get(t)) {
+            let keys: HashSet<String> = lists.values().flatten().map(|s| s.key()).collect();
+            if !keys.is_empty() {
+                return Some(crate::pack_index::Have { have: keys.iter().filter(|k| (cx.in_library)(k)).count(), total: keys.len() });
+            }
+        }
         self.index.as_ref()?.have_page(page, cx.in_library)
+    }
+
+    /// CSC packs, then the game setlists.
+    fn all(&self) -> impl Iterator<Item = &Pack> {
+        self.packs.iter().chain(self.games.iter())
+    }
+
+    /// A game setlist whose main setlist is in its folder in the library.
+    fn game_installed(&self, page: &str, cx: &Ctx<'_>) -> bool {
+        let Some(g) = self.game_data.get(page) else { return false };
+        // Installed chart by chart: every chart of its main setlist is here.
+        if let Some(list) = self.sources.as_ref().and_then(|s| s.get(&g.title, crate::game_setlists::MAIN)) {
+            return list.iter().all(|s| (cx.in_library)(&s.key()));
+        }
+        let Some(lib) = cx.library else { return false };
+        lib.join(crate::game_setlists::folder(&g.title, crate::game_setlists::MAIN)).exists()
     }
 
     pub fn update(&mut self, m: Msg) -> (Task<Msg>, Out) {
@@ -748,6 +904,15 @@ impl Page {
                     return (Task::none(), Out::None);
                 }
                 self.open = Some(url.clone());
+                self.install_note = None;
+                // A game's downloads are checked each time it's opened (Drive's download limit
+                // comes and goes); while that's checked the last answer stays up.
+                if let Some(g) = self.game_data.get(&url).cloned() {
+                    if !matches!(self.details.get(&url), Some(Some(Ok(_)))) {
+                        self.details.insert(url.clone(), None);
+                    }
+                    return (Task::perform(game_details(g), move |r| Msg::Details(url.clone(), r)), Out::None);
+                }
                 // Read once; a failed read is tried again when the pack is opened again.
                 if matches!(self.details.get(&url), Some(None | Some(Ok(_)))) {
                     return (Task::none(), Out::None);
@@ -756,14 +921,35 @@ impl Page {
                 Task::perform(fetch_details(url.clone()), move |r| Msg::Details(url.clone(), r))
             }
             Msg::Details(url, r) => {
+                if let Ok(d) = &r {
+                    for l in d.links.iter().filter(|l| l.game.as_ref().is_some_and(|(_, lb)| crate::patches::is_patch(lb))) {
+                        self.patched.insert(l.url.clone(), crate::patches::applied(&l.url).is_some());
+                    }
+                }
                 self.details.insert(url, Some(r));
                 Task::none()
             }
             Msg::Open(url) => {
+                let url = if url.starts_with(crate::game_setlists::KEY_PREFIX) { crate::game_setlists::SHEET_URL.to_string() } else { url };
                 let _ = open::that_detached(url);
                 Task::none()
             }
             Msg::Download(job) => return (Task::none(), Out::Download(job)),
+            Msg::Sources(s) => {
+                self.sources = s.map(std::sync::Arc::new);
+                Task::none()
+            }
+            Msg::InstallGame(folder, list) => return (Task::none(), Out::InstallCharts(folder, list)),
+            Msg::ApplyPatch(url, game) => {
+                self.patch_busy = Some(url.clone());
+                self.install_note = Some("Downloading the patch...".into());
+                return (Task::none(), Out::ApplyPatch(url, game));
+            }
+            Msg::RevertPatch(url) => {
+                self.patch_busy = Some(url.clone());
+                self.install_note = None;
+                return (Task::none(), Out::RevertPatch(url));
+            }
             Msg::Retry => self.opened(),
             Msg::Index(i) => {
                 self.index = i.map(std::sync::Arc::new);
@@ -771,6 +957,14 @@ impl Page {
             }
             Msg::HideInstalled(b) => {
                 self.hide_installed = b;
+                Task::none()
+            }
+            Msg::Games(g) => {
+                self.games = g
+                    .iter()
+                    .map(|g| Pack { title: g.title.clone(), url: g.key(), image: None, kind: Kind::Games, age: g.series.clone() })
+                    .collect();
+                self.game_data = g.into_iter().map(|g| (g.key(), g)).collect();
                 Task::none()
             }
         };
@@ -798,10 +992,11 @@ impl Page {
 
     fn shown(&self, cx: &Ctx<'_>) -> Vec<&Pack> {
         let words: Vec<String> = self.filter.to_lowercase().split_whitespace().map(str::to_string).collect();
-        self.packs
-            .iter()
+        self.all()
             .filter(|p| self.kind.is_none_or(|k| p.kind == k))
-            .filter(|p| !self.hide_installed || !self.page_have(&p.url, cx).is_some_and(|h| h.have == h.total))
+            .filter(|p| {
+                !self.hide_installed || !(self.page_have(&p.url, cx).is_some_and(|h| h.have == h.total) || self.game_installed(&p.url, cx))
+            })
             .filter(|p| {
                 let t = p.title.to_lowercase();
                 words.iter().all(|w| t.contains(w.as_str()))
@@ -817,8 +1012,8 @@ impl Page {
                 .on_press(Msg::Kind(k))
                 .into()
         };
-        let count = |k: Kind| self.packs.iter().filter(|p| p.kind == k).count();
-        let mut chips = row![chip(format!("All {}", self.packs.len()), None)].spacing(6).align_y(Alignment::Center);
+        let count = |k: Kind| self.all().filter(|p| p.kind == k).count();
+        let mut chips = row![chip(format!("All {}", self.all().count()), None)].spacing(6).align_y(Alignment::Center);
         for k in Kind::ALL {
             let n = count(k);
             if n > 0 {
@@ -848,35 +1043,39 @@ impl Page {
                 .push(text(format!("Couldn't read Custom Songs Central: {e}")).size(12).style(danger))
                 .push(button(text("Retry").size(12)).padding([3, 10]).style(crate::style::quiet_button(false)).on_press(Msg::Retry));
         }
+        let link = |label: &'static str, url: &str| {
+            button(text(label).size(12))
+                .padding(0)
+                .style(|t: &Theme, st| button::Style {
+                    background: None,
+                    text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) {
+                        crate::style::fg(t)
+                    } else {
+                        crate::style::accent(t)
+                    },
+                    ..Default::default()
+                })
+                .on_press(Msg::Open(url.to_string()))
+        };
         let header = column![
-            row![text("Packs from Custom Songs Central").size(16), space().width(Length::Fill), status, search]
-                .spacing(12)
-                .align_y(Alignment::Center),
+            row![text("Packs").size(16), space().width(Length::Fill), status, search].spacing(12).align_y(Alignment::Center),
             row![
-                text("Packs, their pages and their downloads are from").size(12).style(muted),
-                button(text("customsongscentral.com ↗").size(12))
-                    .padding(0)
-                    .style(|t: &Theme, st| button::Style {
-                        background: None,
-                        text_color: if matches!(st, button::Status::Hovered | button::Status::Pressed) {
-                            crate::style::fg(t)
-                        } else {
-                            crate::style::accent(t)
-                        },
-                        ..Default::default()
-                    })
-                    .on_press(Msg::Open(SITE.to_string())),
-                text("— thanks to its pack makers. Click a pack to read about it and download it.").size(12).style(muted),
+                text("Packs are from").size(12).style(muted),
+                link("customsongscentral.com ↗", SITE),
+                text("and game setlists from the").size(12).style(muted),
+                link("Clone Hero Master List ↗", crate::game_setlists::SHEET_URL),
+                text("— thanks to their pack makers and charters. Click a pack to read about it and download it.").size(12).style(muted),
             ]
             .spacing(4)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .wrap(),
             chips.wrap(),
         ]
         .spacing(10);
 
         let shown = self.shown(cx);
         let body: Element<'_, Msg> = if shown.is_empty() {
-            let msg = if self.packs.is_empty() {
+            let msg = if self.packs.is_empty() && self.games.is_empty() {
                 if self.loading { "Loading packs…" } else { "No packs to show." }
             } else {
                 "No packs match."
@@ -896,17 +1095,25 @@ impl Page {
         let (w, h) = (THUMB_W as f32 / 2.0, THUMB_H as f32 / 2.0);
         let thumb: Element<'a, Msg> = match p.image.as_ref().and_then(|u| self.art.get(u)) {
             Some(handle) => image(handle.clone()).width(w).height(h).content_fit(ContentFit::Cover).into(),
-            None => container(space())
-                .width(w)
-                .height(h)
-                .style(|t: &Theme| container::Style { background: Some(crate::style::raised(t).into()), ..Default::default() })
-                .into(),
+            None => {
+                // Game setlists have no banner: their series' initials ("GH", "RB").
+                let initials: String = if p.kind == Kind::Games { p.age.split_whitespace().filter_map(|w| w.chars().next()).collect() } else { String::new() };
+                container(text(initials).size(20).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }).style(muted))
+                    .width(w)
+                    .height(h)
+                    .center(Length::Fixed(w))
+                    .style(|t: &Theme| container::Style { background: Some(crate::style::raised(t).into()), ..Default::default() })
+                    .into()
+            }
         };
-        let info = column![text(&p.title).size(14), text(p.kind.label()).size(12).style(muted)].spacing(3).width(Length::Fill);
+        let games = p.kind == Kind::Games;
+        let kind = if games { format!("{} · Game setlist", p.age) } else { p.kind.label().to_string() };
+        let info = column![text(&p.title).size(14), text(kind).size(12).style(muted)].spacing(3).width(Length::Fill);
         let open = self.open.as_ref() == Some(&p.url);
         let badge: Element<'a, Msg> = match self.page_have(&p.url, cx) {
             Some(h) if h.have == h.total => text("Installed").size(12).style(success).into(),
             Some(h) if h.have > 0 => text(format!("{} of {} charts", h.have, h.total)).size(12).style(accent).into(),
+            None if self.game_installed(&p.url, cx) => text("Installed").size(12).style(success).into(),
             _ => space().width(0).into(),
         };
         // This pack's downloads (one per link): a bar while any is waiting or running.
@@ -929,7 +1136,8 @@ impl Page {
             Some(DlState::Failed) if !running => text("Download failed").size(12).style(danger).into(),
             _ => badge,
         };
-        let line = row![thumb, info, badge, text(&p.age).size(12).style(muted), text(if open { "▴" } else { "▾" }).size(12).style(muted)]
+        let age = if games { "" } else { p.age.as_str() };
+        let line = row![thumb, info, badge, text(age).size(12).style(muted), text(if open { "▴" } else { "▾" }).size(12).style(muted)]
             .spacing(14)
             .align_y(Alignment::Center);
         let content: Element<'a, Msg> = match progress {
@@ -946,8 +1154,9 @@ impl Page {
 
     /// The expanded pack: its downloads and its description.
     fn view_details<'a>(&'a self, p: &'a Pack, cx: &Ctx<'_>) -> Element<'a, Msg> {
+        let games = p.kind == Kind::Games;
         let page_button =
-            button(text("Open page").size(12)).padding([5, 12]).style(crate::style::quiet_button(false)).on_press(Msg::Open(p.url.clone()));
+            button(text(if games { "Open spreadsheet" } else { "Open page" }).size(12)).padding([5, 12]).style(crate::style::quiet_button(false)).on_press(Msg::Open(p.url.clone()));
         let inner: Element<'a, Msg> = match self.details.get(&p.url) {
             None | Some(None) => text("Reading the pack's page…").size(13).style(muted).into(),
             Some(Some(Err(e))) => {
@@ -957,16 +1166,78 @@ impl Page {
                 let several = d.links.len() > 1;
                 let mut downloads = column![].spacing(6);
                 for l in &d.links {
-                    let folder = crate::download::sanitize_filename(&pack_folder(&p.title, &l.label, several));
+                    let folder =
+                        l.folder.clone().unwrap_or_else(|| crate::download::sanitize_filename(&pack_folder(&p.title, &l.label, several)));
+                    // A patch (GH3's explicit vocals) goes into the game's charts already in the
+                    // library, so it's applied and reverted rather than downloaded as a pack.
+                    if let Some((game, label)) = l.game.as_ref().filter(|(_, lb)| crate::patches::is_patch(lb))
+                        && can_download(&l.url)
+                    {
+                        let busy = self.patch_busy.as_deref() == Some(l.url.as_str());
+                        let applied = self.patched.get(&l.url).copied().unwrap_or(false);
+                        let size = l.size.map(|n| format!(" · {}", human_size(n))).unwrap_or_default();
+                        let what = format!("{label}{size} · replaces or adds audio in the game's charts you have");
+                        let main = button(text(if busy { "Working..." } else if applied { "Patched" } else { "Apply patch" }).size(12))
+                            .padding([5, 12])
+                            .style(crate::style::quiet_button(true));
+                        let main: Element<'a, Msg> = if busy || applied || self.patch_busy.is_some() {
+                            main.into()
+                        } else {
+                            main.on_press(Msg::ApplyPatch(l.url.clone(), game.clone())).into()
+                        };
+                        let mut line = row![main].spacing(10).align_y(Alignment::Center);
+                        if applied {
+                            let revert = button(text("Revert").size(12)).padding([5, 12]).style(crate::style::quiet_button(false));
+                            line = line.push(if busy || self.patch_busy.is_some() { revert } else { revert.on_press(Msg::RevertPatch(l.url.clone())) });
+                        }
+                        line = line.push(text(what).size(12).style(muted));
+                        if let Some(n) = l.note.as_ref().filter(|_| !applied) {
+                            line = line.push(text(n.clone()).size(12).style(danger));
+                        }
+                        downloads = downloads.push(line);
+                        continue;
+                    }
+                    // A game setlist download whose charts can each be got from Chorus (or
+                    // RhythmVerse): installed chart by chart, the archive kept as a fallback.
+                    if let Some((game, label)) = &l.game
+                        && let Some(list) = self.sources.as_ref().and_then(|s| s.get(game, label))
+                    {
+                        let have = list.iter().filter(|s| (cx.in_library)(&s.key())).count();
+                        let rv = list.iter().filter(|s| s.from == "rv").count();
+                        let from = if rv == 0 { "from Chorus".to_string() } else { format!("from Chorus ({rv} from RhythmVerse)") };
+                        let missing: Vec<crate::game_sources::Source> = list.iter().filter(|s| !(cx.in_library)(&s.key())).cloned().collect();
+                        let all_in = missing.is_empty();
+                        let name = if all_in {
+                            format!("Installed ({} charts)", list.len())
+                        } else if have == 0 {
+                            format!("Install {} charts", list.len())
+                        } else {
+                            format!("Install the other {}", missing.len())
+                        };
+                        let b = button(text(name).size(12)).padding([5, 12]).style(crate::style::quiet_button(true));
+                        let b: Element<'a, Msg> = if missing.is_empty() { b.into() } else { b.on_press(Msg::InstallGame(folder.clone(), missing)).into() };
+                        let what = format!("{} · {from}", label);
+                        let mut line = row![b, text(what).size(12).style(muted)].spacing(10).align_y(Alignment::Center);
+                        let state = if have > 0 && !all_in {
+                            format!("You have {have} of its {} charts", list.len())
+                        } else {
+                            String::new()
+                        };
+                        if !state.is_empty() {
+                            line = line.push(text(state).size(12).style(accent));
+                        }
+                        downloads = downloads.push(line);
+                    }
                     let folder_exists = cx.library.is_some_and(|lib| lib.join(&folder).exists());
                     // The pack index knows its charts, wherever they are; else the pack's folder.
                     let have = self.index.as_ref().and_then(|i| i.have(&l.url, cx.in_library));
                     let in_library = have.map_or(folder_exists, |h| h.have == h.total);
+                    // Fully installed shows on the button itself, so no state text for it here.
                     let state = cx.status.get(&l.url).cloned().or_else(|| match have {
-                        Some(h) if h.have == h.total => Some(format!("In your library (all {} charts)", h.total)),
+                        Some(h) if h.have == h.total => None,
                         Some(h) if h.have > 0 => Some(format!("You have {} of its {} charts", h.have, h.total)),
                         Some(_) => None,
-                        None => folder_exists.then(|| "In your library".to_string()),
+                        None => None,
                     });
                     let busy = state.as_deref().is_some_and(|s| s == "Queued" || s.starts_with("Downloading") || s.ends_with("..."));
                     let label = match l.size {
@@ -975,7 +1246,20 @@ impl Page {
                     };
                     let action: Element<'a, Msg> = if can_download(&l.url) {
                         let job = Job { url: l.url.clone(), folder, page: p.url.clone() };
-                        let b = button(text(if several { "Download" } else { "Download pack" }).size(12))
+                        let per_chart = l.game.as_ref().is_some_and(|(g, lb)| self.sources.as_ref().is_some_and(|s| s.get(g, lb).is_some()));
+                        let name = if in_library {
+                            match have {
+                                Some(h) => format!("Installed ({} charts)", h.total),
+                                None => "Installed".to_string(),
+                            }
+                        } else if per_chart {
+                            "Download archive".to_string()
+                        } else if several {
+                            "Download".to_string()
+                        } else {
+                            "Download pack".to_string()
+                        };
+                        let b = button(text(name).size(12))
                             .padding([5, 12])
                             .style(crate::style::quiet_button(true));
                         if busy || in_library { b.into() } else { b.on_press(Msg::Download(job)).into() }
@@ -988,6 +1272,9 @@ impl Page {
                             .into()
                     };
                     let mut line = row![action, text(label).size(12).style(muted)].spacing(10).align_y(Alignment::Center);
+                    if let Some(n) = l.note.as_ref().filter(|_| state.is_none()) {
+                        line = line.push(text(n.clone()).size(12).style(danger));
+                    }
                     if let Some(s) = state {
                         let failed = s.starts_with("Failed");
                         line = line.push(text(s).size(12).style(move |t: &Theme| {
@@ -998,6 +1285,9 @@ impl Page {
                 }
                 if d.links.is_empty() {
                     downloads = downloads.push(text("This page has no download link.").size(12).style(muted));
+                }
+                if let Some(n) = self.install_note.as_ref().filter(|_| d.links.iter().any(|l| l.game.is_some())) {
+                    downloads = downloads.push(text(n.clone()).size(12).style(accent));
                 }
                 let mut desc = column![].spacing(6);
                 for b in &d.blocks {
@@ -1011,7 +1301,13 @@ impl Page {
                 }
                 column![
                     downloads,
-                    text("Downloads go into a folder named after the pack (in your pack downloads folder, set in Settings). Packs can be several GB.").size(11).style(muted),
+                    text(if games {
+                        "Downloads go into the Game Setlists folder in your pack downloads folder (set in Settings). A full game is around 1 GB; DLC folders can be much bigger."
+                    } else {
+                        "Downloads go into a folder named after the pack (in your pack downloads folder, set in Settings). Packs can be several GB."
+                    })
+                    .size(11)
+                    .style(muted),
                     desc,
                     page_button,
                 ]
@@ -1144,6 +1440,31 @@ mod tests {
         }
     }
 
+    /// Wrapper folders are unwrapped; tier folders and a lone song folder are kept.
+    #[cfg(feature = "rhythmverse")]
+    #[test]
+    fn unwraps_wrapper_folders() {
+        let root = std::env::temp_dir().join(format!("truss-single-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mk = |p: &str| {
+            let p = root.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        };
+        // pack/Rock Band 3.zip -> Rock Band 3/Rock Band 3/<songs>
+        mk("a/Rock Band 3/Rock Band 3/Song A/song.ini");
+        mk("a/Rock Band 3/Rock Band 3/Song B/song.ini");
+        assert_eq!(single_folder(&root.join("a")), root.join("a/Rock Band 3/Rock Band 3"));
+        // tiers stay: GH3/<Tier 1, Tier 2>
+        mk("b/GH3/Tier 1/Song/song.ini");
+        mk("b/GH3/Tier 2/Song/song.ini");
+        assert_eq!(single_folder(&root.join("b")), root.join("b/GH3"));
+        // one song: the song folder itself
+        mk("c/Wrap/Only Song/notes.mid");
+        assert_eq!(single_folder(&root.join("c")), root.join("c/Wrap/Only Song"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Downloads a pack into a temporary library (TRUSS_TEST_PACK_DL = its download link).
     #[cfg(feature = "rhythmverse")]
     #[test]
@@ -1207,5 +1528,163 @@ mod tests {
         let p = rt.block_on(fetch_all()).unwrap();
         println!("{} packs; first: {:?}", p.len(), p.first());
         assert!(p.len() > 150);
+    }
+
+    /// Downloads a series' game setlists (TRUSS_GAMES_SERIES, "Guitar Hero") into TRUSS_GAMES_DEST,
+    /// one folder per download, skipping those already there; with TRUSS_GAMES_INDEX (a pack
+    /// index file) set, each finished folder's charts are added to it under its link.
+    #[cfg(feature = "rhythmverse")]
+    #[test]
+    #[ignore]
+    fn downloads_game_setlists() {
+        let (Some(dest), Ok(series)) = (std::env::var_os("TRUSS_GAMES_DEST"), std::env::var("TRUSS_GAMES_SERIES")) else { return };
+        let dest = PathBuf::from(dest);
+        let index_path = std::env::var_os("TRUSS_GAMES_INDEX").map(PathBuf::from);
+        let user = crate::settings::Settings::load();
+        let settings = crate::settings::Settings { library_path: Some(dest.clone()), pack_path: None, download_videos: user.download_videos, ..Default::default() };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let games: Vec<_> = rt.block_on(crate::game_setlists::load()).into_iter().filter(|g| g.series.eq_ignore_ascii_case(&series)).collect();
+        let mut todo = Vec::new();
+        for g in &games {
+            for l in &g.links {
+                let name = crate::download::sanitize_filename(&if l.label == crate::game_setlists::MAIN { g.title.clone() } else { format!("{} - {}", g.title, l.label) });
+                todo.push((g.key(), name, l.url.clone()));
+            }
+        }
+        println!("{} downloads", todo.len());
+        let (mut ok, mut failed) = (0, Vec::new());
+        for (page, name, url) in todo {
+            if !can_download(&url) {
+                println!("SKIP {name}: can't download {url}");
+                continue;
+            }
+            if !dest.join(&name).exists() {
+                let job = Job { url: url.clone(), folder: name.clone(), page: page.clone() };
+                let (mut tx, mut rx) = futures::channel::mpsc::channel(64);
+                let label = name.clone();
+                let printer = std::thread::spawn(move || {
+                    let mut last = std::time::Instant::now();
+                    while let Some(p) = futures::executor::block_on(futures::StreamExt::next(&mut rx)) {
+                        match p {
+                            crate::download::Progress::Bytes { done, total } if last.elapsed().as_secs() >= 30 => {
+                                last = std::time::Instant::now();
+                                println!("  {label}: {:.0} of {} MB", done as f64 / 1e6, total.map_or("?".into(), |t| format!("{:.0}", t as f64 / 1e6)));
+                            }
+                            crate::download::Progress::Status(s) => println!("  {label}: {s}"),
+                            _ => {}
+                        }
+                    }
+                });
+                let t = std::time::Instant::now();
+                let r = rt.block_on(run(&job, &settings, &mut tx));
+                drop(tx);
+                let _ = printer.join();
+                match r {
+                    Ok(_) => println!("OK  {name} in {:.0?}", t.elapsed()),
+                    Err(e) => {
+                        println!("ERR {name}: {e}");
+                        failed.push(name);
+                        continue;
+                    }
+                }
+            }
+            ok += 1;
+            // Its charts, by the key Truss matches on, into the pack index.
+            if let Some(ip) = &index_path {
+                add_folder_to_index(ip, &dest.join(&name), url, page);
+            }
+        }
+        println!("done: {ok} in place, {} failed {failed:?}", failed.len());
+    }
+
+    /// Adds the charts in a downloaded folder to a pack index file, under its download link.
+    #[cfg(feature = "rhythmverse")]
+    fn add_folder_to_index(ip: &std::path::Path, root: &std::path::Path, url: String, page: String) {
+        let mut charts = Vec::new();
+        let mut unread = 0;
+        let mut stack = vec![root.to_path_buf()];
+        let rel = |p: &std::path::Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(p);
+                } else if n == "song.ini" {
+                    charts.push((crate::library::ini_key(&std::fs::read(&p).unwrap_or_default()), rel(&d)));
+                } else if n.ends_with(".sng") {
+                    let head: Vec<u8> = std::fs::read(&p).unwrap_or_default().into_iter().take(256 << 10).collect();
+                    match crate::sng::header_metadata(&head) {
+                        Ok(Some(meta)) => charts.push((crate::library::pairs_key(&meta), rel(&p))),
+                        _ => unread += 1,
+                    }
+                }
+            }
+        }
+        charts.sort();
+        let mut index = std::fs::read(ip).ok().and_then(|b| crate::pack_index::PackIndex::parse(&b)).unwrap_or_default();
+        println!("    indexed {} charts", charts.len());
+        index.links.insert(url, crate::pack_index::LinkEntry { page, charts, unread, error: None });
+        index.built = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let tmp = ip.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&index).unwrap()).unwrap();
+        std::fs::rename(&tmp, ip).unwrap();
+    }
+
+    /// Unpacks archives downloaded by hand (TRUSS_LOCAL_ARCHIVES = a file of lines
+    /// "archive<TAB>folder<TAB>link<TAB>page") into TRUSS_GAMES_DEST the way a pack download
+    /// would (archives naming the same folder go into it together), and adds each folder to
+    /// TRUSS_GAMES_INDEX. The archives are only read. Folders already there are only indexed.
+    #[cfg(feature = "rhythmverse")]
+    #[test]
+    #[ignore]
+    fn unpacks_local_game_archives() {
+        let (Some(list), Some(dest), Some(ip)) =
+            (std::env::var_os("TRUSS_LOCAL_ARCHIVES"), std::env::var_os("TRUSS_GAMES_DEST"), std::env::var_os("TRUSS_GAMES_INDEX"))
+        else {
+            return;
+        };
+        let (dest, ip) = (PathBuf::from(dest), PathBuf::from(ip));
+        let keep_video = crate::settings::Settings::load().download_videos;
+        // Folder → (link, page, archives), in the file's order.
+        let mut groups: Vec<(String, String, String, Vec<PathBuf>)> = Vec::new();
+        for line in std::fs::read_to_string(&list).unwrap().lines().filter(|l| !l.trim().is_empty()) {
+            let f: Vec<&str> = line.split('\t').collect();
+            let (archive, folder, url, page) = (PathBuf::from(f[0]), f[1].to_string(), f[2].to_string(), f[3].to_string());
+            match groups.iter_mut().find(|g| g.0 == folder) {
+                Some(g) => g.3.push(archive),
+                None => groups.push((folder, url, page, vec![archive])),
+            }
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for (n, (folder, url, page, archives)) in groups.into_iter().enumerate() {
+            let target = dest.join(&folder);
+            if !target.exists() {
+                let work = dest.join(format!(".truss-tmp-local-{n}-{}", std::process::id()));
+                let _guard = crate::download::TempGuard(Some(work.clone()));
+                let _ = std::fs::remove_dir_all(&work);
+                let t = std::time::Instant::now();
+                let r: Result<(), String> = rt.block_on(async {
+                    for a in &archives {
+                        let stem = a.file_stem().unwrap_or_default().to_string_lossy().trim().to_string();
+                        crate::rhythmverse::unpack_any(a.clone(), &work.join(stem), keep_video).await?;
+                    }
+                    crate::rhythmverse::unpack_nested(&work, keep_video).await
+                });
+                if let Err(e) = r.and_then(|()| {
+                    if !has_chart(&work, 0) {
+                        return Err("No Clone Hero charts were found.".to_string());
+                    }
+                    crate::download::move_path(&single_folder(&work), &target)
+                }) {
+                    println!("ERR {folder}: {e}");
+                    continue;
+                }
+                println!("OK  {folder} in {:.0?}", t.elapsed());
+            } else {
+                println!("HAVE {folder}");
+            }
+            add_folder_to_index(&ip, &target, url, page);
+        }
     }
 }
