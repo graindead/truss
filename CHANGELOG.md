@@ -3,6 +3,11 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.22
+
+- **Packs:** packs with nothing to download (a rules page, say) are no longer listed.
+- **Top bar:** starts with Browse; the "Truss" title is gone.
+
 ## v0.1.21
 
 - **Clone Hero's own look:** when Clone Hero is installed, Truss reads its pictures from the

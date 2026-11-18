@@ -4717,7 +4717,7 @@ dependencies = [
 
 [[package]]
 name = "truss"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "aes",
  "base64 0.22.1",
