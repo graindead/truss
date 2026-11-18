@@ -3,6 +3,13 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.23
+
+- **Less memory while browsing:** scrolling far down the results no longer makes Truss use more
+  and more memory (two minutes of scrolling used to take it from about 210 MB to 485 MB; it now
+  stays around 210-265 MB).
+- **Low memory mode removed:** Truss always draws with the graphics card.
+
 ## v0.1.22
 
 - **Packs:** packs with nothing to download (a rules page, say) are no longer listed.
