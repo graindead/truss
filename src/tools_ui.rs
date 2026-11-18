@@ -18,6 +18,7 @@ pub enum Tab {
     Paths,
     Scenes,
     Themes,
+    Colors,
     Repair,
     Issues,
 }
@@ -368,6 +369,7 @@ pub struct Page {
     scenes: crate::scenes_ui::ScenesTool,
     paths: crate::path_ui::PathTool,
     themes: crate::theme_maker::ThemeMaker,
+    colors: crate::color_editor::ColorTool,
     repair: crate::repair::RepairTool,
 }
 
@@ -378,6 +380,7 @@ pub enum Msg {
     Scenes(crate::scenes_ui::Msg),
     Paths(crate::path_ui::Msg),
     Themes(crate::theme_maker::Msg),
+    Colors(crate::color_editor::Msg),
     Repair(crate::repair::Msg),
 }
 
@@ -387,13 +390,15 @@ impl Page {
             Msg::Tab(Tab::Issues) if !ISSUE_SCANNER_ENABLED => (Task::none(), Out::None),
             Msg::Tab(t) => {
                 self.tab = t;
-                (Task::none(), Out::None)
+                let task = if t == Tab::Colors { self.colors.opened().map(Msg::Colors) } else { Task::none() };
+                (task, Out::None)
             }
             Msg::Issues(m) => {
                 let (t, o) = self.issues.update(m, cx);
                 (t.map(Msg::Issues), o)
             }
             Msg::Scenes(m) => (self.scenes.update(m).map(Msg::Scenes), Out::None),
+            Msg::Colors(m) => (self.colors.update(m).map(Msg::Colors), Out::None),
             Msg::Paths(m) => {
                 let (t, lag) = self.paths.update(m, cx.settings.chopt_video_lag_ms);
                 (t.map(Msg::Paths), lag.map_or(Out::None, Out::SetVideoLag))
@@ -417,15 +422,16 @@ impl Page {
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
-        if self.tab == Tab::Scenes {
-            return self.scenes.subscription().map(Msg::Scenes);
+        match self.tab {
+            Tab::Scenes => self.scenes.subscription().map(Msg::Scenes),
+            Tab::Colors => self.colors.subscription().map(Msg::Colors),
+            _ => Subscription::none(),
         }
-        Subscription::none()
     }
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Repair bad songs", Tab::Repair)];
+        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Note colors", Tab::Colors), tab("Repair bad songs", Tab::Repair)];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -435,6 +441,7 @@ impl Page {
             Tab::Scenes => self.scenes.view().map(Msg::Scenes),
             Tab::Paths => self.paths.view(cx.catalog).map(Msg::Paths),
             Tab::Themes => self.themes.view(&cx.settings.custom_themes, cx.theme, cx.glass_window).map(Msg::Themes),
+            Tab::Colors => self.colors.view().map(Msg::Colors),
             Tab::Repair => self.repair.view(cx.settings).map(Msg::Repair),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()

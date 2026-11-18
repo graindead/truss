@@ -654,7 +654,8 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
         // Drawn as thin solid-colour image slices (like the highway) rather than filled paths:
         // iced draws a canvas's paths underneath all of its images, which hid them entirely.
         for n in visible.iter().filter(|n| n.ms_len > 0.0) {
-            let Some(solid) = self.textures.solid.get(&sustain_hex(n.ty)) else { continue };
+            let sp = n.flags & SP_FLAG != 0;
+            let Some(solid) = self.textures.sustains.get(&(n.ty, sp)).or_else(|| self.textures.solid.get(&sustain_hex(n.ty))) else { continue };
             let x = note_x(itype, n.ty);
             let half_w = SCALE * if n.ty == nt::OPEN { 5.0 } else { 0.3 } / 2.0;
             let y0 = (to_y(n.ms) + 0.03).max(clip_lo);
@@ -677,8 +678,26 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
             }
         }
 
-        // Strikeline (render order 3): sprite centered at y = -1.
-        {
+        // Strikeline (render order 3): sprite centered at y = -1, or the frets one by one, lit
+        // while a note of their lane is being hit.
+        if !self.textures.strikers.is_empty() {
+            let hit = |n: &RNote| (n.ms <= now && now - n.ms < 120.0) || (n.ms <= now && now < n.ms + n.ms_len);
+            let recent = &notes[notes.partition_point(|n| n.ms < now - self.track.max_len.max(120.0))..notes.partition_point(|n| n.ms <= now)];
+            let open = recent.iter().any(|n| (n.ty == nt::OPEN || n.ty == nt::KICK) && hit(n));
+            for s in &self.textures.strikers {
+                let (sx, sy, depth) = cam.project(note_x(itype, s.ty), -1.0);
+                let k = cam.px_per_unit(depth);
+                let (w, h) = (s.width * k, s.width / s.aspect * k);
+                let mips = if recent.iter().any(|n| n.ty == s.ty && hit(n)) {
+                    &s.lit
+                } else if open {
+                    &s.lit_open
+                } else {
+                    &s.idle
+                };
+                frame.draw_image(Rectangle::new(Point::new(sx - w / 2.0, sy - h / 2.0), Size::new(w, h)), canvas::Image::new(mips.pick(w * OVERSAMPLE).clone()));
+            }
+        } else {
             let (sx, sy, depth) = cam.project(0.0, -1.0);
             let k = cam.px_per_unit(depth);
             let (w, h) = (sl_w * k, sl_h * k);

@@ -116,7 +116,7 @@ pub fn parse_hex(s: &str) -> Option<Color> {
 }
 
 /// Hue (0-360), saturation and value (0-1).
-fn to_hsv(c: Color) -> (f32, f32, f32) {
+pub(crate) fn to_hsv(c: Color) -> (f32, f32, f32) {
     let (r, g, b) = (c.r, c.g, c.b);
     let max = r.max(g).max(b);
     let d = max - r.min(g).min(b);
@@ -133,7 +133,7 @@ fn to_hsv(c: Color) -> (f32, f32, f32) {
     (h, s, max)
 }
 
-fn from_hsv(h: f32, s: f32, v: f32) -> Color {
+pub(crate) fn from_hsv(h: f32, s: f32, v: f32) -> Color {
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
     let m = v - c;
@@ -512,7 +512,7 @@ impl ThemeMaker {
             if open {
                 let (h, sat, v) = self.hsv;
                 block = block.push(
-                    container(canvas_widget(Picker { h, s: sat, v }).width(Length::Fill).height(150))
+                    container(canvas_widget(Picker { h, s: sat, v, on: Msg::Hsv }).width(Length::Fill).height(150))
                         .padding(iced::Padding { left: 38.0, right: 0.0, top: 0.0, bottom: 6.0 }),
                 );
             }
@@ -598,44 +598,46 @@ impl std::fmt::Display for Glass {
 }
 
 /// The colour picker: saturation across and brightness down a square, hue in a bar beside it.
-struct Picker {
-    h: f32,
-    s: f32,
-    v: f32,
+/// `on` turns a picked hue/saturation/value into the page's message.
+pub(crate) struct Picker<M> {
+    pub h: f32,
+    pub s: f32,
+    pub v: f32,
+    pub on: fn(f32, f32, f32) -> M,
 }
 
 const HUE_W: f32 = 22.0;
 const GAP: f32 = 12.0;
 
 #[derive(Default, Clone, Copy, PartialEq)]
-enum Drag {
+pub(crate) enum Drag {
     #[default]
     None,
     Square,
     Hue,
 }
 
-impl Picker {
+impl<M> Picker<M> {
     fn square_w(bounds: Rectangle) -> f32 {
         (bounds.width - HUE_W - GAP).max(10.0)
     }
 
-    fn pick(&self, part: Drag, p: Point, bounds: Rectangle) -> Option<Msg> {
+    fn pick(&self, part: Drag, p: Point, bounds: Rectangle) -> Option<M> {
         let sw = Self::square_w(bounds);
         let x = (p.x / sw).clamp(0.0, 1.0);
         let y = (p.y / bounds.height).clamp(0.0, 1.0);
         match part {
-            Drag::Square => Some(Msg::Hsv(self.h, x, 1.0 - y)),
-            Drag::Hue => Some(Msg::Hsv((y * 360.0).min(359.9), self.s, self.v)),
+            Drag::Square => Some((self.on)(self.h, x, 1.0 - y)),
+            Drag::Hue => Some((self.on)((y * 360.0).min(359.9), self.s, self.v)),
             Drag::None => None,
         }
     }
 }
 
-impl canvas::Program<Msg> for Picker {
+impl<M> canvas::Program<M> for Picker<M> {
     type State = Drag;
 
-    fn update(&self, drag: &mut Drag, event: &canvas::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
+    fn update(&self, drag: &mut Drag, event: &canvas::Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<M>> {
         let rel = cursor.position().map(|p| Point::new(p.x - bounds.x, p.y - bounds.y));
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -718,7 +720,7 @@ fn sanitize(name: &str) -> String {
     if s.is_empty() { "theme".into() } else { s }
 }
 
-fn swatch<'a, M: 'a>(c: Color, size: f32) -> container::Container<'a, M> {
+pub(crate) fn swatch<'a, M: 'a>(c: Color, size: f32) -> container::Container<'a, M> {
     container(space()).width(size).height(size).style(move |t: &Theme| container::Style {
         background: Some(c.into()),
         border: Border { color: crate::style::hairline(t), width: 1.0, radius: (size / 4.0).into() },

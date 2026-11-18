@@ -19,6 +19,7 @@ pub const BARRE3: u8 = 103;
 
 /// One image at several sizes (each half the one before), so it can be drawn small without the
 /// shimmer and grain of squeezing a big image into a few pixels.
+#[derive(Clone)]
 pub struct Mips {
     /// Width and height of each level, largest first.
     sizes: Vec<(u32, u32)>,
@@ -113,8 +114,24 @@ pub struct TextureSet {
     pub fade: Handle,
     pub strikeline_aspect: f32,
     pub notes: HashMap<(u8, u32), Arc<AnimTexture>>,
+    /// Frets drawn one by one instead of the strikeline picture (the colour editor's preview).
+    pub strikers: Vec<Striker>,
+    /// Sustain colours by (note type, star power), instead of the usual ones.
+    pub sustains: HashMap<(u8, bool), Handle>,
 }
 
+/// One fret: as it rests, lit by a note of its own lane, and lit by an open note (or a kick).
+pub struct Striker {
+    pub ty: u8,
+    pub idle: Mips,
+    pub lit: Mips,
+    pub lit_open: Mips,
+    pub aspect: f32,
+    /// Width in highway units.
+    pub width: f32,
+}
+
+#[derive(Clone)]
 pub struct HighwayLevel {
     pub width: u32,
     pub rows: Vec<Handle>,
@@ -355,7 +372,7 @@ async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
             .collect();
         let fade = Handle::from_rgba(1, 64, fade_px);
 
-        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, fade, notes }))
+        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, fade, notes, strikers: Vec::new(), sustains: HashMap::new() }))
     })
     .await
     .map_err(|e| e.to_string())?

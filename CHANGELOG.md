@@ -3,6 +3,17 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.20
+
+- **Note colors (Tools):** an editor for Clone Hero colour profiles. Open, change and save the
+  profiles in your Colors folder, or start a new one from Clone Hero's defaults. Pick colours
+  with a colour picker or hex code for guitar, drums, 6-fret and the other colours. Truss keeps
+  a backup of each profile before it first saves over it.
+- **Live preview:** guitar and drums play a demo chart on the chart preview's highway in your
+  colours, with notes, sustains and strike rings that light up on hits, and a "Star power active"
+  toggle. The note sprites are downloaded the first time you open the tab. 6-fret and the other
+  colours have a preview you can click to pick a part.
+
 ## v0.1.19
 
 - **Game setlists (Packs):** every Guitar Hero and Rock Band game's setlist, DLC and extras
