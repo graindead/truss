@@ -323,6 +323,10 @@ enum Screen {
 struct App {
     settings: Settings,
     screen: Screen,
+    /// The folder setup screen is showing (first run, or something new to set).
+    setup_open: bool,
+    /// ...for someone using Truss for the first time (nothing on it is "new" to them).
+    setup_first_run: bool,
     theme: Theme,
     /// The window transparency in effect (chosen at start; Settings changes apply on restart).
     backdrop: backdrop::Backdrop,
@@ -543,6 +547,10 @@ enum Message {
     RescanLibrary,
     AddLibraryFolder,
     PickPackFolder,
+    SetupUseSongs(PathBuf),
+    SetupDone,
+    PickIssueFolder(bool),
+    IssueFolderPicked(bool, Option<PathBuf>),
     PackFolderPicked(Option<PathBuf>),
     ClearPackFolder,
     LibraryFolderAdded(Option<PathBuf>),
@@ -604,6 +612,24 @@ enum Message {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FpsChoice(u32);
 
+/// Bumped when the setup screen gets a new folder, so everyone sees it once more (with what's
+/// new marked). 1: the Clone Hero folder.
+const SETUP_VERSION: u32 = 1;
+
+/// Clone Hero's songs folder in its usual places (in the install found, or Documents).
+fn found_songs_folder() -> Option<PathBuf> {
+    let mut tries = Vec::new();
+    if let Some(i) = ch_sprites::find_install() {
+        tries.push(i.join("PlayerData").join("Songs"));
+        tries.push(i.join("Songs"));
+    }
+    if let Some(d) = directories::UserDirs::new().and_then(|u| u.document_dir().map(|d| d.to_path_buf())) {
+        tries.push(d.join("Clone Hero").join("PlayerData").join("Songs"));
+        tries.push(d.join("Clone Hero").join("Songs"));
+    }
+    tries.into_iter().find(|p| p.is_dir())
+}
+
 /// A colour profile for the chart preview: (name; none: the player's own, label).
 #[derive(Debug, Clone)]
 struct ProfileChoice(Option<String>, String);
@@ -636,25 +662,6 @@ impl App {
     /// limited as the game's own settings are. Until changed they follow the player's profile.
     fn chart_preview_section(&self) -> Element<'static, Message> {
         let s = &self.settings;
-        let found = ch_sprites::find_install();
-        let folder_text = match (&s.ch_folder, &found) {
-            (Some(p), _) if ch_sprites::chosen_install().is_some() => p.display().to_string(),
-            (Some(p), _) => format!("{} (not a Clone Hero folder)", p.display()),
-            (None, Some(p)) => format!("{} (found)", p.display()),
-            (None, None) => "Not found".to_string(),
-        };
-        let folder = row![
-            text("Clone Hero folder").size(13).width(110),
-            text(folder_text).size(12).width(Length::Fill),
-            button(text("Choose…").size(12)).padding([3, 10]).style(style::secondary).on_press(Message::PickChFolder),
-            if s.ch_folder.is_some() {
-                Element::from(button(text("Find it automatically").size(12)).padding([3, 10]).style(style::quiet_button(false)).on_press(Message::ChFolderAuto))
-            } else {
-                Element::from(space())
-            },
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center);
         let player = ch_sprites::player_color_profile();
         let mut choices = vec![ProfileChoice(None, format!("Your Clone Hero profile's ({})", player.as_deref().unwrap_or("DefaultColors")))];
         if let Some(dir) = color_profile::folder() {
@@ -670,7 +677,7 @@ impl App {
         .spacing(10)
         .align_y(Alignment::Center);
         let note = text("Guitar and drums are drawn as Clone Hero draws them, with its own pictures, when it's found. They're read from the game once and kept.").size(12);
-        column![note, folder, colors, fps, self.preview_speed_settings()].spacing(10).into()
+        column![note, colors, fps, self.preview_speed_settings()].spacing(10).into()
     }
 
     fn preview_speed_settings(&self) -> Element<'static, Message> {
@@ -847,6 +854,8 @@ impl App {
             advanced: Default::default(),
             active_advanced: None,
             screen: if settings.library_path.is_none() { Screen::Settings } else { Screen::Browse },
+            setup_open: settings.setup_seen < SETUP_VERSION,
+            setup_first_run: settings.library_path.is_none() && settings.setup_seen == 0,
             settings,
             query: String::new(),
             results: Vec::new(),
@@ -2731,6 +2740,34 @@ impl App {
                 Task::batch([self.save_settings(), self.scan_library()])
             }
             Message::LibraryFolderAdded(None) => Task::none(),
+            Message::SetupUseSongs(p) => {
+                self.settings.library_path = Some(p);
+                Task::batch([self.save_settings(), self.scan_library()])
+            }
+            Message::SetupDone => {
+                self.setup_open = false;
+                self.settings.setup_seen = SETUP_VERSION;
+                if self.settings.library_path.is_some() && self.screen == Screen::Settings {
+                    self.screen = Screen::Browse;
+                }
+                self.save_settings()
+            }
+            Message::PickIssueFolder(sheet) => Task::perform(
+                async move {
+                    let title = if sheet { "Where the issue scanner saves its spreadsheet" } else { "Folder the issue scanner checks" };
+                    rfd::AsyncFileDialog::new().set_title(title).pick_folder().await.map(|h| h.path().to_path_buf())
+                },
+                move |p| Message::IssueFolderPicked(sheet, p),
+            ),
+            Message::IssueFolderPicked(_, None) => Task::none(),
+            Message::IssueFolderPicked(sheet, Some(p)) => {
+                if sheet {
+                    self.settings.spreadsheet_output_path = Some(p);
+                } else {
+                    self.settings.issue_scan_path = Some(p);
+                }
+                self.save_settings()
+            }
             Message::PickPackFolder => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
@@ -2768,10 +2805,11 @@ impl App {
                 self.save_settings()
             }
             Message::ShowScreen(s) => {
+                let changed = s != self.screen;
                 self.screen = s;
                 let mut tasks = Vec::new();
-                // A library chart's preview only shows on the Library page.
-                if s != Screen::Library && self.preview.as_ref().is_some_and(|p| p.md5.starts_with(library::LOCAL_MD5)) {
+                // A preview belongs to the tab it was started on: changing tabs stops it.
+                if changed && self.preview.is_some() {
                     tasks.push(self.close_preview());
                 }
                 if s == Screen::Packs {
@@ -2959,6 +2997,9 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        if self.setup_open {
+            return self.view_setup();
+        }
         let body = match self.screen {
             Screen::Browse => self.view_browse(),
             Screen::Settings => self.view_settings(),
@@ -3470,6 +3511,126 @@ impl App {
     }
 
     /// Settings > Downloads: where chart packs (Packs page) are saved.
+    /// Clone Hero's folder: chosen, found, or not found.
+    fn ch_folder_setting(&self) -> Element<'static, Message> {
+        let s = &self.settings;
+        let (path, note) = match (&s.ch_folder, ch_sprites::find_install()) {
+            (Some(p), _) if ch_sprites::chosen_install().is_some() => (p.display().to_string(), None),
+            (Some(p), _) => (p.display().to_string(), Some("This isn't a Clone Hero folder (it has no Clone Hero_Data)")),
+            (None, Some(p)) => (p.display().to_string(), Some("Found automatically")),
+            (None, None) => ("Not found".to_string(), Some("Charts and colours are shown as Clone Hero draws them once Truss knows where it is")),
+        };
+        let mut info = column![text("Clone Hero folder").size(13), text(path).size(12).wrapping(text::Wrapping::WordOrGlyph)].spacing(2);
+        if let Some(n) = note {
+            info = info.push(text(n).size(11).style(|t: &Theme| text::Style { color: Some(style::muted(t)) }));
+        }
+        let mut r = row![info.width(Length::Fill), button(text("Choose…").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::PickChFolder)]
+            .spacing(10)
+            .align_y(Alignment::Center);
+        if s.ch_folder.is_some() {
+            r = r.push(button(text("Find it automatically").size(12)).padding([4, 10]).style(crate::style::subtle).on_press(Message::ChFolderAuto));
+        }
+        r.into()
+    }
+
+    /// The issue scanner's folders: the one it checks (`sheet` false), where its spreadsheet goes.
+    fn issue_folder_setting(&self, sheet: bool) -> Element<'static, Message> {
+        let (label, path) = if sheet {
+            ("Issue scanner: save the spreadsheet in", &self.settings.spreadsheet_output_path)
+        } else {
+            ("Issue scanner: folder to check", &self.settings.issue_scan_path)
+        };
+        let path = path.as_ref().map_or("Not set".to_string(), |p| p.display().to_string());
+        row![
+            column![text(label).size(13), text(path).size(12).wrapping(text::Wrapping::WordOrGlyph)].spacing(2).width(Length::Fill),
+            button(text("Choose…").size(12)).padding([4, 10]).style(crate::style::secondary).on_press(Message::PickIssueFolder(sheet)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The folder setup screen: on first run, every folder Truss uses (with any it could find);
+    /// after an update that adds one, the same, with what's new marked.
+    fn view_setup(&self) -> Element<'_, Message> {
+        let s = &self.settings;
+        let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+        let is_new = |since: u32| !self.setup_first_run && since > s.setup_seen;
+        let item = |title: &'static str, since: u32, about: &'static str, state: String, ok: bool, actions: Element<'static, Message>| -> Element<'static, Message> {
+            let mut head = row![text(title).size(15).font(BOLD)].spacing(8).align_y(Alignment::Center);
+            if is_new(since) {
+                head = head.push(container(text("New").size(11)).padding([2, 8]).style(style::panel));
+            }
+            container(
+                row![
+                    column![
+                        head,
+                        text(about).size(12).style(muted),
+                        text(format!("{} {state}", if ok { "✓" } else { "•" })).size(12).wrapping(text::Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(4)
+                    .width(Length::Fill),
+                    actions,
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+            )
+            .padding(14)
+            .width(Length::Fill)
+            .style(style::panel)
+            .into()
+        };
+        // Songs: set, or found where Clone Hero keeps them, or to choose.
+        let songs: Element<'static, Message> = match (&s.library_path, found_songs_folder()) {
+            (Some(p), _) => item("Songs folder", 0, "Where downloads are saved, and where Truss looks for charts you have.", p.display().to_string(), true,
+                button(text("Add another…").size(12)).padding([4, 10]).style(style::secondary).on_press(Message::AddLibraryFolder).into()),
+            (None, Some(p)) => item("Songs folder", 0, "Where downloads are saved, and where Truss looks for charts you have.", format!("Found: {}", p.display()), false,
+                row![
+                    button(text("Use this").size(12)).padding([4, 10]).on_press(Message::SetupUseSongs(p)),
+                    button(text("Choose…").size(12)).padding([4, 10]).style(style::secondary).on_press(Message::AddLibraryFolder),
+                ].spacing(6).into()),
+            (None, None) => item("Songs folder", 0, "Where downloads are saved, and where Truss looks for charts you have.", "Not set".into(), false,
+                button(text("Choose…").size(12)).padding([4, 10]).on_press(Message::AddLibraryFolder).into()),
+        };
+        let ch_state = match (&s.ch_folder, ch_sprites::find_install()) {
+            (Some(p), _) if ch_sprites::chosen_install().is_some() => (p.display().to_string(), true),
+            (Some(p), _) => (format!("{} isn't a Clone Hero folder", p.display()), false),
+            (None, Some(p)) => (format!("Found: {}", p.display()), true),
+            (None, None) => ("Not found".to_string(), false),
+        };
+        let ch = item(
+            "Clone Hero folder",
+            1,
+            "Lets the chart preview and Note colors look just like the game, using its own pictures and your colours.",
+            ch_state.0,
+            ch_state.1,
+            button(text("Choose…").size(12)).padding([4, 10]).style(style::secondary).on_press(Message::PickChFolder).into(),
+        );
+        let packs = item(
+            "Pack downloads folder",
+            0,
+            "Where chart packs from the Packs page are saved. Optional.",
+            s.pack_path.as_ref().map_or("Same as your songs folder".to_string(), |p| p.display().to_string()),
+            true,
+            button(text("Choose…").size(12)).padding([4, 10]).style(style::secondary).on_press(Message::PickPackFolder).into(),
+        );
+        let ready = s.library_path.is_some();
+        let (title, intro) = if self.setup_first_run {
+            ("Welcome to Truss", "Truss needs to know where a few things are. Anything it could find is filled in already; you can change these any time in Settings > Directories.")
+        } else {
+            ("New folder settings", "This version of Truss can use a folder it didn't before (marked New). Your other folders are already set; you can change any of them in Settings > Directories.")
+        };
+        let foot = row![
+            text(if ready { "" } else { "A songs folder is needed for downloads." }).size(12).style(muted).width(Length::Fill),
+            button(text(if ready { "Skip" } else { "Skip for now" }).size(13)).padding([6, 14]).style(style::secondary).on_press(Message::SetupDone),
+            button(text("Continue").size(13)).padding([6, 14]).on_press_maybe(ready.then_some(Message::SetupDone)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let page = column![text(title).font(BOLD).size(24), text(intro).size(13).style(muted), songs, ch, packs, foot].spacing(14).max_width(720);
+        container(scrollable(container(page).padding(24).center_x(Length::Fill))).width(Length::Fill).height(Length::Fill).center_y(Length::Fill).into()
+    }
+
     fn pack_folder_setting(&self) -> Element<'static, Message> {
         let (path, note) = match (&self.settings.pack_path, &self.settings.library_path) {
             (Some(p), _) => (p.display().to_string(), None),
@@ -3527,7 +3688,14 @@ impl App {
             .spacing(10)
             .align_y(Alignment::Center),
         );
-        lib_col = lib_col.push(rule::horizontal(1).style(crate::style::rule)).push(self.pack_folder_setting());
+        lib_col = lib_col
+            .push(rule::horizontal(1).style(crate::style::rule))
+            .push(self.pack_folder_setting())
+            .push(rule::horizontal(1).style(crate::style::rule))
+            .push(self.ch_folder_setting())
+            .push(rule::horizontal(1).style(crate::style::rule))
+            .push(self.issue_folder_setting(false))
+            .push(self.issue_folder_setting(true));
 
         let section = |title: &'static str, content: Element<'static, Message>| {
             container(column![text(title).font(BOLD).size(15), content].spacing(10))
@@ -3541,7 +3709,7 @@ impl App {
 
         let content = column![
             text("Settings").font(BOLD).size(24),
-            section("Library folders", lib_col.into()),
+            section("Directories", lib_col.into()),
         ];
         #[cfg(feature = "rhythmverse")]
         let content = content.push(section("Chart sources", self.rv_settings_section()));

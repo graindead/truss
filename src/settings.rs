@@ -53,6 +53,9 @@ pub struct Settings {
     pub preview_color_profile: Option<String>,
     /// Clone Hero's folder, if picked (otherwise it's looked for).
     pub ch_folder: Option<PathBuf>,
+    /// The version of the folder setup screen last seen (it's shown again when there's
+    /// something new on it).
+    pub setup_seen: u32,
     /// Look for a new version on GitHub when Truss starts.
     pub check_updates: bool,
     /// The Leaderboard section in the details is open.
@@ -97,6 +100,7 @@ impl Default for Settings {
             preview_highway_length: None,
             preview_color_profile: None,
             ch_folder: None,
+            setup_seen: 0,
             check_updates: true,
             show_leaderboard: false,
             library_sort: String::new(),
