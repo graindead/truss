@@ -3,6 +3,30 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.21
+
+- **Clone Hero's own look:** when Clone Hero is installed, Truss reads its pictures from the
+  game's files (once, then keeps them in its cache until the game updates).
+- **Chart preview, as the game draws it:** guitar and drums use Clone Hero's camera, lane
+  spacing, strike rings, rails, note sizes and timing, sustains (with rounded ends, glowing while
+  held), hit flames, sparks and particles, and its track fade, all taken from the game itself.
+  Your note colours apply.
+- **Note colors:** guitar and drums show every piece built from the game's own layers, or a
+  Highway view playing a demo chart; 6-fret and the other colours use the game's art too. Click
+  any part to edit its colour. Profiles can be deleted (to the Recycle Bin, after asking).
+- **Settings > Chart preview:** note colour profile, frame rate, and note speed and highway
+  length as the game has them (1-100, 20-1000%), following your Clone Hero profile until changed.
+- **Settings > Directories:** every folder Truss uses in one place: song folders, pack
+  downloads, the Clone Hero folder (found from your songs folder when it's in its usual place),
+  and the issue scanner's folders.
+- **Setup screen:** new users are asked for these folders when Truss first opens (with any it
+  can find filled in); after an update that adds one, it's shown once with the new one marked.
+- **Smoother previews:** previews now reach their frame rate on Windows (they ran at about 32
+  FPS when set to 60).
+- **Previews stop when you change tabs.**
+- **Less memory:** the library takes about half the memory it did, and the game's pictures and
+  the colour editor's are freed when they're not in use.
+
 ## v0.1.20
 
 - **Note colors (Tools):** an editor for Clone Hero colour profiles. Open, change and save the
