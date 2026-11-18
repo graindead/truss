@@ -748,6 +748,12 @@ pub fn parse_ini(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// This process's private memory in MB (Windows; for the memory tests).
+#[cfg(test)]
+pub(crate) fn memory_private_mb() -> f64 {
+    memory::private_mb()
+}
+
 #[cfg(test)]
 mod memory {
     use super::*;

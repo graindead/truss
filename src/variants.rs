@@ -204,7 +204,11 @@ impl App {
     }
 
     fn grid_results(&self) -> Element<'static, Message> {
+        let built = self.built_rows();
         let tiles = self.results.iter().enumerate().map(|(i, c)| {
+            if !built.contains(&i) {
+                return Element::from(space().width(Length::Fill).height(Length::Fill));
+            }
             let selected = self.selected == Some(i);
             let checked = self.checked.contains(&i);
             let title: Element<'static, Message> = row![self.check_box(i)]
@@ -297,7 +301,11 @@ impl App {
         .spacing(10)
         .padding([7, 14]);
 
+        let built = self.built_rows();
         let rows = self.results.iter().enumerate().map(|(i, c)| {
+            if !built.contains(&i) {
+                return Element::from(space().width(Length::Fill).height(crate::COMPACT_ROW_H));
+            }
             let selected = self.selected == Some(i);
             let checked = self.checked.contains(&i);
             let owned = self.in_library(c);
@@ -348,6 +356,7 @@ impl App {
                 .align_y(Alignment::Center),
             )
             .width(Length::Fill)
+            .height(crate::COMPACT_ROW_H)
             .padding([5, 14])
             .on_press(Message::Select(i))
             .style(move |t: &Theme, st| {
@@ -458,7 +467,7 @@ impl App {
 
     fn hero_results(&self) -> Element<'static, Message> {
         // The default rows, full width.
-        let rows = self.results.iter().enumerate().map(|(i, c)| self.view_row(i, c));
+        let rows = self.results.iter().enumerate().map(|(i, c)| self.list_row(i, c));
         let mut list = column(rows).spacing(2).padding([0, 6]);
         if let Some(st) = self.status_line() {
             list = list.push(container(text(st).size(13)).padding(14).center_x(Length::Fill));
@@ -483,7 +492,8 @@ impl App {
             self.error.clone(),
             self.art_version,
             self.icon_version,
-            (self.list_rev, self.list_cols(), self.fw.checked, self.dl_rows_key()),
+            // (With which rows are built in full: it moves in steps as the list scrolls.)
+            (self.list_rev, self.list_cols(), self.fw.checked, self.dl_rows_key(), self.art_center / 20),
         )
     }
 

@@ -621,3 +621,28 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod memory {
+    use super::*;
+
+    /// What search results cost in memory as pages load (TRUSS_MEM_TEST=1; uses Chorus).
+    #[test]
+    #[ignore]
+    fn results_memory() {
+        if std::env::var_os("TRUSS_MEM_TEST").is_none() {
+            return;
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut kept: Vec<Arc<Chart>> = Vec::new();
+        let base = crate::library::memory_private_mb();
+        for page in 1..=20 {
+            let common = Common::new(page, None, None, None);
+            let r = rt.block_on(search(String::new(), common)).unwrap();
+            kept.extend(r.data);
+        }
+        let used = crate::library::memory_private_mb() - base;
+        let with_notes = kept.iter().filter(|c| c.notes_data.is_some()).count();
+        eprintln!("{} results: {:.1} MB, {:.1} KB each ({} with notes data)", kept.len(), used, used * 1024.0 / kept.len() as f64, with_notes);
+    }
+}

@@ -107,9 +107,6 @@ fn main() -> iced::Result {
     // Pick the renderer before iced starts. SAFETY: no other threads exist yet.
     let settings = Settings::load();
     unsafe {
-        if settings.cpu_rendering && std::env::var_os("ICED_BACKEND").is_none() {
-            std::env::set_var("ICED_BACKEND", "tiny-skia");
-        }
         // The async runtime otherwise starts one worker per CPU core; this app is network-bound
         // and only ever needs a handful.
         if std::env::var_os("TOKIO_WORKER_THREADS").is_none() {
@@ -604,7 +601,8 @@ enum Message {
     PickChFolder,
     ChFolderPicked(Option<PathBuf>),
     ChFolderAuto,
-    ToggleCpuRendering(bool),
+    /// Testing: scroll the results down a step (TRUSS_AUTOSCROLL).
+    AutoScroll,
     Saved(Result<(), String>),
 }
 
@@ -615,6 +613,15 @@ struct FpsChoice(u32);
 /// Bumped when the setup screen gets a new folder, so everyone sees it once more (with what's
 /// new marked). 1: the Clone Hero folder.
 const SETUP_VERSION: u32 = 1;
+
+/// The Browse results list (scrolled by testing's TRUSS_AUTOSCROLL).
+const RESULTS_LIST: &str = "results";
+
+/// Results built in full either side of the one on screen (see `built_rows`).
+const BUILT_ROWS: usize = 80;
+/// Heights of a results row in the list (and hero) and compact layouts.
+const LIST_ROW_H: f32 = 50.0;
+pub(crate) const COMPACT_ROW_H: f32 = 28.0;
 
 /// Clone Hero's songs folder in its usual places (in the install found, or Documents).
 fn found_songs_folder() -> Option<PathBuf> {
@@ -741,11 +748,8 @@ fn all_themes(custom: &[theme_maker::CustomTheme]) -> Vec<ThemeChoice> {
     themes::all().into_iter().chain(custom.iter().map(|t| t.theme())).map(ThemeChoice).collect()
 }
 
-/// The transparency to use this session (none with CPU rendering, which can't show it).
+/// The transparency to use this session.
 fn active_backdrop(s: &Settings) -> backdrop::Backdrop {
-    if s.cpu_rendering {
-        return backdrop::Backdrop::Off;
-    }
     match theme_transparency(s) {
         Some(t) if t > 0.0 => backdrop::Backdrop::Frosted,
         Some(_) => backdrop::Backdrop::Off,
@@ -955,6 +959,12 @@ impl App {
             },
             iced::time::every(std::time::Duration::from_secs(NEW_CHARTS_SECS)).map(|_| Message::CheckNewCharts),
         ]);
+        // Testing: the results scroll themselves (to watch memory as they do).
+        let tools = if std::env::var_os("TRUSS_AUTOSCROLL").is_some() {
+            Subscription::batch([tools, iced::time::every(Duration::from_millis(150)).map(|_| Message::AutoScroll)])
+        } else {
+            tools
+        };
         match &self.preview {
             Some(p) => {
                 Subscription::batch([modifiers, tools, p.subscription(self.settings.preview_fps).map(Message::Preview)])
@@ -1661,7 +1671,7 @@ impl App {
     /// Loads thumbnails for results near the visible area and frees the ones far away, so memory
     /// stays flat no matter how far a search is scrolled.
     fn refresh_art_window(&mut self) -> Task<Message> {
-        if self.results.is_empty() {
+        if self.results.is_empty() || std::env::var_os("TRUSS_NO_ART").is_some() {
             return Task::none();
         }
         let center = self.art_center.min(self.results.len() - 1);
@@ -2912,9 +2922,11 @@ impl App {
                 Task::batch([self.save_settings(), icon, pin, self.backdrop_task()])
             }
             Message::PinIconDone => Task::none(),
-            Message::ToggleCpuRendering(b) => {
-                self.settings.cpu_rendering = b;
-                self.save_settings()
+            Message::AutoScroll => {
+                if self.screen != Screen::Browse {
+                    return Task::none();
+                }
+                iced::widget::operation::scroll_by(RESULTS_LIST, iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 300.0 })
             }
             Message::Saved(r) => {
                 if let Err(e) = r {
@@ -3193,7 +3205,7 @@ impl App {
         .padding(iced::Padding { top: 8.0, bottom: 8.0, left: 16.0, right: 30.0 })
         .align_y(Alignment::Center);
 
-        let rows = self.results.iter().enumerate().map(|(i, c)| self.view_row(i, c));
+        let rows = self.results.iter().enumerate().map(|(i, c)| self.list_row(i, c));
         let mut list = column(rows).spacing(1).padding([4, 6]);
         let status: Option<String> = if let Some(e) = &self.error {
             Some(if e.starts_with("No chart sources") { e.clone() } else { format!("Error: {e}") })
@@ -3217,7 +3229,7 @@ impl App {
         column![
             header,
             style::divider(false),
-            scrollable(list).on_scroll(Message::Scrolled).spacing(4).height(Length::Fill).width(Length::Fill),
+            scrollable(list).id(RESULTS_LIST).on_scroll(Message::Scrolled).spacing(4).height(Length::Fill).width(Length::Fill),
         ]
         .width(Length::Fill)
         .into()
@@ -3273,10 +3285,24 @@ impl App {
             .align_y(Alignment::Center),
         )
         .width(Length::Fill)
+        .height(LIST_ROW_H)
         .padding([5, 10])
         .on_press(Message::Select(i))
         .style(style::row_button(selected, checked))
         .into()
+    }
+
+    /// The results built in full: those around what's on screen. The rest are empty rows of the
+    /// same size, so a long list doesn't keep every row it has ever shown (each row's text holds
+    /// its laid-out glyphs; thousands of them came to hundreds of MB).
+    pub fn built_rows(&self) -> std::ops::Range<usize> {
+        let lo = self.art_center.saturating_sub(BUILT_ROWS);
+        lo..(self.art_center + BUILT_ROWS).min(self.results.len())
+    }
+
+    /// A results row: the real one if it's near the screen, else an empty one its height.
+    fn list_row(&self, i: usize, c: &Chart) -> Element<'static, Message> {
+        if self.built_rows().contains(&i) { self.view_row(i, c) } else { space().width(Length::Fill).height(LIST_ROW_H).into() }
     }
 
     /// The tick box that marks a result for "Download N".
@@ -3768,9 +3794,6 @@ impl App {
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
-                    toggler(self.settings.cpu_rendering)
-                        .label("Low memory mode: render on the CPU (~60 MB instead of ~140 MB; applies after restart)")
-                        .on_toggle(Message::ToggleCpuRendering),
                     toggler(self.settings.show_fretwork)
                         .label("Show Fretwork difficulty tiers next to difficulties (otherwise hover a difficulty to see them)")
                         .on_toggle(Message::ToggleFretwork),
@@ -3784,9 +3807,7 @@ impl App {
                             Some(backdrop::Backdrop::from_key(&self.settings.window_backdrop)),
                             Message::BackdropPicked,
                         ),
-                        text(if self.settings.cpu_rendering {
-                            "Needs low memory mode off. Applies after restart."
-                        } else if active_backdrop(&self.settings) != self.backdrop {
+                        text(if active_backdrop(&self.settings) != self.backdrop {
                             "Restart Truss to apply."
                         } else {
                             "Applies after restart."

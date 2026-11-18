@@ -36,8 +36,6 @@ pub struct Settings {
     pub theme: String,
     /// Themes made in Tools > Themes (or imported).
     pub custom_themes: Vec<crate::theme_maker::CustomTheme>,
-    /// Render on the CPU (tiny-skia) instead of the GPU. Uses far less RAM.
-    pub cpu_rendering: bool,
     /// Chart preview volume, 0..=1.
     pub preview_volume: f32,
     /// Browse layout: "list", "grid", "compact" or "hero".
@@ -92,7 +90,6 @@ impl Default for Settings {
             instrument: None,
             difficulty: None,
             theme: "Rust".into(),
-            cpu_rendering: false,
             preview_volume: 0.5,
             layout: "list".into(),
             preview_fps: 60,
@@ -223,7 +220,7 @@ mod tests {
     #[test]
     fn new_install_defaults() {
         let s = Settings::default();
-        assert!(!s.is_sng && !s.download_videos && !s.cpu_rendering);
+        assert!(!s.is_sng && !s.download_videos);
         assert!(s.show_fretwork);
         assert_eq!((s.theme.as_str(), s.layout.as_str(), s.preview_fps), ("Rust", "list", 60));
         #[cfg(windows)]
