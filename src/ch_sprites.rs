@@ -447,20 +447,21 @@ fn game_pictures(install: &std::path::Path) -> Result<(HashMap<String, RgbaImage
     Ok((sprites, art))
 }
 
-/// The kit once it's been made (shared by the colour editor and the chart preview).
-static KIT: std::sync::Mutex<Option<Arc<Kit>>> = std::sync::Mutex::new(None);
+/// The kit while something's using it (the colour editor, a chart preview being built): shared
+/// then, and freed once nothing is (it's quick to make again from the kept pictures).
+static KIT: std::sync::Mutex<Option<std::sync::Weak<Kit>>> = std::sync::Mutex::new(None);
 
 /// The sprites (from Clone Hero's own files when it's installed, kept after the first read;
 /// otherwise downloaded or read from the cache) and the highway textures.
 pub async fn load() -> Result<Arc<Kit>, String> {
     let install = find_install();
-    if let Some(k) = KIT.lock().unwrap().clone()
+    if let Some(k) = KIT.lock().unwrap().as_ref().and_then(std::sync::Weak::upgrade)
         && k.game == install
     {
         return Ok(k);
     }
     let kit = load_new(install).await?;
-    *KIT.lock().unwrap() = Some(kit.clone());
+    *KIT.lock().unwrap() = Some(Arc::downgrade(&kit));
     Ok(kit)
 }
 
@@ -522,6 +523,11 @@ pub fn player_color_profile() -> Option<String> {
         .take_while(|l| !l.trim_start().starts_with("[profile1]"))
         .find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "color_profile_name").map(|(_, v)| v.trim().to_string()))
         .filter(|v| !v.is_empty())
+}
+
+/// Lets go of the chart preview's textures (when it closes): what's open keeps its own.
+pub fn release_chart_textures() {
+    CHART_TEXTURES.lock().unwrap().clear();
 }
 
 /// Textures made for the chart preview: (instrument, profile name, profile text) -> textures.

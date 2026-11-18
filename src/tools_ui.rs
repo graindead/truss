@@ -389,6 +389,9 @@ impl Page {
         let (task, out) = match m {
             Msg::Tab(Tab::Issues) if !ISSUE_SCANNER_ENABLED => (Task::none(), Out::None),
             Msg::Tab(t) => {
+                if self.tab == Tab::Colors && t != Tab::Colors {
+                    self.colors.left();
+                }
                 self.tab = t;
                 let task = if t == Tab::Colors { self.colors.opened().map(Msg::Colors) } else { Task::none() };
                 (task, Out::None)
@@ -419,6 +422,17 @@ impl Page {
     /// Runs on every page: the scene switcher's OBS connection.
     pub fn background(&self) -> Subscription<Msg> {
         self.scenes.background().map(Msg::Scenes)
+    }
+
+    /// The Tools page was left: the colour editor lets go of its pictures.
+    pub fn hidden(&mut self) {
+        self.colors.left();
+    }
+
+    /// The Tools page was opened again: the colour editor, if it's the tab shown, gets its
+    /// pictures back.
+    pub fn shown(&mut self) -> Task<Msg> {
+        if self.tab == Tab::Colors { self.colors.opened().map(Msg::Colors) } else { Task::none() }
     }
 
     pub fn subscription(&self, preview_fps: u32) -> Subscription<Msg> {

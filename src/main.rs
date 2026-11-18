@@ -381,11 +381,11 @@ struct App {
     hashes: HashMap<String, leaderboard::Hashes>,
 
     /// Charts already in the library folders (see `library::Library`).
-    library: HashMap<String, Vec<PathBuf>>,
+    library: HashMap<String, Vec<library::LibPath>>,
     /// The same by chart file hash (Encore's `chartHash`).
-    library_hashes: HashMap<String, Vec<PathBuf>>,
+    library_hashes: HashMap<String, Vec<library::LibPath>>,
     /// Songs in the library, for spotting other versions (see `library::Library::songs`).
-    library_songs: HashMap<String, Vec<(Vec<String>, PathBuf)>>,
+    library_songs: HashMap<String, Vec<(Box<str>, library::LibPath)>>,
     /// Track hashes of library charts, read when a search result might be the same notes with
     /// different metadata (see `same_notes_copies`).
     local_tracks: std::sync::Mutex<HashMap<PathBuf, Vec<String>>>,
@@ -1102,7 +1102,10 @@ impl App {
         let Some(k) = library::song_key(c.name.as_deref().unwrap_or(""), c.charter.as_deref().unwrap_or("")) else { return Vec::new() };
         let Some(have) = self.library_songs.get(&k) else { return Vec::new() };
         let artist = library::artist_words(c.artist.as_deref().unwrap_or(""));
-        have.iter().filter(|(a, _)| library::same_artist(a, &artist)).map(|(_, p)| p.clone()).collect()
+        have.iter()
+            .filter(|(a, _)| library::same_artist(&a.split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>(), &artist))
+            .map(|(_, p)| p.to_path_buf())
+            .collect()
     }
 
     /// True when the library has a different version of this chart (same song and charter,
@@ -1133,7 +1136,7 @@ impl App {
     fn library_matches(&self, c: &Chart) -> Vec<PathBuf> {
         let by_hash = c.chart_hash.as_ref().and_then(|h| self.library_hashes.get(h)).filter(|p| !p.is_empty());
         match by_hash.or_else(|| self.library.get(&c.library_key()).filter(|p| !p.is_empty())) {
-            Some(p) => p.clone(),
+            Some(p) => p.iter().map(|p| p.to_path_buf()).collect(),
             None => self.same_notes_copies(c),
         }
     }
@@ -1321,13 +1324,14 @@ impl App {
         if self.library_scanning {
             self.library_changes.push((key.clone(), added.clone(), removed.clone()));
         }
+        let gone = |p: &library::LibPath| removed.iter().any(|r| r.as_path() == &**p);
         let entry = self.library.entry(key.clone()).or_default();
         let before = entry.len();
-        entry.retain(|p| !removed.contains(p));
+        entry.retain(|p| !gone(p));
         if let Some(p) = added
-            && !entry.contains(&p)
+            && !entry.iter().any(|e| &**e == p.as_path())
         {
-            entry.push(p);
+            entry.push(Arc::from(p.as_path()));
         }
         let after = entry.len();
         if after == 0 {
@@ -1335,11 +1339,11 @@ impl App {
         }
         if !removed.is_empty() {
             self.library_hashes.retain(|_, ps| {
-                ps.retain(|p| !removed.contains(p));
+                ps.retain(|p| !gone(p));
                 !ps.is_empty()
             });
             self.library_songs.retain(|_, ps| {
-                ps.retain(|(_, p)| !removed.contains(p));
+                ps.retain(|(_, p)| !gone(p));
                 !ps.is_empty()
             });
         }
@@ -1786,6 +1790,7 @@ impl App {
 
     /// Closes the preview (stopping audio) and remembers its volume.
     fn close_preview(&mut self) -> Task<Message> {
+        ch_sprites::release_chart_textures();
         if let Some(p) = self.preview.take() {
             if (p.volume() - self.settings.preview_volume).abs() > f32::EPSILON {
                 self.settings.preview_volume = p.volume();
@@ -2468,8 +2473,9 @@ impl App {
                         continue; // undone since (or the scan already saw it)
                     }
                     let entry = self.library.get(&key);
-                    let seen = added.as_ref().is_none_or(|p| entry.is_some_and(|e| e.contains(p)))
-                        && removed.iter().all(|p| entry.is_none_or(|e| !e.contains(p)));
+                    let has = |e: &Vec<library::LibPath>, p: &PathBuf| e.iter().any(|x| &**x == p.as_path());
+                    let seen = added.as_ref().is_none_or(|p| entry.is_some_and(|e| has(e, p)))
+                        && removed.iter().all(|p| entry.is_none_or(|e| !has(e, p)));
                     if !seen {
                         self.apply_library_change((key, added, removed));
                     }
@@ -2674,7 +2680,7 @@ impl App {
                     }
                     packs::Out::ApplyPatch(url, game) => {
                         let lib = patches::Library {
-                            charts: self.library.iter().flat_map(|(k, ps)| ps.iter().map(move |p| (k.clone(), p.clone()))).collect(),
+                            charts: self.library.iter().flat_map(|(k, ps)| ps.iter().map(move |p| (k.clone(), p.to_path_buf()))).collect(),
                             game_prefix: self
                                 .settings
                                 .pack_folder()
@@ -2806,6 +2812,9 @@ impl App {
             }
             Message::ShowScreen(s) => {
                 let changed = s != self.screen;
+                if changed && self.screen == Screen::Tools {
+                    self.tools_page.hidden();
+                }
                 self.screen = s;
                 let mut tasks = Vec::new();
                 // A preview belongs to the tab it was started on: changing tabs stops it.
@@ -2814,6 +2823,9 @@ impl App {
                 }
                 if s == Screen::Packs {
                     tasks.push(self.packs_page.opened().map(Message::PacksPage));
+                }
+                if changed && s == Screen::Tools {
+                    tasks.push(self.tools_page.shown().map(Message::ToolsPage));
                 }
                 if s == Screen::Library {
                     if self.catalog_stale && !self.library_scanning {

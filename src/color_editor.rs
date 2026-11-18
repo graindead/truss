@@ -115,7 +115,7 @@ impl Art {
         let h = iced::widget::image::Handle::from_rgba(img.width(), img.height(), img.into_raw());
         let mut t = self.tinted.borrow_mut();
         // Dragging through colours makes a lot of these; start again now and then.
-        if t.len() > 800 {
+        if t.len() > 200 {
             t.clear();
         }
         t.insert(k, h.clone());
@@ -162,6 +162,18 @@ impl ColorTool {
     }
 
     /// The tab was opened: reads the profile list, and starts getting the sprites.
+    /// The tab was left: lets go of the game's pictures and everything made from them (they're
+    /// made again, quickly, when it's opened).
+    pub fn left(&mut self) {
+        self.kit = None;
+        self.kit_requested = false;
+        self.highway = None;
+        self.built = None;
+        self.art = None;
+        self.demo = None;
+        self.started = None;
+    }
+
     pub fn opened(&mut self) -> Task<Msg> {
         self.refresh();
         if self.kit_requested {

@@ -98,15 +98,21 @@ impl LocalChart {
     }
 }
 
+/// A chart's folder (or .sng file) as the library's lookups hold it: one copy, shared by all of
+/// them (they'd otherwise hold three copies of every path; with tens of thousands of charts
+/// that's megabytes).
+pub type LibPath = Arc<Path>;
+
 #[derive(Debug, Default, Clone)]
 pub struct Library {
     /// Library key -> every chart folder / .sng file with that key.
-    pub keys: HashMap<String, Vec<PathBuf>>,
+    pub keys: HashMap<String, Vec<LibPath>>,
     /// Chart file hash -> every chart folder / .sng file with that chart.
-    pub hashes: HashMap<String, Vec<PathBuf>>,
-    /// `song_key` -> the artist words of each chart with it: another version of a song (an
-    /// updated chart, or a pack's copy with its song.ini written differently).
-    pub songs: HashMap<String, Vec<(Vec<String>, PathBuf)>>,
+    pub hashes: HashMap<String, Vec<LibPath>>,
+    /// `song_key` -> the artist of each chart with it (its words, joined by spaces): another
+    /// version of a song (an updated chart, or a pack's copy with its song.ini written
+    /// differently).
+    pub songs: HashMap<String, Vec<(Box<str>, LibPath)>>,
     pub charts: usize,
     pub catalog: Vec<Arc<LocalChart>>,
 }
@@ -123,15 +129,17 @@ impl Library {
     }
 
     fn add(&mut self, c: &LocalChart) {
-        self.keys.entry(c.key.clone()).or_default().push(c.path.clone());
+        // Almost every key has one chart: room for one, not the four a Vec starts with.
+        let path: LibPath = Arc::from(c.path.as_path());
+        self.keys.entry(c.key.clone()).or_insert_with(|| Vec::with_capacity(1)).push(path.clone());
         if let Some(h) = &c.chart_hash {
-            self.hashes.entry(h.clone()).or_default().push(c.path.clone());
+            self.hashes.entry(h.clone()).or_insert_with(|| Vec::with_capacity(1)).push(path.clone());
         }
         let raw = |t: &Option<Box<Tagged>>, f: fn(&Tagged) -> &str, plain: &str| t.as_deref().map(f).unwrap_or(plain).to_string();
         let name = raw(&c.tagged, |t| &t.name, &c.name);
         let charter = raw(&c.tagged, |t| &t.charter, &c.charter);
         if let Some(k) = song_key(&name, &charter) {
-            self.songs.entry(k).or_default().push((artist_words(&c.artist), c.path.clone()));
+            self.songs.entry(k).or_insert_with(|| Vec::with_capacity(1)).push((artist_words(&c.artist).join(" ").into_boxed_str(), path));
         }
     }
 }
@@ -741,6 +749,36 @@ pub fn parse_ini(text: &str) -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
+mod memory {
+    use super::*;
+
+    /// This process's private memory in MB (Windows).
+    pub(crate) fn private_mb() -> f64 {
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!("(Get-Process -Id {}).PrivateMemorySize64", std::process::id())])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().unwrap_or(0.0) / 1048576.0
+    }
+
+    /// What the library costs in memory, from the real cache (TRUSS_MEM_TEST=1).
+    #[test]
+    #[ignore]
+    fn library_memory() {
+        if std::env::var_os("TRUSS_MEM_TEST").is_none() {
+            return;
+        }
+        let base = private_mb();
+        let c = load_cache().expect("a library cache");
+        let after_load = private_mb();
+        let lib = Library::from_catalog(c.charts);
+        let after_index = private_mb();
+        eprintln!("{} charts: catalog {:.1} MB, lookup tables {:.1} MB", lib.charts, after_load - base, after_index - after_load);
+        std::hint::black_box(&lib);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -819,7 +857,7 @@ mod tests {
         assert_eq!(back.len(), lib.charts);
         println!("cache {} KB, round trip {:?}", json.len() / 1024, t2.elapsed());
         println!("{} chart hashes, e.g. {:?}", lib.hashes.len(), lib.hashes.keys().next());
-        let some = lib.keys.values().next().unwrap()[0].clone();
+        let some = lib.keys.values().next().unwrap()[0].to_path_buf();
         assert!(is_deletable_chart(&some, std::slice::from_ref(&root)));
         assert!(!is_deletable_chart(&root, std::slice::from_ref(&root)));
         assert!(!is_deletable_chart(root.parent().unwrap(), std::slice::from_ref(&root)));

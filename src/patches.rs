@@ -311,7 +311,7 @@ mod tests {
         let game = "Guitar Hero III: Legends of Rock".to_string();
         let scanned = crate::library::scan_blocking(std::slice::from_ref(&base));
         let lib = Library {
-            charts: scanned.keys.iter().flat_map(|(k, ps)| ps.iter().map(move |p| (k.clone(), p.clone()))).collect(),
+            charts: scanned.keys.iter().flat_map(|(k, ps)| ps.iter().map(move |p| (k.clone(), p.to_path_buf()))).collect(),
             game_prefix: Some(base.join(crate::game_setlists::folder(&game, crate::game_setlists::MAIN))),
             official: HashSet::new(),
         };
