@@ -140,6 +140,11 @@ pub fn ch_hex(c: Color) -> String {
 pub fn folder() -> Option<PathBuf> {
     let user = directories::UserDirs::new()?;
     let mut tries = Vec::new();
+    // In the Clone Hero folder picked in Settings, first.
+    if let Some(i) = crate::ch_sprites::chosen_install() {
+        tries.push(i.join(r"PlayerData\Custom\Colors"));
+        tries.push(i.join(r"Custom\Colors"));
+    }
     if let Some(d) = user.document_dir() {
         tries.push(d.join(r"Clone Hero\PlayerData\Custom\Colors"));
         tries.push(d.join(r"Clone Hero\Custom\Colors"));
@@ -203,13 +208,13 @@ const D5: &[&str] = &["red", "yellow", "blue", "green", "kick"];
 const KICK: &[&str] = &["kick"];
 
 pub const GUITAR_GRID: &[GridRow] = &[
-    GridRow { label: "Note", key: "note_{}", lanes: G6 },
-    GridRow { label: "Note detail", key: "note_anim_{}", lanes: G6 },
+    GridRow { label: "Fret", key: "note_{}", lanes: G6 },
+    GridRow { label: "Fret detail", key: "note_anim_{}", lanes: G6 },
     GridRow { label: "Sustain", key: "sustain_{}", lanes: G6 },
-    GridRow { label: "Fret", key: "striker_cover_{}", lanes: G5 },
-    GridRow { label: "Fret top", key: "striker_head_cover_{}", lanes: G5 },
-    GridRow { label: "Fret light", key: "striker_head_light_{}", lanes: G6 },
-    GridRow { label: "Fret base", key: "striker_base_{}", lanes: G5 },
+    GridRow { label: "Striker", key: "striker_cover_{}", lanes: G5 },
+    GridRow { label: "Striker top", key: "striker_head_cover_{}", lanes: G5 },
+    GridRow { label: "Striker light", key: "striker_head_light_{}", lanes: G6 },
+    GridRow { label: "Striker base", key: "striker_base_{}", lanes: G5 },
 ];
 
 pub const DRUM_GRID: &[GridRow] = &[
@@ -270,7 +275,7 @@ pub fn label(key: &str) -> String {
         .filter(|w| !w.is_empty())
         .map(|w| match w {
             "anim" => "detail".to_string(),
-            "striker" => "fret".to_string(),
+            
             "cym" => "cymbal".to_string(),
             "hopo" => "HOPO".to_string(),
             "sp" => "star power".to_string(),
@@ -339,7 +344,7 @@ mod tests {
             }
         }
         assert_eq!(label("note_anim_sp_phrase_active"), "Note detail · star power phrase, while active");
-        assert_eq!(label("striker_hit_flame_kick"), "Fret hit flame kick");
+        assert_eq!(label("striker_hit_flame_kick"), "Striker hit flame kick");
         assert_eq!(ch_hex(Color::from_rgb8(0xcf, 0x81, 0xf9)), "#CF81F9");
         assert!(other_keys("guitar", &d, &d).iter().all(|k| k.contains("sp_")));
     }

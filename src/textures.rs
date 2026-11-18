@@ -118,6 +118,42 @@ pub struct TextureSet {
     pub strikers: Vec<Striker>,
     /// Sustain colours by (note type, star power), instead of the usual ones.
     pub sustains: HashMap<(u8, bool), Handle>,
+    /// The same while being held, where they look different (the game's glow).
+    pub sustains_held: HashMap<(u8, bool), Handle>,
+    /// The rounded far end of the game's sustains, row by row from its tip (at rest, held), and
+    /// how long it is for each unit of the sustain's width.
+    pub sustain_caps: HashMap<(u8, bool), (Vec<Handle>, Vec<Handle>)>,
+    pub sustain_cap_ratio: HashMap<u8, f32>,
+    /// Hit flames (the colour editor's preview).
+    pub flames: Option<Flames>,
+    /// Clone Hero's own layout (camera, lanes, sizes, rails), when its sprites are read from
+    /// the install; otherwise the original player's.
+    pub game: Option<GameLook>,
+}
+
+/// Clone Hero's highway layout, read from its player prefabs (see preview.rs, `GameCam`), and
+/// the player's settings that change it.
+pub struct GameLook {
+    /// The player's note speed and highway length (percent), from their Clone Hero profile.
+    pub note_speed: f32,
+    pub highway_length: f32,
+    /// The rails along each side: a cross-section of the game's rail sprite (left, right).
+    pub rail: Option<(Handle, Handle)>,
+}
+
+/// Hit flames in a profile's colours.
+pub struct Flames {
+    /// A note's flame (width / height), and the glow behind it.
+    pub note: Handle,
+    pub note_aspect: f32,
+    pub glow: Handle,
+    /// The flame along the strike line for an open note (or a kick), frame by frame.
+    pub wide: Vec<Handle>,
+    /// The game's own animations, frame by frame, when they were read from it: a note's hit
+    /// flame, the burst of sparks with it, and the sparks while a sustain is held.
+    pub note_frames: Vec<Handle>,
+    pub sparks: Vec<Handle>,
+    pub hold: Vec<Handle>,
 }
 
 /// One fret: as it rests, lit by a note of its own lane, and lit by an open note (or a kick).
@@ -372,7 +408,7 @@ async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
             .collect();
         let fade = Handle::from_rgba(1, 64, fade_px);
 
-        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, fade, notes, strikers: Vec::new(), sustains: HashMap::new() }))
+        Ok(Arc::new(TextureSet { solid, itype, highway, strikeline, strikeline_aspect, fade, notes, strikers: Vec::new(), sustains: HashMap::new(), sustains_held: HashMap::new(), sustain_caps: HashMap::new(), sustain_cap_ratio: HashMap::new(), flames: None, game: None }))
     })
     .await
     .map_err(|e| e.to_string())?

@@ -44,6 +44,15 @@ pub struct Settings {
     pub layout: String,
     /// Chart preview frame-rate cap; 0 = match the display's refresh rate.
     pub preview_fps: u32,
+    /// Note speed and highway length for previews in Clone Hero's layout (as its settings);
+    /// none: the player's own, from their Clone Hero profile.
+    pub preview_note_speed: Option<f32>,
+    pub preview_highway_length: Option<f32>,
+    /// The colour profile the chart preview uses (by name, in Clone Hero's Colors folder);
+    /// none: the player's own.
+    pub preview_color_profile: Option<String>,
+    /// Clone Hero's folder, if picked (otherwise it's looked for).
+    pub ch_folder: Option<PathBuf>,
     /// Look for a new version on GitHub when Truss starts.
     pub check_updates: bool,
     /// The Leaderboard section in the details is open.
@@ -84,6 +93,10 @@ impl Default for Settings {
             preview_volume: 0.5,
             layout: "list".into(),
             preview_fps: 60,
+            preview_note_speed: None,
+            preview_highway_length: None,
+            preview_color_profile: None,
+            ch_folder: None,
             check_updates: true,
             show_leaderboard: false,
             library_sort: String::new(),

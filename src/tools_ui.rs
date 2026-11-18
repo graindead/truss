@@ -421,10 +421,10 @@ impl Page {
         self.scenes.background().map(Msg::Scenes)
     }
 
-    pub fn subscription(&self) -> Subscription<Msg> {
+    pub fn subscription(&self, preview_fps: u32) -> Subscription<Msg> {
         match self.tab {
             Tab::Scenes => self.scenes.subscription().map(Msg::Scenes),
-            Tab::Colors => self.colors.subscription().map(Msg::Colors),
+            Tab::Colors => self.colors.subscription(preview_fps).map(Msg::Colors),
             _ => Subscription::none(),
         }
     }
@@ -441,7 +441,7 @@ impl Page {
             Tab::Scenes => self.scenes.view().map(Msg::Scenes),
             Tab::Paths => self.paths.view(cx.catalog).map(Msg::Paths),
             Tab::Themes => self.themes.view(&cx.settings.custom_themes, cx.theme, cx.glass_window).map(Msg::Themes),
-            Tab::Colors => self.colors.view().map(Msg::Colors),
+            Tab::Colors => self.colors.view(cx.settings).map(Msg::Colors),
             Tab::Repair => self.repair.view(cx.settings).map(Msg::Repair),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()

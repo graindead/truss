@@ -92,7 +92,7 @@ impl Panel {
         // Fetch textures for the likely instrument while the chart downloads.
         let guess = instrument_type(pref_instrument.as_deref().unwrap_or("guitar"));
         let (load_task, load_handle) = Task::run(load(chart.clone(), keep_video, local), Msg::Load).abortable();
-        let tex = Task::perform(crate::textures::get(guess), move |r| Msg::Textures(guess, r));
+        let tex = Task::perform(crate::ch_sprites::chart_textures(guess), move |r| Msg::Textures(guess, r));
         let panel = Self {
             md5: chart.md5.clone(),
             title,
@@ -140,12 +140,10 @@ impl Panel {
         if self.textures.as_ref().is_some_and(|t| t.itype == itype) {
             return Task::none();
         }
+        // The usual ones straight away if they're loaded; Clone Hero's own replace them when
+        // they're ready.
         self.textures = crate::textures::cached(itype);
-        if self.textures.is_some() {
-            Task::none()
-        } else {
-            Task::perform(crate::textures::get(itype), move |r| Msg::Textures(itype, r))
-        }
+        Task::perform(crate::ch_sprites::chart_textures(itype), move |r| Msg::Textures(itype, r))
     }
 
     fn apply_volume(&self) {
@@ -290,7 +288,7 @@ impl Panel {
             (Status::Ready, Some(track), Some(tex), Some(player)) => {
                 let time_ms = self.scrub.unwrap_or_else(|| player.position_ms());
                 let anim_ms = self.anim_origin.elapsed().as_millis() as u64;
-                canvas(Highway { track, textures: tex, time_ms, anim_ms }).width(Length::Fill).height(Length::Fill).into()
+                canvas(Highway { track, textures: tex, time_ms, anim_ms, game_speed: game_speed(tex) }).width(Length::Fill).height(Length::Fill).into()
             }
             (Status::Loading(p), ..) => center(
                 column![
@@ -391,4 +389,14 @@ impl Panel {
 fn fmt_time(ms: f64) -> String {
     let s = (ms.max(0.0) / 1000.0) as u64;
     format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Note speed and highway length in Clone Hero's layout: Settings', else the player's own.
+fn game_speed(tex: &crate::textures::TextureSet) -> Option<crate::preview::GameSpeed> {
+    let g = tex.game.as_ref()?;
+    let look = crate::ch_sprites::preview_look();
+    Some(crate::preview::GameSpeed {
+        note_speed: look.note_speed.unwrap_or(g.note_speed),
+        highway_length: look.highway_length.unwrap_or(g.highway_length),
+    })
 }

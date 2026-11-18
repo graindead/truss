@@ -51,6 +51,7 @@ mod path_ui;
 mod packs;
 mod game_setlists;
 mod ch_sprites;
+mod unity_assets;
 mod color_editor;
 mod color_profile;
 mod game_sources;
@@ -90,6 +91,12 @@ impl log::Log for StderrLog {
 }
 
 fn main() -> iced::Result {
+    // Windows wakes timers every 15.6 ms by default, so a 60 FPS preview (a tick every 16.7 ms)
+    // only got one every 31 ms, about 32 FPS. Ask for 1 ms timers while Truss runs.
+    #[cfg(windows)]
+    unsafe {
+        windows::Win32::Media::timeBeginPeriod(1);
+    }
     if let Some(level) = std::env::var("TRUSS_LOG").ok().and_then(|l| l.parse::<log::LevelFilter>().ok()) {
         static LOGGER: StderrLog = StderrLog;
         if log::set_logger(&LOGGER).is_ok() {
@@ -582,6 +589,13 @@ enum Message {
     PinIconDone,
     LayoutPicked(variants::UiVariant),
     FpsPicked(FpsChoice),
+    PreviewNoteSpeed(f32),
+    PreviewHighwayLength(f32),
+    PreviewSpeedFromProfile,
+    PreviewProfilePicked(ProfileChoice),
+    PickChFolder,
+    ChFolderPicked(Option<PathBuf>),
+    ChFolderAuto,
     ToggleCpuRendering(bool),
     Saved(Result<(), String>),
 }
@@ -589,9 +603,115 @@ enum Message {
 /// Chart preview frame-rate option (0 = match display).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FpsChoice(u32);
+
+/// A colour profile for the chart preview: (name; none: the player's own, label).
+#[derive(Debug, Clone)]
+struct ProfileChoice(Option<String>, String);
+impl PartialEq for ProfileChoice {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl std::fmt::Display for ProfileChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
+/// Hands the chart preview's settings to what draws it.
+fn apply_preview_settings(s: &Settings) {
+    ch_sprites::set_install(s.ch_folder.clone());
+    ch_sprites::set_song_folders(s.all_library_folders());
+    ch_sprites::set_preview_look(ch_sprites::PreviewLook {
+        profile: s.preview_color_profile.clone(),
+        note_speed: s.preview_note_speed,
+        highway_length: s.preview_highway_length,
+    });
+}
 impl FpsChoice {
     const ALL: [FpsChoice; 3] = [FpsChoice(60), FpsChoice(120), FpsChoice(0)];
 }
+impl App {
+    /// Note speed and highway length for previews drawn in Clone Hero's layout, stepped and
+    /// limited as the game's own settings are. Until changed they follow the player's profile.
+    fn chart_preview_section(&self) -> Element<'static, Message> {
+        let s = &self.settings;
+        let found = ch_sprites::find_install();
+        let folder_text = match (&s.ch_folder, &found) {
+            (Some(p), _) if ch_sprites::chosen_install().is_some() => p.display().to_string(),
+            (Some(p), _) => format!("{} (not a Clone Hero folder)", p.display()),
+            (None, Some(p)) => format!("{} (found)", p.display()),
+            (None, None) => "Not found".to_string(),
+        };
+        let folder = row![
+            text("Clone Hero folder").size(13).width(110),
+            text(folder_text).size(12).width(Length::Fill),
+            button(text("Choose…").size(12)).padding([3, 10]).style(style::secondary).on_press(Message::PickChFolder),
+            if s.ch_folder.is_some() {
+                Element::from(button(text("Find it automatically").size(12)).padding([3, 10]).style(style::quiet_button(false)).on_press(Message::ChFolderAuto))
+            } else {
+                Element::from(space())
+            },
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let player = ch_sprites::player_color_profile();
+        let mut choices = vec![ProfileChoice(None, format!("Your Clone Hero profile's ({})", player.as_deref().unwrap_or("DefaultColors")))];
+        if let Some(dir) = color_profile::folder() {
+            choices.extend(color_profile::list(&dir).into_iter().map(|n| ProfileChoice(Some(n.clone()), n)));
+        }
+        let current = choices.iter().find(|c| c.0 == s.preview_color_profile).cloned().or_else(|| s.preview_color_profile.clone().map(|n| ProfileChoice(Some(n.clone()), n)));
+        let colors = row![text("Note colors").size(13).width(110), pick_list(choices, current, Message::PreviewProfilePicked)].spacing(10).align_y(Alignment::Center);
+        let fps = row![
+            text("Frame rate").size(13).width(110),
+            pick_list(FpsChoice::ALL, Some(FpsChoice(s.preview_fps)), Message::FpsPicked),
+            text("Higher frame rates are smoother but use more CPU.").size(12),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let note = text("Guitar and drums are drawn as Clone Hero draws them, with its own pictures, when it's found. They're read from the game once and kept.").size(12);
+        column![note, folder, colors, fps, self.preview_speed_settings()].spacing(10).into()
+    }
+
+    fn preview_speed_settings(&self) -> Element<'static, Message> {
+        let profile = || ch_sprites::find_install().map(|i| ch_sprites::profile_settings(&i)).unwrap_or((None, None));
+        let s = &self.settings;
+        let (ps, pl) = if s.preview_note_speed.is_none() || s.preview_highway_length.is_none() { profile() } else { (None, None) };
+        let speed = s.preview_note_speed.or(ps).unwrap_or(preview::NOTE_SPEED_DEFAULT);
+        let length = s.preview_highway_length.or(pl).unwrap_or(preview::HIGHWAY_LENGTH_DEFAULT);
+        let stepper = |label: &'static str, value: String, v: f32, (lo, hi, step): (f32, f32, f32), on: fn(f32) -> Message| {
+            let b = |t: &'static str, to: f32, ok: bool| {
+                let b = button(text(t).size(13)).padding([2, 10]).style(style::quiet_button(false));
+                if ok { b.on_press(on(to)) } else { b }
+            };
+            row![
+                text(label).size(13).width(110),
+                b("−", v - step, v > lo),
+                text(value).size(13).width(Length::Fixed(52.0)).align_x(Alignment::Center),
+                b("+", v + step, v < hi),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+        };
+        let from_profile = s.preview_note_speed.is_none() && s.preview_highway_length.is_none();
+        column![
+            row![
+                stepper("Note speed", format!("{speed}"), speed, preview::NOTE_SPEED_RANGE, Message::PreviewNoteSpeed),
+                stepper("Highway length", format!("{length}%"), length, preview::HIGHWAY_LENGTH_RANGE, Message::PreviewHighwayLength),
+            ]
+            .spacing(24)
+            .align_y(Alignment::Center),
+            if from_profile {
+                Element::from(space())
+            } else {
+                button(text("Use my Clone Hero profile's").size(12)).padding([2, 10]).style(style::quiet_button(false)).on_press(Message::PreviewSpeedFromProfile).into()
+            },
+        ]
+        .spacing(6)
+        .into()
+    }
+}
+
 impl std::fmt::Display for FpsChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
@@ -662,6 +782,7 @@ fn theme_by_name(name: &str, custom: &[theme_maker::CustomTheme]) -> Theme {
 impl App {
     fn boot() -> (Self, Task<Message>) {
         let settings = Settings::load();
+        apply_preview_settings(&settings);
         rich::set_enabled(settings.text_colors);
         let instrument_opts = instrument_opts();
         let difficulty_opts = difficulty_opts();
@@ -816,7 +937,7 @@ impl App {
             _ => None,
         });
         let tools = Subscription::batch([
-            if self.screen == Screen::Tools { self.tools_page.subscription().map(Message::ToolsPage) } else { Subscription::none() },
+            if self.screen == Screen::Tools { self.tools_page.subscription(self.settings.preview_fps).map(Message::ToolsPage) } else { Subscription::none() },
             self.tools_page.background().map(Message::ToolsPage),
             if self.notices.done > 0 {
                 iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::NoticeTick)
@@ -1666,6 +1787,7 @@ impl App {
     }
 
     fn save_settings(&self) -> Task<Message> {
+        apply_preview_settings(&self.settings);
         Task::perform(self.settings.clone().save(), Message::Saved)
     }
 
@@ -2680,6 +2802,38 @@ impl App {
                 self.settings.preview_fps = f.0;
                 self.save_settings()
             }
+            Message::PreviewNoteSpeed(v) => {
+                let (lo, hi, _) = preview::NOTE_SPEED_RANGE;
+                self.settings.preview_note_speed = Some(v.clamp(lo, hi));
+                self.save_settings()
+            }
+            Message::PreviewHighwayLength(v) => {
+                let (lo, hi, _) = preview::HIGHWAY_LENGTH_RANGE;
+                self.settings.preview_highway_length = Some(v.clamp(lo, hi));
+                self.save_settings()
+            }
+            Message::PreviewSpeedFromProfile => {
+                self.settings.preview_note_speed = None;
+                self.settings.preview_highway_length = None;
+                self.save_settings()
+            }
+            Message::PreviewProfilePicked(c) => {
+                self.settings.preview_color_profile = c.0;
+                self.save_settings()
+            }
+            Message::PickChFolder => Task::perform(
+                async { rfd::AsyncFileDialog::new().set_title("Clone Hero's folder").pick_folder().await.map(|h| h.path().to_path_buf()) },
+                Message::ChFolderPicked,
+            ),
+            Message::ChFolderPicked(Some(p)) => {
+                self.settings.ch_folder = Some(p);
+                self.save_settings()
+            }
+            Message::ChFolderPicked(None) => Task::none(),
+            Message::ChFolderAuto => {
+                self.settings.ch_folder = None;
+                self.save_settings()
+            }
             Message::LayoutPicked(l) => {
                 let old_px = self.thumb_px();
                 self.ui = l;
@@ -3420,6 +3574,7 @@ impl App {
                 .spacing(10)
                 .into(),
             ),
+            section("Chart preview", self.chart_preview_section()),
             section(
                 "Appearance",
                 column![
@@ -3432,13 +3587,6 @@ impl App {
                     row![
                         text("Layout").size(13).width(70),
                         pick_list(variants::UiVariant::ALL, Some(self.ui), Message::LayoutPicked),
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                    row![
-                        text("Preview").size(13).width(70),
-                        pick_list(FpsChoice::ALL, Some(FpsChoice(self.settings.preview_fps)), Message::FpsPicked),
-                        text("Higher frame rates are smoother but use more CPU.").size(12),
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
