@@ -3096,8 +3096,6 @@ impl App {
             button(text(label).size(13)).padding([6, 12]).style(style::quiet_button(highlighted)).on_press(Message::ToggleAdvanced)
         };
         let bar = row![
-            text("Truss").font(Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }).size(17),
-            space().width(10),
             nav("Browse", Screen::Browse),
             nav("Packs", Screen::Packs),
             nav("Library", Screen::Library),

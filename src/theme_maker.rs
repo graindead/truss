@@ -779,7 +779,6 @@ fn preview<'a, M: 'a>(p: &Palette) -> Element<'a, M> {
     };
     let bar = column![
         row![
-            text("Truss").size(14).color(p.text).font(crate::BOLD),
             tab("Browse", true),
             tab("Library", false),
             tab("Tools", false),

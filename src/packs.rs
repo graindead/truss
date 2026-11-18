@@ -66,6 +66,14 @@ pub struct Pack {
     pub age: String,
 }
 
+/// Packs whose pages have no download links (a rules page, say): they're left out of the list.
+/// Made by `list_packs_without_links`.
+fn no_download_links(url: &str) -> bool {
+    static LIST: std::sync::LazyLock<std::collections::HashSet<String>> =
+        std::sync::LazyLock::new(|| serde_json::from_str(include_str!("../data/packs-without-links.json")).unwrap_or_default());
+    LIST.contains(url)
+}
+
 // ---------- Reading the site ----------
 
 use crate::api::CLIENT;
@@ -848,8 +856,9 @@ impl Page {
     }
 
     /// CSC packs, then the game setlists.
+    /// Every pack shown: the site's (less those with nothing to download) and the game setlists.
     fn all(&self) -> impl Iterator<Item = &Pack> {
-        self.packs.iter().chain(self.games.iter())
+        self.packs.iter().filter(|p| !no_download_links(&p.url)).chain(self.games.iter())
     }
 
     /// A game setlist whose main setlist is in its folder in the library.
@@ -1438,6 +1447,41 @@ mod tests {
             }
             assert!(!d.links.is_empty() && !d.blocks.is_empty());
         }
+    }
+
+    /// Reads every pack's page and writes the ones with no download links to
+    /// TRUSS_PACKS_NO_LINKS (a JSON list of page URLs), for data/packs-without-links.json.
+    #[test]
+    #[ignore]
+    fn list_packs_without_links() {
+        let Some(out) = std::env::var_os("TRUSS_PACKS_NO_LINKS") else { return };
+        use futures::StreamExt;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let packs = rt.block_on(fetch_all()).unwrap();
+        let checked: Vec<(String, Option<bool>)> = rt.block_on(
+            futures::stream::iter(packs.iter().map(|p| p.url.clone()))
+                .map(|u| async move {
+                    let has = match get_text(&u).await {
+                        Ok(Some(html)) => Some(!html_blocks(&html).1.is_empty()),
+                        _ => None,
+                    };
+                    (u, has)
+                })
+                .buffer_unordered(6)
+                .collect(),
+        );
+        let mut none: Vec<&String> = checked.iter().filter(|(_, h)| *h == Some(false)).map(|(u, _)| u).collect();
+        none.sort();
+        let failed = checked.iter().filter(|(_, h)| h.is_none()).count();
+        println!("{} packs: {} without download links, {} couldn't be read", packs.len(), none.len(), failed);
+        std::fs::write(PathBuf::from(out), serde_json::to_string_pretty(&none).unwrap()).unwrap();
+    }
+
+    /// The list of packs without download links reads.
+    #[test]
+    fn packs_without_links_list_reads() {
+        assert!(no_download_links("https://customsongscentral.com/csc-championship-series-ruleset/"));
+        assert!(!no_download_links("https://customsongscentral.com/rage-quit/"));
     }
 
     /// Wrapper folders are unwrapped; tier folders and a lone song folder are kept.
