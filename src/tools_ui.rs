@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// The Issue scanner is hidden for now (a full library produces more rows than a spreadsheet
 /// can hold). Its code stays so it can be revamped and switched back on.
-const ISSUE_SCANNER_ENABLED: bool = false;
+pub(crate) const ISSUE_SCANNER_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {

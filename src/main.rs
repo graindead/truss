@@ -3728,10 +3728,14 @@ impl App {
             .push(rule::horizontal(1).style(crate::style::rule))
             .push(self.pack_folder_setting())
             .push(rule::horizontal(1).style(crate::style::rule))
-            .push(self.ch_folder_setting())
-            .push(rule::horizontal(1).style(crate::style::rule))
-            .push(self.issue_folder_setting(false))
-            .push(self.issue_folder_setting(true));
+            .push(self.ch_folder_setting());
+        // The Issue scanner's folders, while it's switched on (it's hidden for now).
+        if tools_ui::ISSUE_SCANNER_ENABLED {
+            lib_col = lib_col
+                .push(rule::horizontal(1).style(crate::style::rule))
+                .push(self.issue_folder_setting(false))
+                .push(self.issue_folder_setting(true));
+        }
 
         let section = |title: &'static str, content: Element<'static, Message>| {
             container(column![text(title).font(BOLD).size(15), content].spacing(10))
