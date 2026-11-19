@@ -3,6 +3,11 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.24
+
+- **Settings > Directories** lists only the folders Truss uses: songs, pack downloads and
+  Clone Hero (the hidden Issue scanner's folders no longer show).
+
 ## v0.1.23
 
 - **Less memory while browsing:** scrolling far down the results no longer makes Truss use more
