@@ -3,6 +3,11 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.25
+
+- **Star Power paths:** Open image (or click the path) opens the full path image in your image
+  viewer. It's saved in Pictures\Truss, and opening it again reuses the same file.
+
 ## v0.1.24
 
 - **Settings > Directories** lists only the folders Truss uses: songs, pack downloads and
