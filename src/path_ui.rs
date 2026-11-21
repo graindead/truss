@@ -39,6 +39,8 @@ pub struct PathTool {
     run_id: u64,
     result: Option<Result<Arc<Result_>, String>>,
     saved: Option<Result<PathBuf, String>>,
+    /// The image made for the path showing, once it's been opened: opening it again reuses it.
+    opened: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +64,9 @@ pub enum Msg {
     Done(u64, Result<Arc<Result_>, String>),
     Save,
     Saved(Option<Result<PathBuf, String>>),
+    /// Opens the full image in the system's image viewer.
+    Open,
+    Opened(Result<PathBuf, String>),
 }
 
 /// Reads a library chart's notes and song.ini (folder or .sng). Read only.
@@ -133,6 +138,7 @@ impl PathTool {
                 self.chart = Some(c.clone());
                 self.song = None;
                 self.result = None;
+                self.opened = None;
                 self.saved = None;
                 self.loading = true;
                 if self.speed.is_empty() {
@@ -151,6 +157,7 @@ impl PathTool {
                 self.chart = None;
                 self.song = None;
                 self.result = None;
+                self.opened = None;
                 self.saved = None;
             }
             Msg::Loaded(r) => {
@@ -211,6 +218,7 @@ impl PathTool {
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.running = Some(cancel.clone());
                 self.result = None;
+                self.opened = None;
                 self.saved = None;
                 self.run_id += 1;
                 let id = self.run_id;
@@ -241,6 +249,7 @@ impl PathTool {
                 }
                 self.running = None;
                 self.result = Some(r);
+                self.opened = None;
             }
             Msg::Save => {
                 let Some(Ok(res)) = &self.result else { return Task::none() };
@@ -267,6 +276,42 @@ impl PathTool {
                     self.saved = r;
                 }
             }
+            Msg::Open => {
+                let Some(Ok(res)) = &self.result else { return Task::none() };
+                if let Some(p) = self.opened.clone().filter(|p| p.exists()) {
+                    return Task::perform(async move { open_file(&p).map(|_| p) }, Msg::Opened);
+                }
+                let res = res.clone();
+                let base = format!("{} - {} path", sanitize(&res.output.image.artist), sanitize(&res.output.image.song_name));
+                return Task::perform(
+                    async move {
+                        // In Pictures\Truss: the Photos app can't open images from hidden folders
+                        // such as AppData (it says the file was moved or renamed).
+                        let dir = directories::UserDirs::new()
+                            .and_then(|u| u.picture_dir().map(|d| d.join("Truss")))
+                            .or_else(|| crate::settings::cache_dir().map(|d| d.join("path-images")))
+                            .ok_or("No folder to put the image in")?;
+                        tokio::task::spawn_blocking(move || {
+                            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                            // A name that's free ("… (2).png" if taken), so an image a viewer has
+                            // open is never replaced under it.
+                            let path = (1..)
+                                .map(|n| dir.join(if n == 1 { format!("{base}.png") } else { format!("{base} ({n}).png") }))
+                                .find(|p| !p.exists())
+                                .ok_or("No free file name")?;
+                            chopt::draw::save_png(&res.output.image, &path)?;
+                            open_file(&path).map(|_| path)
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?
+                    },
+                    Msg::Opened,
+                );
+            }
+            Msg::Opened(r) => match r {
+                Ok(p) => self.opened = Some(p),
+                Err(e) => self.saved = Some(Err(format!("couldn't open the image: {e}"))),
+            },
         }
         Task::none()
     }
@@ -343,6 +388,7 @@ impl PathTool {
                 let mut top = column![
                     row![
                         text(format!("Found in {:.2} s", res.seconds)).size(12).width(Length::Fill),
+                        button(text("Open image").size(13)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::Open),
                         button(text("Save image…").size(13)).padding([6, 12]).on_press(Msg::Save),
                     ]
                     .spacing(10)
@@ -356,7 +402,9 @@ impl PathTool {
                     None => {}
                 }
                 let strips = res.strips.iter().fold(column![], |col, h| col.push(image(h.clone()).width(Length::Fill).filter_method(image::FilterMethod::Linear)));
-                scrollable(column![top, container(strips).max_width(1024)].spacing(12).padding(16)).height(Length::Fill).into()
+                // Clicking the path opens it full size, as Open image does.
+                let strips = iced::widget::mouse_area(container(strips).max_width(1024)).on_press(Msg::Open).interaction(iced::mouse::Interaction::Pointer);
+                scrollable(column![top, strips].spacing(12).padding(16)).height(Length::Fill).into()
             }
         };
 
@@ -417,3 +465,18 @@ impl PathTool {
 fn sanitize(s: &str) -> String {
     s.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect::<String>().trim().to_string()
 }
+
+/// Opens a file with the app Windows uses for its type (as double-clicking it would). Explorer
+/// does the opening: asking the shell from this worker thread (where COM isn't set up) could
+/// report success without opening anything, which is what happened with the Photos app.
+fn open_file(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer").arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        open::that_detached(path).map_err(|e| e.to_string())
+    }
+}
+
