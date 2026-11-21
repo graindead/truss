@@ -29,9 +29,10 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           if ($tag -ne $ver) { Write-Error "Tag v$tag doesn't match Cargo.toml version $ver"; exit 1 }
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Third-party actions pinned to a commit, so a moved tag can't change what builds releases.
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo test --release

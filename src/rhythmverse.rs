@@ -544,7 +544,7 @@ pub async fn fetch_note_files(rv: &RvFile) -> Result<Vec<(String, Vec<u8>)>, Str
     use crate::download::TempGuard;
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let work = std::env::temp_dir().join(format!("truss-notes-{}-{n}", std::process::id()));
+    let work = crate::settings::temp_dir().join(format!("notes-{}-{n}", std::process::id()));
     let _guard = TempGuard(Some(work.clone()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;

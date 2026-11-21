@@ -21,6 +21,7 @@ pub fn apply(icon_id: Option<u16>) -> Result<usize, String> {
     };
     use windows::core::{HSTRING, Interface, PCWSTR};
 
+    // nosemgrep: the updater finds its own exe to replace it
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let exe_key = canon(&exe).to_string_lossy().to_lowercase();
@@ -58,6 +59,7 @@ pub fn apply(icon_id: Option<u16>) -> Result<usize, String> {
     };
 
     let mut changed = 0;
+    // nosemgrep: a Windows API call (Rust requires unsafe for these)
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         for lnk in &shortcuts {

@@ -120,6 +120,16 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
 
 /// Truss's cache folder. TRUSS_CACHE_DIR gives a second copy (for testing, say) its own, the
 /// way TRUSS_CONFIG_DIR gives it its own settings.
+/// Truss's own folder for short-lived files (in its cache, which only this user can reach,
+/// unlike the system's shared temp folder).
+pub fn temp_dir() -> PathBuf {
+    match cache_dir() {
+        Some(d) => d.join("temp"),
+        // nosemgrep: only when there's no user folder to put Truss's cache in
+        None => std::env::temp_dir().join("truss"),
+    }
+}
+
 pub fn cache_dir() -> Option<PathBuf> {
     match std::env::var_os("TRUSS_CACHE_DIR") {
         Some(d) => Some(PathBuf::from(d)),

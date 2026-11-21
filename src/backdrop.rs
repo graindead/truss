@@ -84,6 +84,7 @@ pub fn apply(hwnd: u64, b: Backdrop, tint: [u8; 3]) {
         return;
     }
     let hwnd = HWND(hwnd as usize as *mut core::ffi::c_void);
+    // nosemgrep: a Windows API call (Rust requires unsafe for these)
     unsafe {
         // Not in the Windows SDK headers, so it's looked up by name.
         let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else { return };

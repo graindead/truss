@@ -255,6 +255,7 @@ mod tests {
 
     #[test]
     fn reads_notes_from_a_local_folder() {
+        // nosemgrep: a test's own scratch folder
         let d = std::env::temp_dir().join(format!("truss-local-notes-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         for (n, b) in [("notes.chart", &b"[Song]"[..]), ("song.ini", b"[song]"), ("guitar.ogg", b"OggS"), ("album.png", b"x")] {

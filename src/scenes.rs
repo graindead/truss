@@ -254,6 +254,7 @@ mod dpapi {
         let input = Blob { cb: s.len() as u32, pb: s.as_ptr() as *mut u8 };
         let mut out = Blob { cb: 0, pb: std::ptr::null_mut() };
         // SAFETY: valid blobs; the output is freed with LocalFree as documented.
+        // nosemgrep: a Windows API call (Rust requires unsafe for these)
         unsafe {
             if CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), UI_FORBIDDEN, &mut out) == 0 {
                 return None;
@@ -886,6 +887,7 @@ mod tests {
                 }
             });
 
+            // nosemgrep: a test's own scratch folder
             let dir = std::env::temp_dir().join(format!("truss-chss-test-{port}"));
             std::fs::create_dir_all(&dir).unwrap();
             let song = dir.join("currentsong.txt");

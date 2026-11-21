@@ -1034,6 +1034,7 @@ mod tests {
                 let r = crate::api::search(query.to_string(), common).await.unwrap();
                 charts.extend(r.data.into_iter().take(8));
             }
+            // nosemgrep: a test's own scratch folder
             let dir = std::env::temp_dir().join("truss-issue-test");
             let _ = std::fs::create_dir_all(&dir);
             let (mut same, mut diff) = (0, 0);
@@ -1114,6 +1115,7 @@ mod tests {
         let t = std::time::Instant::now();
         let charts = find_charts(Path::new(&dir));
         let rows: Vec<IssueRow> = charts.iter().flat_map(scan_chart).collect();
+        // nosemgrep: a test's own scratch folder
         let out = write_xlsx(&rows, &std::env::temp_dir()).unwrap();
         println!("{} charts, {} issues in {:?} -> {}", charts.len(), rows.len(), t.elapsed(), out.display());
         let mut kinds: Vec<(&str, usize)> = Vec::new();

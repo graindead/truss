@@ -483,6 +483,7 @@ mod tests {
     /// A database another copy of Truss has locked is left alone, not treated as damaged.
     #[test]
     fn locked_database_is_not_deleted() {
+        // nosemgrep: a test's own scratch folder
         let dir = std::env::temp_dir().join(format!("truss-rvlock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rhythmverse.sqlite");
@@ -499,6 +500,7 @@ mod tests {
     /// A damaged database is replaced by the backup, keeping its data.
     #[test]
     fn restores_from_backup() {
+        // nosemgrep: a test's own scratch folder
         let dir = std::env::temp_dir().join(format!("truss-rvbak-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rhythmverse.sqlite");
@@ -522,6 +524,7 @@ mod tests {
     /// A damaged database file is replaced with an empty, working one.
     #[test]
     fn replaces_damaged_database() {
+        // nosemgrep: a test's own scratch folder
         let dir = std::env::temp_dir().join(format!("truss-rvdb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rhythmverse.sqlite");

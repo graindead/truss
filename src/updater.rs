@@ -120,6 +120,7 @@ fn old_path(exe: &Path) -> PathBuf {
 }
 
 async fn install_inner(rel: &Release, tx: &mut Sender<InstallEvent>) -> Result<(), String> {
+    // nosemgrep: the updater finds its own exe to replace it
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     // Next to the exe, so the swap is a rename on the same drive.
     let new = exe.with_extension("exe.new");
@@ -193,6 +194,7 @@ fn swap(exe: &Path, new: &Path) -> Result<(), String> {
 
 /// Starts the (updated) exe and exits this one.
 pub fn restart() -> ! {
+    // nosemgrep: the updater finds its own exe to replace it
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).spawn();
     }
@@ -201,6 +203,7 @@ pub fn restart() -> ! {
 
 /// Deletes the previous version left by an update (it may still be closing for a moment).
 pub fn cleanup_old() {
+    // nosemgrep: the updater finds its own exe to replace it
     let Ok(exe) = std::env::current_exe() else { return };
     let old = old_path(&exe);
     let new = exe.with_extension("exe.new");
@@ -232,6 +235,7 @@ mod tests {
 
     #[test]
     fn swaps_and_keeps_old() {
+        // nosemgrep: a test's own scratch folder
         let dir = std::env::temp_dir().join(format!("truss-upd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("truss.exe");
@@ -252,6 +256,7 @@ mod tests {
             return;
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
+        // nosemgrep: test setup (set_var is unsafe in Rust 2024)
         unsafe { std::env::set_var("TRUSS_FAKE_VERSION", "0.0.1") };
         let r = tokio::runtime::Runtime::new().unwrap().block_on(check());
         println!("{r:?}");

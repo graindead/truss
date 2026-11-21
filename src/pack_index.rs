@@ -379,6 +379,7 @@ mod build {
     /// file's header and data, end of archive).
     fn unrar_one(parts: &[&[u8]]) -> Result<Vec<u8>, String> {
         static N: AtomicU64 = AtomicU64::new(0);
+        // nosemgrep: a test's own scratch folder
         let path = std::env::temp_dir().join(format!("truss-index-{}-{}.rar", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::write(&path, parts.concat()).map_err(|e| e.to_string())?;
         let r = (|| {

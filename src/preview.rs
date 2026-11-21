@@ -60,7 +60,7 @@ fn ext(name: &str) -> String {
 }
 
 fn temp_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("truss-preview")
+    crate::settings::temp_dir().join("preview")
 }
 
 /// Removes preview files left behind by a crash or forced shutdown. Files still in use by
@@ -73,8 +73,11 @@ pub fn cleanup_temp_files() {
     }
     // RhythmVerse charts downloaded for preview in an earlier session.
     let _ = std::fs::remove_dir_all(temp_dir().join("rv"));
-    // Folder used before the app was renamed from Bridge RS.
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("bridge-rs-preview"));
+    // Folders older versions used in the system's temp folder.
+    for old in ["truss-preview", "bridge-rs-preview"] {
+        // nosemgrep: only removes the folders older versions used there
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(old));
+    }
 }
 
 /// Downloads the chart (never the video), parses notes, and opens the audio, all off the UI thread.
