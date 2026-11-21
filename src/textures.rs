@@ -44,6 +44,24 @@ impl Mips {
     }
 }
 
+/// A highway picture ready to draw: at several sizes, each cut into one-pixel rows.
+pub fn highway_levels(img: image::RgbaImage) -> Vec<HighwayLevel> {
+    mip_chain(img)
+        .into_iter()
+        .map(|level| {
+            let w = level.width();
+            let rows = level
+                .rows()
+                .map(|row| {
+                    let line: Vec<u8> = row.flat_map(|p| p.0).collect();
+                    Handle::from_rgba(w, 3, line.repeat(3))
+                })
+                .collect();
+            HighwayLevel { width: w, rows }
+        })
+        .collect()
+}
+
 /// Halves an image repeatedly (in premultiplied alpha, so transparent edges don't darken).
 fn mip_chain(img: image::RgbaImage) -> Vec<image::RgbaImage> {
     let mut out = vec![img];
@@ -371,20 +389,7 @@ async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
         }
 
         let hw = image::load_from_memory(&raw["preview-highway.png"]).map_err(|e| e.to_string())?.to_rgba8();
-        let highway = mip_chain(hw)
-            .into_iter()
-            .map(|level| {
-                let w = level.width();
-                let rows = level
-                    .rows()
-                    .map(|row| {
-                        let line: Vec<u8> = row.flat_map(|p| p.0).collect();
-                        Handle::from_rgba(w, 3, line.repeat(3))
-                    })
-                    .collect();
-                HighwayLevel { width: w, rows }
-            })
-            .collect();
+        let highway = highway_levels(hw);
 
         let sl = image::load_from_memory(&raw[strikeline]).map_err(|e| e.to_string())?.to_rgba8();
         let strikeline_aspect = sl.width() as f32 / sl.height() as f32;

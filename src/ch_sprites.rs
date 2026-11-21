@@ -422,6 +422,7 @@ fn from_game_cache(install: &std::path::Path) -> Option<(HashMap<String, RgbaIma
 fn save_game_cache(install: &std::path::Path, sprites: &HashMap<String, RgbaImage>, art: &HashMap<String, RgbaImage>) -> Result<(), String> {
     let dir = game_cache_dir().ok_or("no cache folder")?;
     let _ = std::fs::remove_file(dir.join("stamp.txt"));
+    let _ = std::fs::remove_dir_all(dir.join("highways"));
     for (kind, set) in [("sprites", sprites), ("art", art)] {
         for (name, img) in set {
             let p = cached_name(&dir, kind, name);
@@ -513,6 +514,11 @@ pub fn preview_look() -> PreviewLook {
 
 /// The colour profile the player uses in Clone Hero (its profiles.ini), if it says.
 pub fn player_color_profile() -> Option<String> {
+    player_setting("color_profile_name")
+}
+
+/// A setting from the first profile in Clone Hero's profiles.ini (the player's own).
+fn player_setting(key: &str) -> Option<String> {
     let install = find_install()?;
     let mut tries = vec![install.join("PlayerData").join("profiles.ini")];
     if let Some(c) = crate::color_profile::folder() {
@@ -521,8 +527,34 @@ pub fn player_color_profile() -> Option<String> {
     let text = tries.iter().find_map(|p| std::fs::read_to_string(p).ok())?;
     text.lines()
         .take_while(|l| !l.trim_start().starts_with("[profile1]"))
-        .find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "color_profile_name").map(|(_, v)| v.trim().to_string()))
+        .find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()))
         .filter(|v| !v.is_empty())
+}
+
+/// The highway the player has chosen in Clone Hero ("Default" if none).
+pub fn player_highway() -> String {
+    player_setting("highway_name").unwrap_or_else(|| "Default".into())
+}
+
+/// A highway's picture: one of the player's own (an image in Custom\Highways), or one of the
+/// game's (kept after the first read). None for one Truss can't show (a video highway).
+fn highway_picture(install: &std::path::Path, name: &str) -> Option<RgbaImage> {
+    let custom = install.join("PlayerData").join("Custom").join("Highways");
+    let own = std::iter::once(custom.join(name)).chain(["png", "jpg", "jpeg"].map(|e| custom.join(format!("{name}.{e}"))));
+    if let Some(img) = own.filter(|p| p.is_file()).find_map(|p| image::open(p).ok()) {
+        return Some(img.to_rgba8());
+    }
+    let kept = game_cache_dir().map(|d| cached_name(&d, "highways", name));
+    if let Some(img) = kept.as_ref().and_then(|p| image::open(p).ok()) {
+        return Some(img.to_rgba8());
+    }
+    let file = crate::unity_assets::AssetFile::open(&crate::unity_assets::data_folder(install)?.join("resources.assets")).ok()?;
+    let img = file.texture(file.texture_named(name)?).ok()?;
+    if let Some(p) = kept {
+        let _ = p.parent().map(std::fs::create_dir_all);
+        let _ = img.save(&p);
+    }
+    Some(img)
 }
 
 /// Lets go of the chart preview's textures (when it closes): what's open keeps its own.
@@ -531,7 +563,7 @@ pub fn release_chart_textures() {
 }
 
 /// Textures made for the chart preview: (instrument, profile name, profile text) -> textures.
-static CHART_TEXTURES: std::sync::Mutex<Vec<((InstrumentType, String, String), Arc<TextureSet>)>> = std::sync::Mutex::new(Vec::new());
+static CHART_TEXTURES: std::sync::Mutex<Vec<((InstrumentType, String, String, String), Arc<TextureSet>)>> = std::sync::Mutex::new(Vec::new());
 
 /// The chart preview's textures: guitar and drums from Clone Hero's own sprites in the chosen
 /// colour profile when it's installed (in its layout), otherwise the usual ones.
@@ -550,14 +582,20 @@ async fn game_chart_textures(itype: InstrumentType) -> Option<Arc<TextureSet>> {
     kit.game.as_ref()?;
     let name = preview_look().profile.or_else(player_color_profile).unwrap_or_else(|| "DefaultColors".into());
     let text = crate::color_profile::folder().and_then(|d| std::fs::read_to_string(d.join(format!("{name}.ini"))).ok()).unwrap_or_default();
-    let key = (itype, name, text.clone());
+    let highway = player_highway();
+    let key = (itype, name, text.clone(), highway.clone());
     if let Some((_, t)) = CHART_TEXTURES.lock().unwrap().iter().find(|(k, _)| *k == key) {
         return Some(t.clone());
     }
     let t = tokio::task::spawn_blocking(move || {
         let p = Profile::parse(&text);
         let d = Profile::defaults();
-        Arc::new(if itype == InstrumentType::Drums { drums(&kit, &p, &d, false) } else { guitar(&kit, &p, &d, false) })
+        let mut set = if itype == InstrumentType::Drums { drums(&kit, &p, &d, false) } else { guitar(&kit, &p, &d, false) };
+        // The player's own highway, as Clone Hero shows it.
+        if let Some(img) = kit.game.as_deref().and_then(|i| highway_picture(i, &highway)) {
+            set.highway = crate::textures::highway_levels(img);
+        }
+        Arc::new(set)
     })
     .await
     .ok()?;

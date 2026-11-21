@@ -182,6 +182,11 @@ impl AssetFile {
         self.objects.iter().filter(move |(_, o)| o.0 == class).map(|(id, _)| *id)
     }
 
+    /// The texture with this name, if the file has one.
+    pub fn texture_named(&self, name: &str) -> Option<i64> {
+        self.ids(TEXTURE2D).find(|&id| self.reader(id, TEXTURE2D).and_then(|mut r| r.string()).is_ok_and(|n| n == name))
+    }
+
     /// A texture's first mip, decoded (top row first).
     pub fn texture(&self, id: i64) -> R<RgbaImage> {
         let mut r = self.reader(id, TEXTURE2D)?;
