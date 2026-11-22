@@ -24,6 +24,8 @@ pub enum Filter {
     AlmostFc,
     /// Not played, at the difficulty most of your full combos are at (or a step up).
     YourLevel,
+    /// The same chart file more than once.
+    ExactCopies,
 }
 
 /// Accuracy from which a play counts as close to a full combo.
@@ -121,6 +123,8 @@ pub enum Msg {
     FindPackDuplicates,
     /// Remove every video background (asks again first).
     RemoveVideos,
+    /// Remove the spare exact copies (asks again first).
+    RemoveCopies,
 }
 
 /// Requests for the app.
@@ -153,6 +157,8 @@ pub struct Ctx<'a> {
     /// Your Clone Hero scores, once known, and why they couldn't be fetched.
     pub scores: Option<&'a crate::scores::Scores>,
     pub scores_error: Option<&'a str>,
+    /// The library folders (charts directly in one are loose; deeper ones are in packs).
+    pub roots: Vec<PathBuf>,
 }
 
 
@@ -183,6 +189,10 @@ pub struct Page {
     /// Your level (see `your_level`), and how many unplayed charts are at it.
     level: Option<i8>,
     at_level: usize,
+    /// Which catalog entries are exact copies of another, and the spare ones to remove.
+    copies: Vec<bool>,
+    spares: Vec<usize>,
+    confirm_copies: bool,
 }
 
 impl Page {
@@ -222,6 +232,7 @@ impl Page {
             .filter_map(|(c, _)| c.diff_guitar)
             .collect();
         self.level = your_level(&mut fc_diffs);
+        (self.copies, self.spares) = crate::library_tools::exact_copies(cx.catalog, &cx.roots, cx.lyrics);
         self.at_level = (0..cx.catalog.len()).filter(|&i| self.at_your_level(i, cx)).count();
         let existing: HashSet<&PathBuf> = cx.catalog.iter().map(|c| &c.path).collect();
         self.selected.retain(|p| existing.contains(p));
@@ -256,6 +267,7 @@ impl Page {
             Filter::FullCombo => best.is_some_and(|b| b.is_fc),
             Filter::AlmostFc => best.is_some_and(|b| !b.is_fc && b.accuracy() >= ALMOST_FC),
             Filter::YourLevel => self.at_your_level(i, cx),
+            Filter::ExactCopies => self.copies.get(i).copied().unwrap_or(false),
         }
     }
 
@@ -286,6 +298,8 @@ impl Page {
             }
             // Duplicates sit next to each other.
             _ if self.filter == Some(Filter::Duplicates) => shown.sort_by_cached_key(|&i| cat[i].key.clone()),
+            // Copies of a chart sit together.
+            _ if self.filter == Some(Filter::ExactCopies) => shown.sort_by_cached_key(|&i| (cat[i].key.clone(), cat[i].chart_hash.clone())),
             // Closest to a full combo first.
             _ if self.filter == Some(Filter::AlmostFc) => shown.sort_by_key(|&i| {
                 std::cmp::Reverse(self.best.get(i).and_then(Option::as_ref).map_or(0, |b| (b.accuracy() * 10.0) as u32))
@@ -302,6 +316,9 @@ impl Page {
         }
         if !matches!(msg, Msg::RemoveVideos | Msg::Scrolled(_)) {
             self.confirm_videos = false;
+        }
+        if !matches!(msg, Msg::RemoveCopies | Msg::Scrolled(_)) {
+            self.confirm_copies = false;
         }
         match msg {
             Msg::Query(q) => {
@@ -373,6 +390,14 @@ impl Page {
                     return Out::RemoveVideos;
                 }
             }
+            Msg::RemoveCopies => {
+                if !self.confirm_copies {
+                    self.confirm_copies = true;
+                } else {
+                    self.confirm_copies = false;
+                    return Out::Delete(self.spares.iter().map(|&i| cx.catalog[i].path.clone()).collect());
+                }
+            }
             Msg::Open(p) => return Out::Open(p),
             Msg::Scrolled(vp) => self.list.on_scroll(vp),
         }
@@ -436,6 +461,7 @@ impl Page {
                 Filter::NoLyrics
             ),
             tile("Duplicates", dups.to_string(), Filter::Duplicates),
+            tile("Exact copies", self.spares.len().to_string(), Filter::ExactCopies),
             tile(
                 "Played",
                 if cx.scores.is_some() { self.played.to_string() } else { "—".into() },
@@ -457,6 +483,8 @@ impl Page {
             e.to_string()
         } else if let Some(e) = cx.scores_error.filter(|_| matches!(self.filter, Some(Filter::Played | Filter::FullCombo | Filter::AlmostFc | Filter::YourLevel))) {
             e.to_string()
+        } else if self.filter == Some(Filter::ExactCopies) {
+            format!("{} spare loose copies (packs are left alone)", self.spares.len())
         } else if self.filter == Some(Filter::AlmostFc) {
             format!("{} at {ALMOST_FC:.0}%+ without an FC, closest first", self.shown.len())
         } else if let (Some(Filter::YourLevel), Some(l)) = (self.filter, self.level) {
@@ -489,6 +517,15 @@ impl Page {
         } else {
             bar = bar.push(
                 button(text("Select all shown").size(13).wrapping(text::Wrapping::None)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::SelectAllShown),
+            );
+        }
+        if self.filter == Some(Filter::ExactCopies) {
+            let n = self.spares.len();
+            bar = bar.push(
+                button(text(if self.confirm_copies { format!("Confirm: remove {n}") } else { format!("Remove {n} spare copies") }).size(13).wrapping(text::Wrapping::None))
+                    .padding([6, 12])
+                    .style(move |t: &Theme, s| if self.confirm_copies { button::danger(t, s) } else { button::secondary(t, s) })
+                    .on_press_maybe((n > 0 && !cx.busy && !cx.scanning).then_some(Msg::RemoveCopies)),
             );
         }
         let videos = cat.iter().filter(|c| c.has_video && !c.is_sng()).count();
@@ -603,7 +640,7 @@ impl Page {
                     container(content).width(Length::FillPortion(p)).clip(true)
                 };
                 let tagged = c.tagged.as_deref();
-                let dupes = self.filter == Some(Filter::Duplicates);
+                let dupes = matches!(self.filter, Some(Filter::Duplicates | Filter::ExactCopies));
                 let open = if c.is_sng() { c.path.parent().map(|p| p.to_path_buf()).unwrap_or_default() } else { c.path.clone() };
                 let song = if dupes {
                     // Show where each copy is, so you can tell them apart.
@@ -732,6 +769,7 @@ mod tests {
             busy: false,
             scores: None,
             scores_error: None,
+            roots: Vec::new(),
         };
         let names = |p: &Page| p.shown.iter().map(|&i| cat[i].name.clone()).collect::<Vec<_>>();
 

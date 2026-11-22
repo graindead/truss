@@ -1058,6 +1058,7 @@ impl App {
             busy: self.library_busy,
             scores: self.my_scores.as_deref(),
             scores_error: self.scores_error.as_deref(),
+            roots: self.settings.scan_folders(),
         }
     }
 

@@ -28,6 +28,40 @@ pub fn is_loose(path: &Path, roots: &[PathBuf]) -> bool {
     parent.is_some_and(|parent| roots.iter().any(|r| norm(r) == parent))
 }
 
+/// Charts that are exact copies of another: the same chart file (by its hash). Returns, for
+/// each catalog entry, whether it's in such a group, and the spare copies to remove: every copy
+/// but one in each group. The one kept is the one with the most extras (album art, background,
+/// video, lyrics), then the oldest. Copies inside packs are never spares (their folders stay as
+/// the pack has them); when a pack has one, every loose copy is spare.
+pub fn exact_copies(catalog: &[Arc<LocalChart>], roots: &[PathBuf], lyrics: &HashMap<PathBuf, bool>) -> (Vec<bool>, Vec<usize>) {
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, c) in catalog.iter().enumerate() {
+        if let Some(h) = c.chart_hash.as_deref() {
+            groups.entry(h).or_default().push(i);
+        }
+    }
+    let mut in_group = vec![false; catalog.len()];
+    let mut spares = Vec::new();
+    for members in groups.values().filter(|m| m.len() > 1) {
+        for &i in members {
+            in_group[i] = true;
+        }
+        let (loose, packed): (Vec<usize>, Vec<usize>) = members.iter().partition(|&&i| is_loose(&catalog[i].path, roots));
+        let extras = |i: usize| {
+            let c = &catalog[i];
+            [c.has_album_art, c.has_background, c.has_video, lyrics.get(&c.path) == Some(&true)].iter().filter(|b| **b).count()
+        };
+        let keep = if packed.is_empty() {
+            loose.iter().copied().max_by_key(|&i| (extras(i), std::cmp::Reverse(catalog[i].added)))
+        } else {
+            None
+        };
+        spares.extend(loose.into_iter().filter(|&i| Some(i) != keep));
+    }
+    spares.sort_unstable();
+    (in_group, spares)
+}
+
 /// Finds loose charts that are also in a pack. A pair only counts when every track's notes
 /// hash the same (the same tracks, each with identical notes); a title, file or song.ini match
 /// alone is never enough.
@@ -114,6 +148,34 @@ pub fn video_files(catalog: &[Arc<LocalChart>]) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_copies_keep_the_best_and_spare_packs() {
+        let chart = |path: &str, hash: &str, art: bool, added: u64| {
+            let mut c = crate::library::test_chart("Band", "Song", added);
+            c.path = PathBuf::from(path);
+            c.chart_hash = Some(hash.into());
+            c.has_album_art = art;
+            Arc::new(c)
+        };
+        let roots = vec![PathBuf::from(r"C:\Songs")];
+        let cat = vec![
+            // Two loose copies: the one with album art is kept.
+            chart(r"C:\Songs\A", "h1", false, 10),
+            chart(r"C:\Songs\A (2)", "h1", true, 20),
+            // A loose copy and one in a pack: the pack's stays, the loose one is spare.
+            chart(r"C:\Songs\B", "h2", true, 10),
+            chart(r"C:\Songs\Pack\Tier 1\B", "h2", false, 30),
+            // Two equal loose copies: the older is kept.
+            chart(r"C:\Songs\C", "h3", false, 50),
+            chart(r"C:\Songs\C (2)", "h3", false, 40),
+            // Not a copy of anything.
+            chart(r"C:\Songs\D", "h4", true, 10),
+        ];
+        let (in_group, spares) = exact_copies(&cat, &roots, &HashMap::new());
+        assert_eq!(spares, vec![0, 2, 4]);
+        assert_eq!(in_group, vec![true, true, true, true, true, true, false]);
+    }
 
     #[test]
     fn only_top_level_charts_are_loose() {
