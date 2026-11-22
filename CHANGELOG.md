@@ -3,6 +3,26 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.26
+
+- **Chart preview:**
+  - **Your highway:** uses the highway picked in your Clone Hero profile: one of the game's own,
+    or an image from Custom\Highways.
+  - **Lefty flip:** when it's on in your profile, the lanes run the other way, as in the game.
+  - **Beat lines:** measure, beat and off-beat lines across the highway, placed and drawn as
+    Clone Hero does.
+  - **Practice:** jump to a section, loop it, and slow down to 50-100% without changing the pitch.
+- **Library:**
+  - **Your scores:** your best play on each chart from Clone Hero's leaderboards, in a new Score
+    column, with Played and Full combo filters. Your account is found in the game's logs; if
+    more than one plays on this computer, choose whose in Settings > Directories.
+  - **Near FC:** charts you've hit 99% or more on without a full combo, closest first.
+  - **Your level:** unplayed guitar charts rated at the level most of your full combos are at.
+  - **Exact copies:** finds charts that are the same file more than once and can move the spare
+    loose copies to the Recycle Bin (copies in packs are never touched).
+- **Security:** temporary files stay in Truss's own folder, and the release build's tools are
+  pinned to fixed versions.
+
 ## v0.1.25
 
 - **Star Power paths:** Open image (or click the path) opens the full path image in your image
