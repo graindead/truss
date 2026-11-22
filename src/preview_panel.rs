@@ -48,7 +48,64 @@ pub enum Msg {
     Key(iced::keyboard::Event),
     ToggleExpand,
     Close,
+    /// Practice: go to a section, loop the one playing, play slower.
+    Section(SectionChoice),
+    ToggleLoop,
+    Speed(SpeedChoice),
 }
+
+/// A section of the chart, by its place in the list (its name is only what's shown).
+#[derive(Debug, Clone)]
+pub struct SectionChoice {
+    i: usize,
+    label: String,
+}
+
+impl PartialEq for SectionChoice {
+    fn eq(&self, other: &Self) -> bool {
+        self.i == other.i
+    }
+}
+
+/// Longest section name shown in the closed list before it's cut short (the list can't keep
+/// to one line itself, and a long name would wrap or run under its arrow).
+const SECTION_LABEL_CHARS: usize = 20;
+
+/// A name cut to `max` characters with an ellipsis, at a word break when there's one near.
+fn shorten(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        return name.to_string();
+    }
+    let cut: String = name.chars().take(max - 1).collect();
+    let cut = match cut.rfind(' ') {
+        Some(at) if at >= max / 2 => &cut[..at],
+        _ => &cut[..],
+    };
+    format!("{}…", cut.trim_end())
+}
+
+impl std::fmt::Display for SectionChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// A playback speed, in percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeedChoice(u32);
+
+impl std::fmt::Display for SpeedChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}%", self.0)
+    }
+}
+
+/// Practice speeds offered, as in Clone Hero's practice mode (in steps of 5%).
+const SPEEDS: [u32; 11] = [100, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50];
+
+/// How long before a section it starts when gone to (or looped back to), so its first notes
+/// come in from up the highway.
+const SECTION_LEAD_MS: f64 = 1000.0;
 
 pub struct Panel {
     pub md5: String,
@@ -67,6 +124,8 @@ pub struct Panel {
     pref_instrument: Option<String>,
     pref_difficulty: Option<String>,
     load_handle: iced::task::Handle,
+    /// The section being looped: (start, end) in chart ms.
+    looping: Option<(f64, f64)>,
 }
 
 impl Drop for Panel {
@@ -110,6 +169,7 @@ impl Panel {
             pref_instrument,
             pref_difficulty,
             load_handle,
+            looping: None,
         };
         (panel, Task::batch([load_task, tex]))
     }
@@ -238,7 +298,15 @@ impl Panel {
                 return (self.select(c.key, diff), false);
             }
             Msg::Difficulty(c) => return (self.select(self.instrument, c.key), false),
-            Msg::Frame => {}
+            Msg::Frame => {
+                // Back to the start of the looped section once it's over.
+                if let (Some((start, end)), Some(p)) = (self.looping, self.player())
+                    && self.scrub.is_none()
+                    && p.position_ms() >= end
+                {
+                    p.seek((start - SECTION_LEAD_MS).max(0.0));
+                }
+            }
             Msg::Key(iced::keyboard::Event::KeyPressed { key, .. }) => {
                 use iced::keyboard::{Key, key::Named};
                 match key.as_ref() {
@@ -258,6 +326,26 @@ impl Panel {
             Msg::Key(_) => {}
             Msg::ToggleExpand => self.expanded = !self.expanded,
             Msg::Close => return (Task::none(), true),
+            Msg::Section(c) => {
+                let spans = self.sections();
+                if let (Some(&(start, end)), Some(p)) = (spans.get(c.i), self.player()) {
+                    p.seek((start - SECTION_LEAD_MS).max(0.0));
+                    if self.looping.is_some() {
+                        self.looping = Some((start, end));
+                    }
+                }
+            }
+            Msg::ToggleLoop => {
+                self.looping = match self.looping {
+                    Some(_) => None,
+                    None => self.current_section().map(|i| self.sections()[i]),
+                };
+            }
+            Msg::Speed(SpeedChoice(pct)) => {
+                if let Some(p) = self.player() {
+                    p.set_speed(pct as f64 / 100.0);
+                }
+            }
         }
         (Task::none(), false)
     }
@@ -279,6 +367,50 @@ impl Panel {
 
     pub fn expanded(&self) -> bool {
         self.expanded
+    }
+
+    /// Each section of the chart as (start, end) in chart ms: up to the next one, the last to
+    /// the end of the song.
+    fn sections(&self) -> Vec<(f64, f64)> {
+        let (Some(loaded), Some(p)) = (&self.loaded, self.player()) else { return Vec::new() };
+        let s = &loaded.parsed.sections;
+        s.iter().enumerate().map(|(i, t)| (t.ms, s.get(i + 1).map_or(p.end_ms(), |n| n.ms))).collect()
+    }
+
+    /// The section playing now.
+    fn current_section(&self) -> Option<usize> {
+        let pos = self.scrub.or_else(|| self.player().map(|p| p.position_ms()))?;
+        let spans = self.sections();
+        spans.iter().rposition(|&(start, _)| start <= pos).or((!spans.is_empty()).then_some(0))
+    }
+
+    /// The practice row: sections, loop, and speed.
+    fn practice_row(&self) -> Option<Element<'_, Msg>> {
+        let player = self.player()?;
+        let loaded = self.loaded.as_ref()?;
+        let names = &loaded.parsed.section_names;
+        let choices: Vec<SectionChoice> = (0..self.sections().len())
+            .map(|i| SectionChoice { i, label: names.get(i).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("Section {}", i + 1)) })
+            .collect();
+        // In the closed list, a long name cut short; open, every name in full.
+        let current = self.current_section().and_then(|i| choices.get(i)).map(|c| SectionChoice { i: c.i, label: shorten(&c.label, SECTION_LABEL_CHARS) });
+        let speed = SpeedChoice((player.speed() * 100.0).round() as u32);
+        let speeds: Vec<SpeedChoice> = SPEEDS.iter().map(|&s| SpeedChoice(s)).collect();
+        let mut r = row![].spacing(6).align_y(Alignment::Center);
+        if !choices.is_empty() {
+            r = r.push(pick_list(choices, current, Msg::Section).placeholder("Sections").text_size(12).padding([4, 8]).width(Length::Fill));
+            let looping = self.looping.is_some();
+            r = r.push(
+                button(text(if looping { "Looping" } else { "Loop" }).size(12))
+                    .padding([4, 8])
+                    .style(if looping { button::primary } else { crate::style::secondary })
+                    .on_press(Msg::ToggleLoop),
+            );
+        } else {
+            r = r.push(text("No sections").size(12).width(Length::Fill));
+        }
+        r = r.push(pick_list(speeds, Some(speed), Msg::Speed).text_size(12).padding([4, 8]).width(78));
+        Some(r.into())
     }
 
     /// Compact player that sits in the sidebar in place of the album art.
@@ -376,6 +508,7 @@ impl Panel {
                     .spacing(8)
                     .align_y(Alignment::Center),
                 ]
+                .extend(self.practice_row())
                 .spacing(6)
                 .into()
             }

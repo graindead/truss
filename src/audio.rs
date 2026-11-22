@@ -210,10 +210,14 @@ struct Shared {
     /// Decoder has produced everything up to the chart end.
     source_done: AtomicBool,
     ended: AtomicBool,
+    /// Playback speed since the last seek (f64 bits; 1 = normal).
+    speed: AtomicU64,
 }
 
 enum Cmd {
     Seek(f64),
+    /// A new speed, from this chart time.
+    Speed(f64, f64),
     Quit,
 }
 
@@ -276,6 +280,17 @@ impl Player {
         let _ = self.cmd.send(Cmd::Seek(ms));
     }
 
+    /// Plays at this speed (0.5 = half), keeping the pitch: from where it is now.
+    pub fn speed(&self) -> f64 {
+        f64::from_bits(self.shared.speed.load(Relaxed))
+    }
+
+    pub fn set_speed(&self, speed: f64) {
+        let ms = self.position_ms();
+        self.shared.seek_ms.store(ms.to_bits(), Relaxed);
+        let _ = self.cmd.send(Cmd::Speed(speed.clamp(0.25, 1.0), ms));
+    }
+
     /// Volume 0..=1 (perceptual; squared like the original player).
     pub fn set_volume(&self, v: f32) {
         let v = v.clamp(0.0, 1.0);
@@ -291,7 +306,10 @@ impl Player {
         }
         let played = s.frames.load(Relaxed) as f64 * 1000.0 / s.rate as f64;
         let latency = if played > 0.0 { s.latency_us.load(Relaxed) as f64 / 1000.0 } else { 0.0 };
-        (seek + (played - latency).max(0.0)).min(self.end_ms)
+        // What's been heard, in chart time (slowed down by the speed: the stretcher's output
+        // keeps to the song's timeline, each frame of it `speed` frames of the song).
+        let speed = f64::from_bits(s.speed.load(Relaxed));
+        (seek + (played - latency).max(0.0) * speed).min(self.end_ms)
     }
 }
 
@@ -340,6 +358,7 @@ fn audio_thread(
         latency_us: AtomicU64::new(0),
         source_done: AtomicBool::new(false),
         ended: AtomicBool::new(false),
+        speed: AtomicU64::new(1f64.to_bits()),
     });
 
     // ~0.5 s of stereo audio buffered ahead.
@@ -363,12 +382,24 @@ fn audio_thread(
     let mut frames_until_end: u64 = (end_ms / 1000.0 * rate as f64) as u64;
     let mut pending_seek: Option<f64> = Some(0.0);
     let mut seek_generation = 0u32;
+    // Practice speed, and the time-stretcher that keeps its pitch (made the first time the
+    // preview is slowed down).
+    let mut speed = 1.0f64;
+    let mut stretch: Option<wsola::TimeStretch> = None;
+    let mut out_buf: Vec<f32> = Vec::new();
+    // Song frames given to the stretcher and not yet heard back from it (its own count also
+    // holds audio it keeps from the past, so it can't tell how much is waiting).
+    let mut waiting = 0f64;
 
     loop {
         // Commands
         loop {
             match cmd_rx.try_recv() {
                 Ok(Cmd::Seek(ms)) => pending_seek = Some(ms),
+                Ok(Cmd::Speed(s, ms)) => {
+                    speed = s;
+                    pending_seek = Some(ms);
+                }
                 Ok(Cmd::Quit) | Err(mpsc::TryRecvError::Disconnected) => {
                     drop(stream);
                     return;
@@ -393,6 +424,28 @@ fn audio_thread(
                 shared.frames.store(0, Relaxed);
                 shared.acked.store(seek_generation, Release);
             }
+            // From here on, at this speed (the stretcher starts afresh from the new spot).
+            if speed < 1.0
+                && let (Some(r), Some(ch)) = (std::num::NonZeroU32::new(rate), std::num::NonZeroU16::new(2))
+            {
+                let st = match stretch.take() {
+                    Some(st) => st,
+                    None => match wsola::TimeStretch::new(r, ch) {
+                        Ok(st) => st,
+                        Err(_) => {
+                            speed = 1.0;
+                            shared.speed.store(speed.to_bits(), Relaxed);
+                            continue;
+                        }
+                    },
+                };
+                let mut st = st;
+                st.reset();
+                st.set_tempo(speed as f32);
+                stretch = Some(st);
+            }
+            waiting = 0.0;
+            shared.speed.store(speed.to_bits(), Relaxed);
             let audio_ms = ms - start_delay_ms;
             silence_frames = if audio_ms < 0.0 { (-audio_ms / 1000.0 * rate as f64) as u64 } else { 0 };
             for s in &mut sources {
@@ -404,12 +457,28 @@ fn audio_thread(
 
         // Fill the ring buffer.
         let mut wrote = false;
-        while producer.slots() >= 2 && frames_until_end > 0 {
+        let slowed = speed < 1.0 && stretch.is_some();
+        // Stretched audio waiting to go out first.
+        if slowed && let Some(st) = stretch.as_mut() {
+            let out = drain(&mut producer, st, &mut out_buf);
+            waiting = (waiting - out as f64 * speed).max(0.0);
+            wrote |= out > 0;
+        }
+        // Room left, in frames of the song: when slowed down, as much as the buffer can take
+        // once stretched, and nothing while the stretcher already holds ~0.1 s.
+        let room = |p: &rtrb::Producer<f32>, waiting: f64| {
+            if !slowed {
+                p.slots() / 2
+            } else if waiting > rate as f64 / 10.0 {
+                0
+            } else {
+                ((p.slots() / 2) as f64 * speed) as usize
+            }
+        };
+        while room(&producer, waiting) >= 1 && frames_until_end > 0 {
             if silence_frames > 0 {
-                let n = (producer.slots() / 2).min(silence_frames as usize).min(frames_until_end as usize).min(1024);
-                if let Ok(chunk) = producer.write_chunk_uninit(n * 2) {
-                    chunk.fill_from_iter(std::iter::repeat(0.0));
-                }
+                let n = room(&producer, waiting).min(silence_frames as usize).min(frames_until_end as usize).min(1024);
+                waiting += emit(&mut producer, vec![0.0; n * 2], slowed, &mut stretch, &mut out_buf, speed);
                 silence_frames -= n as u64;
                 frames_until_end -= n as u64;
                 wrote = true;
@@ -422,7 +491,7 @@ fn audio_thread(
             let available = sources.iter().filter(|s| !s.pending.is_empty()).map(|s| s.pending.len()).min();
             let all_done = sources.iter().all(|s| s.eof && s.pending.is_empty());
             let n = match available {
-                Some(a) => a.min(producer.slots() / 2).min(frames_until_end as usize).min(2048),
+                Some(a) => a.min(room(&producer, waiting)).min(frames_until_end as usize).min(2048),
                 None if all_done => {
                     // Audio finished (or none): pad with silence until the chart end.
                     silence_frames = frames_until_end;
@@ -433,22 +502,20 @@ fn audio_thread(
             if n == 0 {
                 break;
             }
-            if let Ok(chunk) = producer.write_chunk_uninit(n * 2) {
-                let mut mixed = Vec::with_capacity(n * 2);
-                for _ in 0..n {
-                    let mut l = 0.0;
-                    let mut r = 0.0;
-                    for s in sources.iter_mut() {
-                        if let Some([a, b]) = s.pending.pop_front() {
-                            l += a;
-                            r += b;
-                        }
+            let mut mixed = Vec::with_capacity(n * 2);
+            for _ in 0..n {
+                let mut l = 0.0;
+                let mut r = 0.0;
+                for s in sources.iter_mut() {
+                    if let Some([a, b]) = s.pending.pop_front() {
+                        l += a;
+                        r += b;
                     }
-                    mixed.push(l);
-                    mixed.push(r);
                 }
-                chunk.fill_from_iter(mixed);
+                mixed.push(l);
+                mixed.push(r);
             }
+            waiting += emit(&mut producer, mixed, slowed, &mut stretch, &mut out_buf, speed);
             frames_until_end -= n as u64;
             wrote = true;
         }
@@ -458,10 +525,53 @@ fn audio_thread(
         if !wrote {
             match cmd_rx.recv_timeout(Duration::from_millis(5)) {
                 Ok(Cmd::Seek(ms)) => pending_seek = Some(ms),
+                Ok(Cmd::Speed(s, ms)) => {
+                    speed = s;
+                    pending_seek = Some(ms);
+                }
                 Ok(Cmd::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
+    }
+}
+
+/// Hands mixed audio (interleaved stereo) to the callback: as it is at normal speed, else
+/// through the stretcher (slower, same pitch). Returns how many song frames are left waiting
+/// in the stretcher because of it.
+fn emit(producer: &mut rtrb::Producer<f32>, input: Vec<f32>, slowed: bool, stretch: &mut Option<wsola::TimeStretch>, out: &mut Vec<f32>, speed: f64) -> f64 {
+    match stretch {
+        Some(st) if slowed => {
+            st.push(&input);
+            let sent = drain(producer, st, out);
+            (input.len() / 2) as f64 - sent as f64 * speed
+        }
+        _ => {
+            if let Ok(chunk) = producer.write_chunk_uninit(input.len()) {
+                chunk.fill_from_iter(input);
+            }
+            0.0
+        }
+    }
+}
+
+/// Moves as much stretched audio as fits (in the stretcher's whole steps) to the callback.
+/// Returns how many frames went.
+fn drain(producer: &mut rtrb::Producer<f32>, st: &mut wsola::TimeStretch, out: &mut Vec<f32>) -> usize {
+    let step = st.min_output_buff_size();
+    let fit = producer.slots() / step * step;
+    if fit == 0 {
+        return 0;
+    }
+    out.resize(fit, 0.0);
+    match st.pull(&mut out[..fit]) {
+        Ok(n) if n > 0 => {
+            if let Ok(chunk) = producer.write_chunk_uninit(n) {
+                chunk.fill_from_iter(out[..n].iter().copied());
+            }
+            n / 2
+        }
+        _ => 0,
     }
 }
 

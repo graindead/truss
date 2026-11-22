@@ -157,6 +157,12 @@ pub struct GameLook {
     pub highway_length: f32,
     /// The rails along each side: a cross-section of the game's rail sprite (left, right).
     pub rail: Option<(Handle, Handle)>,
+    /// The player plays lefty: the lanes run the other way (green on the right).
+    pub lefty: bool,
+    /// The game's line across the highway on each beat, shrunk ahead of time to several
+    /// heights (in pixels, smallest first): it's drawn only a few pixels tall, and the full
+    /// picture squeezed that small flickers as it moves.
+    pub beatline: Vec<(u32, Handle)>,
 }
 
 /// Hit flames in a profile's colours.

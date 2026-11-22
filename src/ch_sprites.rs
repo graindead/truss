@@ -298,6 +298,7 @@ pub const ART: &[&str] = &[
     "score_star_grey_back",
     "score_star_outline_grey",
     "sidebar",
+    "beatline",
     "spr_sustain_strip6_0",
     "spr_sustain_strip6_1",
     "open_sustain_glow",
@@ -531,6 +532,12 @@ fn player_setting(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// The player plays lefty (Lefty flip on in their Clone Hero profile).
+pub fn player_lefty() -> bool {
+    // TRUSS_LEFTY=1 for testing, without changing the game's settings.
+    std::env::var_os("TRUSS_LEFTY").is_some_and(|v| v == "1") || player_setting("lefty_flip").is_some_and(|v| v == "1")
+}
+
 /// The highway the player has chosen in Clone Hero ("Default" if none).
 pub fn player_highway() -> String {
     player_setting("highway_name").unwrap_or_else(|| "Default".into())
@@ -563,7 +570,7 @@ pub fn release_chart_textures() {
 }
 
 /// Textures made for the chart preview: (instrument, profile name, profile text) -> textures.
-static CHART_TEXTURES: std::sync::Mutex<Vec<((InstrumentType, String, String, String), Arc<TextureSet>)>> = std::sync::Mutex::new(Vec::new());
+static CHART_TEXTURES: std::sync::Mutex<Vec<((InstrumentType, String, String, String, bool), Arc<TextureSet>)>> = std::sync::Mutex::new(Vec::new());
 
 /// The chart preview's textures: guitar and drums from Clone Hero's own sprites in the chosen
 /// colour profile when it's installed (in its layout), otherwise the usual ones.
@@ -583,7 +590,7 @@ async fn game_chart_textures(itype: InstrumentType) -> Option<Arc<TextureSet>> {
     let name = preview_look().profile.or_else(player_color_profile).unwrap_or_else(|| "DefaultColors".into());
     let text = crate::color_profile::folder().and_then(|d| std::fs::read_to_string(d.join(format!("{name}.ini"))).ok()).unwrap_or_default();
     let highway = player_highway();
-    let key = (itype, name, text.clone(), highway.clone());
+    let key = (itype, name, text.clone(), highway.clone(), player_lefty());
     if let Some((_, t)) = CHART_TEXTURES.lock().unwrap().iter().find(|(k, _)| *k == key) {
         return Some(t.clone());
     }
@@ -770,6 +777,12 @@ fn game_look(kit: &Kit) -> Option<crate::textures::GameLook> {
         note_speed: speed.unwrap_or(crate::preview::NOTE_SPEED_DEFAULT),
         highway_length: length.unwrap_or(crate::preview::HIGHWAY_LENGTH_DEFAULT),
         rail,
+        lefty: player_lefty(),
+        beatline: kit
+            .art
+            .get("beatline")
+            .map(|img| [1, 2, 3, 4, 6, 8, 12, 16, 24].map(|h| (h, handle(crate::textures::shrink(img, 512, h)))).to_vec())
+            .unwrap_or_default(),
     })
 }
 
@@ -1050,7 +1063,9 @@ fn guitar_images(kit: &Kit, p: &Profile, d: &Profile, sp_active: bool) -> Built 
         .iter()
         .enumerate()
         .map(|(i, (ty, lane))| {
-            let n = i + 1;
+            // The art for where it is on screen (the lanes run the other way for lefty), in
+            // the lane's own colours.
+            let n = if kit.game.is_some() && player_lefty() { GUITAR_LANES.len() - i } else { i + 1 };
             // As the game layers them: the ring and its lower half over the head, both in the
             // ring's colour, so it shows all the way round.
             let fret = |light: Option<Color>| {
@@ -1132,9 +1147,13 @@ fn drum_images(kit: &Kit, p: &Profile, d: &Profile, sp_active: bool) -> Built {
         notes.insert((nt::KICK, flag), kick.clone());
         notes.insert((nt::KICK, nf::DOUBLE_KICK | flag), kick);
     }
+    let mut shapes = DRUM_STRIKERS;
+    if kit.game.is_some() && player_lefty() {
+        shapes.reverse();
+    }
     let strikers = DRUM_LANES
         .iter()
-        .zip(DRUM_STRIKERS)
+        .zip(shapes)
         .map(|((ty, lane), (ring, head))| {
             let pad = |light: Option<Color>| {
                 let mut s = Stack::new(kit, 128, 64)
@@ -1248,8 +1267,8 @@ pub fn demo_tracks() -> (RenderTrack, RenderTrack) {
     sort(&mut d);
     let max = |v: &Vec<RNote>| v.iter().map(|n| n.ms_len).fold(0.0, f64::max);
     (
-        RenderTrack { itype: InstrumentType::FiveFret, max_len: max(&g), notes: g },
-        RenderTrack { itype: InstrumentType::Drums, max_len: max(&d), notes: d },
+        RenderTrack { itype: InstrumentType::FiveFret, max_len: max(&g), notes: g, beats: Vec::new() },
+        RenderTrack { itype: InstrumentType::Drums, max_len: max(&d), notes: d, beats: Vec::new() },
     )
 }
 

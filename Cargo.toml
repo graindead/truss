@@ -21,6 +21,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 symphonia = { version = "0.6", default-features = false, features = ["ogg", "vorbis", "mp3", "wav", "pcm", "flac", "opt-simd"] }
 symphonia-adapter-libopus = "0.3"
 cpal = "0.18"
+# Slows the preview's audio for practice without lowering its pitch (pure Rust).
+wsola = "0.3"
 rtrb = "0.4"
 midly = "0.5"
 tiny-skia = "0.11"

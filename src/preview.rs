@@ -365,6 +365,8 @@ pub struct RenderTrack {
     pub itype: InstrumentType,
     pub notes: Vec<RNote>,
     pub max_len: f64,
+    /// The lines across the highway (ms, kind), drawn in Clone Hero's layout.
+    pub beats: Vec<(f64, chart::BeatKind)>,
 }
 
 pub fn prepare_track(parsed: &ParsedChart, instrument: &str, difficulty: &str) -> Option<RenderTrack> {
@@ -417,7 +419,7 @@ pub fn prepare_track(parsed: &ParsedChart, instrument: &str, difficulty: &str) -
         notes.extend(g);
     }
     let max_len = notes.iter().map(|n| n.ms_len).fold(0.0, f64::max);
-    Some(RenderTrack { itype, notes, max_len })
+    Some(RenderTrack { itype, notes, max_len, beats: chart::beat_lines(parsed) })
 }
 
 fn lane(ty: u8) -> f32 {
@@ -428,6 +430,22 @@ fn lane(ty: u8) -> f32 {
         nt::BLUE | nt::GREEN_DRUM => 3.0,
         nt::ORANGE => 4.0,
         _ => 0.0,
+    }
+}
+
+/// The note type in the mirrored lane (for lefty): green and orange swap, red and blue, and so
+/// on; what's in the middle stays.
+fn mirrored(ty: u8) -> u8 {
+    match ty {
+        nt::GREEN => nt::ORANGE,
+        nt::ORANGE => nt::GREEN,
+        nt::RED => nt::BLUE,
+        nt::BLUE => nt::RED,
+        nt::RED_DRUM => nt::GREEN_DRUM,
+        nt::GREEN_DRUM => nt::RED_DRUM,
+        nt::YELLOW_DRUM => nt::BLUE_DRUM,
+        nt::BLUE_DRUM => nt::YELLOW_DRUM,
+        t => t,
     }
 }
 
@@ -485,6 +503,10 @@ struct Camera {
 
 const CAM_Y: f32 = -1.3;
 const CAM_Z: f32 = 0.8;
+/// The game's beat line sprite: 1536 by 24 pixels at 1650 to the unit.
+const GAME_BEAT_W: f32 = 1536.0 / 1650.0;
+const GAME_BEAT_H: f32 = 24.0 / 1650.0;
+
 /// Furthest point of the highway that is ever shown (the original shows up to 0.9).
 const MAX_Y_TOP: f32 = 2.4;
 /// Notes and sustains fade in over this much of the far end of the highway (world units).
@@ -727,7 +749,11 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
             Some(_) => Cam::Game(GameCam::new(bounds.size(), GAME_RAIL_IN + GAME_RAIL_W, strike, far)),
             None => Cam::Original(Camera::new(bounds.size(), (sl_w / 2.0).max(hw_width / 2.0) + 0.01, sl_h / 2.0)),
         };
-        let nx = |ty: u8| if game.is_some() { game_x(itype, ty) } else { note_x(itype, ty) };
+        let nx = |ty: u8| match game {
+            Some(g) if g.lefty => game_x(itype, mirrored(ty)),
+            Some(_) => game_x(itype, ty),
+            None => note_x(itype, ty),
+        };
 
         let now = self.time_ms;
         let y_bottom = -1.1f32;
@@ -790,6 +816,38 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
                 }
             }
             sy = sy2;
+        }
+
+        // Beat lines (the game's), over the highway's picture: standing up on it like the notes,
+        // as wide as its sprite and as tall as it is times 2.2 for a measure, 1.1 for a beat and
+        // 0.55 for an off-beat, just ahead of where notes cross, in white at full, 70% and 40%.
+        if let Some(lines) = game.map(|g| &g.beatline).filter(|l| !l.is_empty()) {
+            let beats = &self.track.beats;
+            let from = beats.partition_point(|b| to_y(b.0) < hit - 0.3);
+            for &(ms, kind) in &beats[from..] {
+                let y = to_y(ms) + 0.0125;
+                if y > far {
+                    break;
+                }
+                let (scale, alpha) = match kind {
+                    chart::BeatKind::Measure => (2.2, 1.0),
+                    chart::BeatKind::Strong => (1.1, 0.7),
+                    chart::BeatKind::Weak => (0.55, 0.4),
+                };
+                let (_, sy, depth) = cam.project(0.0, y);
+                let k = cam.px_per_unit(depth);
+                let (l, r) = (cam.project(-GAME_BEAT_W / 2.0, y).0, cam.project(GAME_BEAT_W / 2.0, y).0);
+                let h = GAME_BEAT_H * scale * k;
+                // The copy shrunk to at least this tall; under a pixel, one pixel tall and fainter.
+                let line = &lines.iter().find(|(lh, _)| *lh as f32 >= h).unwrap_or(&lines[lines.len() - 1]).1;
+                let mut img = canvas::Image::new(line.clone());
+                img.opacity = alpha * track_fade(y) * h.min(1.0);
+                let h = h.max(1.0);
+                if img.opacity > 0.0 {
+                    // The sprite's pivot is a fifth of the way up it.
+                    frame.draw_image(Rectangle::new(Point::new(l, sy - 0.8 * h), Size::new(r - l, h)), img);
+                }
+            }
         }
 
         // Visible notes: heads within the highway window, plus sustains still playing.

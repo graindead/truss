@@ -189,6 +189,8 @@ struct RawTrack {
 #[derive(Debug, Clone, Default)]
 struct GlobalEvents {
     sections: Vec<i64>,
+    /// Each section's name, as written ("intro a", "Verse 1").
+    section_names: Vec<String>,
     end_events: Vec<i64>,
     has_vocals: bool,
     has_lyrics: bool,
@@ -259,6 +261,8 @@ pub struct ParsedChart {
     pub tracks: Vec<Track>,
     pub chart_offset_secs: f64,
     pub sections: Vec<TimedTick>,
+    /// The sections' names (in the same order).
+    pub section_names: Vec<String>,
     pub end_events: Vec<TimedTick>,
     /// Time signatures with their times: (tick, ms, numerator, denominator).
     pub timed_time_sigs: Vec<(i64, f64, u32, u32)>,
@@ -333,11 +337,69 @@ pub fn parse_chart_file(data: &[u8], is_mid: bool, mods: &Modifiers) -> Result<P
         tracks,
         chart_offset_secs: raw.chart_offset_secs,
         sections: g.sections.iter().map(|&t| timed(t)).collect(),
+        section_names: g.section_names,
         end_events: g.end_events.iter().map(|&t| timed(t)).collect(),
         has_vocals: g.has_vocals,
         has_lyrics: g.has_lyrics,
         parse_issues: g.parse_issues,
     })
+}
+
+// ---------- Beat lines ----------
+
+/// A line across the highway: the start of a measure, a beat, or an off-beat (in x/8 and
+/// the like), as Clone Hero draws them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatKind {
+    Measure,
+    Strong,
+    Weak,
+}
+
+/// The highway's beat lines (time in ms, kind), worked out as Clone Hero's beat manager does:
+/// one per beat of the time signature's bottom number, from the start to a measure past the
+/// last note.
+pub fn beat_lines(c: &ParsedChart) -> Vec<(f64, BeatKind)> {
+    let tpb = c.resolution.max(1);
+    let tempos = timed_tempos(&c.tempos, tpb);
+    let last = c.tracks.iter().flat_map(|t| t.note_groups.last()).flatten().map(|n| n.tick + n.length).max().unwrap_or(0);
+    let end = last + tpb * 4;
+    let mut out: Vec<(f64, BeatKind)> = Vec::new();
+    let (mut tick, mut idx, mut sig_i) = (0i64, 0usize, 0usize);
+    // The last time signature, the beat in its measure, and lines since it changed.
+    let (mut prev, mut beat, mut since): (Option<(u32, u32)>, u32, u32) = (None, 0, 0);
+    while tick <= end {
+        while sig_i + 1 < c.time_sigs.len() && c.time_sigs[sig_i + 1].0 <= tick {
+            sig_i += 1;
+        }
+        let (n, d) = c.time_sigs.get(sig_i).filter(|s| s.0 <= tick).map_or((4, 4), |s| (s.1.max(1), s.2.max(1)));
+        // Off-beats are every other line in x/8 (every fourth in x/16).
+        let per = (d / 4).max(1);
+        let changed = prev != Some((n, d));
+        let since_change = if changed { 0 } else { since };
+        beat = if changed || beat == n { 0 } else { beat };
+        let off = |i: u32| d > 4 && i % per != 0;
+        let kind = if !changed && beat != 0 {
+            if off(beat) { BeatKind::Weak } else { BeatKind::Strong }
+        } else if n == 1 && since_change > 0 {
+            // A measure of one beat: every line starts one, so they're told apart by beat.
+            if off(since_change) { BeatKind::Weak } else { BeatKind::Strong }
+        } else {
+            // After a measure in eighths, the line before a new one is an off-beat.
+            if prev.is_some_and(|(_, pd)| pd > 4)
+                && let Some(l) = out.last_mut()
+            {
+                l.1 = BeatKind::Weak;
+            }
+            BeatKind::Measure
+        };
+        out.push((tick_to_ms(tick, &tempos, &mut idx, tpb), kind));
+        since = since_change + 1;
+        beat += 1;
+        prev = Some((n, d));
+        tick += ((tpb as f64 * 4.0 / d as f64) as i64).max(1);
+    }
+    out
 }
 
 // ---------- Timing ----------
@@ -1383,6 +1445,9 @@ fn classify_event_text(text: &str, tick: i64, g: &mut GlobalEvents, is_mid: bool
     };
     if inner.is_some_and(section_body) || section_body(text) {
         g.sections.push(tick);
+        let body = inner.filter(|t| section_body(t)).unwrap_or(text);
+        let name = ["section ", "section_", "prc ", "prc_"].iter().find_map(|p| body.strip_prefix(p)).unwrap_or(body);
+        g.section_names.push(name.replace('_', " ").trim().to_string());
         return;
     }
     if inner.unwrap_or(text) == "end" {
@@ -1721,6 +1786,39 @@ fn drum_accent_type(t: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beat_lines_follow_time_signatures() {
+        // Two bars of 4/4, then 6/8 (in .chart, "TS 6 3" is 6 over 2^3) and 7/8.
+        let chart = "[Song]
+{
+  Resolution = 192
+}
+[SyncTrack]
+{
+  0 = TS 4
+  0 = B 120000
+  1536 = TS 6 3
+  2112 = TS 7 3
+}
+[ExpertSingle]
+{
+  0 = N 0 0
+  2400 = N 0 0
+}
+";
+        let parsed = parse_chart_file(chart.as_bytes(), false, &Modifiers::default()).unwrap();
+        let lines = beat_lines(&parsed);
+        use BeatKind::{Measure as M, Strong as S, Weak as W};
+        let kinds: Vec<BeatKind> = lines.iter().map(|l| l.1).collect();
+        // 4/4: a line a quarter note. 6/8: one an eighth, the off-beats weak. 7/8: the same,
+        // and its last line (a beat) made an off-beat by the measure after it.
+        assert_eq!(&kinds[..8], &[M, S, S, S, M, S, S, S]);
+        assert_eq!(&kinds[8..14], &[M, W, S, W, S, W]);
+        assert_eq!(&kinds[14..22], &[M, W, S, W, S, W, W, M]);
+        // At 120 BPM a quarter note is 500 ms and an eighth 250.
+        assert!((lines[1].0 - 500.0).abs() < 1e-6 && (lines[9].0 - lines[8].0 - 250.0).abs() < 1e-6);
+    }
 
     fn track_hash(chart: &ParsedChart, t: &Track, type_offset: u32, wide_lengths: bool) -> String {
         crate::trackhash::track_hash(chart, t, crate::trackhash::Layout { type_offset, wide_lengths })
