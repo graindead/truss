@@ -1,8 +1,8 @@
 //! Your own Clone Hero scores, for the Library page. Since Clone Hero 1.1 they're kept on its
-//! leaderboard server, not on this computer: Truss finds your account number in the game's log
-//! (it's in every leaderboard request the game makes) and asks the server for your best score
-//! on each chart, the same list your player page on the leaderboard site shows. A copy is kept,
-//! so they show while offline.
+//! leaderboard server, not on this computer: Truss finds your account numbers in the game's
+//! logs (they're in every leaderboard request the game makes), remembers them, and asks the
+//! server for your best score on each chart, the same list your player page on the leaderboard
+//! site shows. A copy is kept for each account, so they show while offline.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -86,16 +86,34 @@ fn game_data_dir() -> Option<PathBuf> {
     Some(home.join("AppData").join("LocalLow").join("srylain Inc_").join("Clone Hero"))
 }
 
-/// Your account number, from the game's last two logs (the newest mention).
-pub fn account_id() -> Option<u64> {
-    let dir = game_data_dir()?;
-    ["Player.log", "Player-prev.log"].iter().find_map(|f| {
-        let text = std::fs::read_to_string(dir.join(f)).ok()?;
-        text.rmatch_indices("accountId=").find_map(|(at, m)| {
+/// Every account number in the game's last two logs, with how often each comes up (most
+/// first): more than one when several accounts play on this computer.
+pub fn log_accounts() -> Vec<(u64, usize)> {
+    let Some(dir) = game_data_dir() else { return Vec::new() };
+    let mut seen: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for f in ["Player.log", "Player-prev.log"] {
+        let Ok(text) = std::fs::read_to_string(dir.join(f)) else { continue };
+        for (at, m) in text.match_indices("accountId=") {
             let digits: String = text[at + m.len()..].chars().take_while(char::is_ascii_digit).collect();
-            digits.parse().ok()
-        })
-    })
+            if let Ok(id) = digits.parse() {
+                *seen.entry(id).or_default() += 1;
+            }
+        }
+    }
+    let mut v: Vec<(u64, usize)> = seen.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v
+}
+
+/// An account's name, from its public profile.
+pub async fn account_name(account: u64) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Profile {
+        username: String,
+    }
+    let resp = crate::api::CLIENT.get(format!("{API}/account/{account}/profile")).send().await.map_err(|e| e.to_string())?;
+    let p: Profile = resp.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    Ok(p.username)
 }
 
 /// The kept copy of your scores.
@@ -105,14 +123,13 @@ struct Kept {
     scores: Vec<Best>,
 }
 
-fn kept_path() -> Option<PathBuf> {
-    crate::settings::cache_dir().map(|d| d.join("my-scores.json"))
+fn kept_path(account: u64) -> Option<PathBuf> {
+    crate::settings::cache_dir().map(|d| d.join("scores").join(format!("{account}.json")))
 }
 
-/// The scores kept from the last time they were fetched (for this account).
-pub fn kept() -> Option<Scores> {
-    let account = account_id()?;
-    let k: Kept = serde_json::from_slice(&std::fs::read(kept_path()?).ok()?).ok()?;
+/// An account's scores, kept from the last time they were fetched.
+pub fn kept(account: u64) -> Option<Scores> {
+    let k: Kept = serde_json::from_slice(&std::fs::read(kept_path(account)?).ok()?).ok()?;
     (k.account == account).then(|| Scores::new(k.scores))
 }
 
@@ -124,9 +141,8 @@ struct Page {
     page_size: usize,
 }
 
-/// Your best score on every chart, fresh from the server (and kept).
-pub async fn fetch() -> Result<Scores, String> {
-    let account = account_id().ok_or("Play a song in Clone Hero while signed in, so Truss can find your account")?;
+/// An account's best score on every chart, fresh from the server (and kept).
+pub async fn fetch(account: u64) -> Result<Scores, String> {
     let mut all = Vec::new();
     for page in 1..=200 {
         let url = format!("{API}/account/{account}/scores?page={page}&bestPerChart=true");
@@ -141,9 +157,10 @@ pub async fn fetch() -> Result<Scores, String> {
             break;
         }
     }
-    if let Some(path) = kept_path()
+    if let Some(path) = kept_path(account)
         && let Ok(bytes) = serde_json::to_vec(&Kept { account, scores: all.clone() })
     {
+        let _ = path.parent().map(std::fs::create_dir_all);
         let _ = std::fs::write(path, bytes);
     }
     Ok(Scores::new(all))

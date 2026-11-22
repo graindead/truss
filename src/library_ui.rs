@@ -20,6 +20,23 @@ pub enum Filter {
     /// Charts you have a score on, and ones you've full-combo'd.
     Played,
     FullCombo,
+    /// Played, not full-combo'd, but close (closest first).
+    AlmostFc,
+    /// Not played, at the difficulty most of your full combos are at (or a step up).
+    YourLevel,
+}
+
+/// Accuracy from which a play counts as close to a full combo.
+const ALMOST_FC: f32 = 99.0;
+
+/// Your level: the guitar difficulty rating (song.ini's diff_guitar) three quarters of your
+/// guitar full combos are at or below, so a handful of easy ones don't pull it down.
+fn your_level(fc_diffs: &mut [i8]) -> Option<i8> {
+    if fc_diffs.len() < 5 {
+        return None;
+    }
+    fc_diffs.sort_unstable();
+    Some(fc_diffs[(fc_diffs.len() * 3) / 4])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +179,10 @@ pub struct Page {
     best: Vec<Option<crate::scores::Best>>,
     played: usize,
     full_combos: usize,
+    almost_fc: usize,
+    /// Your level (see `your_level`), and how many unplayed charts are at it.
+    level: Option<i8>,
+    at_level: usize,
 }
 
 impl Page {
@@ -192,6 +213,16 @@ impl Page {
         self.best = cx.catalog.iter().map(|c| cx.scores.and_then(|s| s.best(&c.artist, &c.name, &c.charter)).cloned()).collect();
         self.played = self.best.iter().flatten().count();
         self.full_combos = self.best.iter().flatten().filter(|b| b.is_fc).count();
+        self.almost_fc = self.best.iter().flatten().filter(|b| !b.is_fc && b.accuracy() >= ALMOST_FC).count();
+        let mut fc_diffs: Vec<i8> = cx
+            .catalog
+            .iter()
+            .zip(&self.best)
+            .filter(|(_, b)| b.as_ref().is_some_and(|b| b.is_fc && b.instrument == "guitar"))
+            .filter_map(|(c, _)| c.diff_guitar)
+            .collect();
+        self.level = your_level(&mut fc_diffs);
+        self.at_level = (0..cx.catalog.len()).filter(|&i| self.at_your_level(i, cx)).count();
         let existing: HashSet<&PathBuf> = cx.catalog.iter().map(|c| &c.path).collect();
         self.selected.retain(|p| existing.contains(p));
         if self.open.as_ref().is_some_and(|p| !existing.contains(p)) {
@@ -203,6 +234,12 @@ impl Page {
     /// The chart whose details are open, if any.
     pub fn open_chart(&self) -> Option<&PathBuf> {
         self.open.as_ref()
+    }
+
+    /// An unplayed guitar chart at your level or a step up.
+    fn at_your_level(&self, i: usize, cx: &Ctx) -> bool {
+        let (Some(level), c) = (self.level, &cx.catalog[i]) else { return false };
+        c.has_guitar && self.best.get(i).is_some_and(Option::is_none) && c.diff_guitar.is_some_and(|d| d == level || d == level + 1)
     }
 
     fn passes(&self, i: usize, cx: &Ctx) -> bool {
@@ -217,6 +254,8 @@ impl Page {
             Filter::Duplicates => self.dup_keys.contains(&c.key),
             Filter::Played => best.is_some(),
             Filter::FullCombo => best.is_some_and(|b| b.is_fc),
+            Filter::AlmostFc => best.is_some_and(|b| !b.is_fc && b.accuracy() >= ALMOST_FC),
+            Filter::YourLevel => self.at_your_level(i, cx),
         }
     }
 
@@ -247,6 +286,10 @@ impl Page {
             }
             // Duplicates sit next to each other.
             _ if self.filter == Some(Filter::Duplicates) => shown.sort_by_cached_key(|&i| cat[i].key.clone()),
+            // Closest to a full combo first.
+            _ if self.filter == Some(Filter::AlmostFc) => shown.sort_by_key(|&i| {
+                std::cmp::Reverse(self.best.get(i).and_then(Option::as_ref).map_or(0, |b| (b.accuracy() * 10.0) as u32))
+            }),
             _ => {}
         }
         self.shown = shown;
@@ -403,6 +446,8 @@ impl Page {
                 if cx.scores.is_some() { self.full_combos.to_string() } else { "—".into() },
                 Filter::FullCombo
             ),
+            tile("Near FC", if cx.scores.is_some() { self.almost_fc.to_string() } else { "—".into() }, Filter::AlmostFc),
+            tile("Your level", if self.level.is_some() { self.at_level.to_string() } else { "—".into() }, Filter::YourLevel),
         ]
         .spacing(8);
 
@@ -410,8 +455,14 @@ impl Page {
             "Scanning your library…".to_string()
         } else if let Some(e) = cx.error {
             e.to_string()
-        } else if let Some(e) = cx.scores_error.filter(|_| matches!(self.filter, Some(Filter::Played | Filter::FullCombo))) {
+        } else if let Some(e) = cx.scores_error.filter(|_| matches!(self.filter, Some(Filter::Played | Filter::FullCombo | Filter::AlmostFc | Filter::YourLevel))) {
             e.to_string()
+        } else if self.filter == Some(Filter::AlmostFc) {
+            format!("{} at {ALMOST_FC:.0}%+ without an FC, closest first", self.shown.len())
+        } else if let (Some(Filter::YourLevel), Some(l)) = (self.filter, self.level) {
+            format!("{} unplayed, rated {l}–{} on guitar", self.shown.len(), l + 1)
+        } else if self.filter == Some(Filter::YourLevel) {
+            "FC a few rated guitar charts to find your level".to_string()
         } else {
             format!("{} of {} charts", self.shown.len(), cat.len())
         };

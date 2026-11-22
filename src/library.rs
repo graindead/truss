@@ -82,6 +82,9 @@ pub struct LocalChart {
     /// reads differently (from a pack, say) still counts as this chart.
     #[serde(default)]
     pub chart_hash: Option<String>,
+    /// Lead guitar's difficulty rating from song.ini (0 to 6, sometimes more), if it has one.
+    #[serde(default)]
+    pub diff_guitar: Option<i8>,
 }
 
 impl LocalChart {
@@ -269,9 +272,23 @@ pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item
                 if use_cache && c.folders == folders {
                     let _ = tx.send(ScanEvent::Cached(Arc::new(Library::from_catalog(c.charts.clone())))).await;
                 }
-                // Charts read by an older version are read again, in case the reading changed.
+                // Charts read by an older version have their song.ini read again, in case the
+                // reading changed (their chart files aren't hashed again while unchanged).
                 let reuse = c.version == CACHE_VERSION;
-                c.charts.into_iter().filter(|c| reuse && c.stamp != 0).map(|c| (c.path.clone(), c)).collect()
+                c.charts
+                    .into_iter()
+                    .filter(|c| c.stamp != 0)
+                    .map(|c| {
+                        let c = if reuse {
+                            c
+                        } else {
+                            let mut old = LocalChart::clone(&c);
+                            old.stamp = STALE_STAMP;
+                            Arc::new(old)
+                        };
+                        (c.path.clone(), c)
+                    })
+                    .collect()
             }
             None => HashMap::new(),
         };
@@ -306,7 +323,10 @@ struct Cache {
 }
 /// Bumped when the way charts are read changes, so the next scan reads them all again.
 /// 2: a line like `[song] =` no longer starts a new section of song.ini.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
+
+/// A kept chart's stamp when an older version read it: matches no file, so it's read again.
+const STALE_STAMP: u64 = u64::MAX;
 
 fn cache_path() -> Option<PathBuf> {
     crate::settings::cache_dir().map(|d| d.join("library.json"))
@@ -512,15 +532,19 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
             charts.push(Arc::new(c));
             continue;
         }
+        // Read again only for its song.ini (after an update): its chart's hash still holds.
+        let kept_hash = prev.get(&sng).filter(|o| o.modified == modified && modified != 0).and_then(|o| o.chart_hash.clone());
         if let Ok(index) = crate::sng::read_index(&sng) {
             let mut assets = assets_from_names(index.files.iter().map(|f| f.name.as_str()));
             assets.chart_type = ChartType::Sng;
-            let hash = assets
-                .chart_file
-                .as_ref()
-                .and_then(|n| index.files.iter().find(|f| &f.name == n))
-                .and_then(|e| crate::sng::read_entry(&sng, &index, e).ok())
-                .map(|b| chart_hash(&b));
+            let hash = kept_hash.or_else(|| {
+                assets
+                    .chart_file
+                    .as_ref()
+                    .and_then(|n| index.files.iter().find(|f| &f.name == n))
+                    .and_then(|e| crate::sng::read_entry(&sng, &index, e).ok())
+                    .map(|b| chart_hash(&b))
+            });
             let mut c = make_chart(sng, &index.metadata, assets, modified, added);
             c.stamp = stamp;
             c.chart_hash = hash;
@@ -593,6 +617,7 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         has_drums: has("diff_drums"),
         has_keys: has("diff_keys"),
         has_vocals: has("diff_vocals"),
+        diff_guitar: get("diff_guitar").trim().parse::<f64>().ok().filter(|d| *d >= 0.0).map(|d| d.min(100.0) as i8),
         modified,
         added,
         stamp: 0,

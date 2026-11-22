@@ -54,6 +54,11 @@ pub struct Settings {
     /// The version of the folder setup screen last seen (it's shown again when there's
     /// something new on it).
     pub setup_seen: u32,
+    /// Clone Hero accounts seen in the game's logs (account number, name once looked up), kept
+    /// because the logs are rewritten every time the game starts.
+    pub ch_accounts: Vec<(u64, String)>,
+    /// The account whose scores Library shows; none: the one the game uses most.
+    pub ch_account: Option<u64>,
     /// Look for a new version on GitHub when Truss starts.
     pub check_updates: bool,
     /// The Leaderboard section in the details is open.
@@ -98,6 +103,8 @@ impl Default for Settings {
             preview_color_profile: None,
             ch_folder: None,
             setup_seen: 0,
+            ch_accounts: Vec::new(),
+            ch_account: None,
             check_updates: true,
             show_leaderboard: false,
             library_sort: String::new(),

@@ -412,6 +412,8 @@ struct App {
     /// last asked for.
     my_scores: Option<Arc<scores::Scores>>,
     scores_asked: Option<std::time::Instant>,
+    /// Accounts in Clone Hero's current logs, and how often each comes up (most first).
+    log_accounts: Vec<(u64, usize)>,
     scores_error: Option<String>,
     /// Downloads/deletes happened since the last scan.
     catalog_stale: bool,
@@ -535,7 +537,12 @@ enum Message {
     ToolsPage(tools_ui::Msg),
     PacksPage(packs::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
-    ScoresFetched(Result<Arc<scores::Scores>, String>),
+    /// An account's scores arrived (or couldn't be fetched).
+    ScoresFetched(u64, Result<Arc<scores::Scores>, String>),
+    /// An account's name was looked up.
+    AccountName(u64, Result<String, String>),
+    /// The account whose scores Library shows was picked.
+    PickAccount(AccountChoice),
     LibraryDeleted(Result<(), String>),
     /// Loose copies of pack charts were found (`Some`: the pack just downloaded).
     PackDuplicates(Vec<library_tools::Duplicate>, Option<String>),
@@ -616,6 +623,30 @@ enum Message {
 /// Chart preview frame-rate option (0 = match display).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FpsChoice(u32);
+
+/// A Clone Hero account in the Settings list: its name, else its number.
+#[derive(Debug, Clone, PartialEq)]
+struct AccountChoice {
+    id: u64,
+    name: String,
+}
+
+impl std::fmt::Display for AccountChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.name.is_empty() { write!(f, "Account #{}", self.id) } else { f.write_str(&self.name) }
+    }
+}
+
+/// The account whose scores Library shows: the one chosen in Settings, else the one most in
+/// Clone Hero's current logs, else the first remembered.
+fn score_account(settings: &settings::Settings, log: &[(u64, usize)]) -> Option<u64> {
+    let known = |id: u64| settings.ch_accounts.iter().any(|a| a.0 == id);
+    settings
+        .ch_account
+        .filter(|&id| known(id))
+        .or_else(|| log.first().map(|a| a.0))
+        .or_else(|| settings.ch_accounts.first().map(|a| a.0))
+}
 
 /// Bumped when the setup screen gets a new folder, so everyone sees it once more (with what's
 /// new marked). 1: the Clone Hero folder.
@@ -841,8 +872,9 @@ impl App {
             catalog: Vec::new(),
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
-            my_scores: scores::kept().map(Arc::new),
+            my_scores: score_account(&settings, &scores::log_accounts()).and_then(scores::kept).map(Arc::new),
             scores_asked: None,
+            log_accounts: Vec::new(),
             scores_error: None,
             catalog_stale: false,
             library_error: None,
@@ -1206,8 +1238,11 @@ impl App {
 
     /// Height of the details below the open row: taller while an expanded preview shows.
     fn library_details_height(&self) -> f32 {
-        let expanded = self.preview.as_ref().is_some_and(|p| p.md5.starts_with(library::LOCAL_MD5) && p.expanded());
-        if expanded { 660.0 } else { 440.0 }
+        let previewing = self.preview.as_ref().filter(|p| p.md5.starts_with(library::LOCAL_MD5));
+        let expanded = previewing.is_some_and(|p| p.expanded());
+        // A preview's controls are a row taller than the art they replace (its practice row).
+        let practice = if previewing.is_some() { 36.0 } else { 0.0 };
+        (if expanded { 660.0 } else { 440.0 }) + practice
     }
 
     /// The details below the open row on the Library page.
@@ -2518,7 +2553,24 @@ impl App {
                 self.refresh_pages();
                 Task::none()
             }
-            Message::ScoresFetched(r) => {
+            Message::AccountName(id, Ok(name)) => {
+                if let Some(a) = self.settings.ch_accounts.iter_mut().find(|a| a.0 == id) {
+                    a.1 = name;
+                }
+                self.save_settings()
+            }
+            Message::AccountName(_, Err(_)) => Task::none(),
+            Message::PickAccount(c) => {
+                self.settings.ch_account = Some(c.id);
+                self.my_scores = scores::kept(c.id).map(Arc::new);
+                self.scores_error = None;
+                self.refresh_pages();
+                self.scores_asked = Some(std::time::Instant::now());
+                Task::batch([self.save_settings(), Task::perform(scores::fetch(c.id), move |r| Message::ScoresFetched(c.id, r.map(Arc::new)))])
+            }
+            // Scores for an account that's no longer the one shown (picked away from meanwhile).
+            Message::ScoresFetched(id, _) if Some(id) != self.score_account() => Task::none(),
+            Message::ScoresFetched(_, r) => {
                 match r {
                     Ok(s) => {
                         self.my_scores = Some(s);
@@ -2864,7 +2916,11 @@ impl App {
                     // Your scores: asked for again at most every ten minutes.
                     if self.scores_asked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(600)) {
                         self.scores_asked = Some(std::time::Instant::now());
-                        tasks.push(Task::perform(scores::fetch(), |r| Message::ScoresFetched(r.map(Arc::new))));
+                        tasks.push(self.remember_accounts());
+                        match self.score_account() {
+                            Some(id) => tasks.push(Task::perform(scores::fetch(id), move |r| Message::ScoresFetched(id, r.map(Arc::new)))),
+                            None => self.scores_error = Some("Load a leaderboard in Clone Hero while signed in, so Truss can find your account".into()),
+                        }
                     }
                     if self.catalog_stale && !self.library_scanning {
                         tasks.push(self.scan_library());
@@ -3575,6 +3631,59 @@ impl App {
     }
 
     /// Settings > Downloads: where chart packs (Packs page) are saved.
+    /// The Clone Hero account whose scores Library shows (see `score_account`).
+    fn score_account(&self) -> Option<u64> {
+        score_account(&self.settings, &self.log_accounts)
+    }
+
+    /// Adds accounts in Clone Hero's logs to the ones remembered, and looks up the names of
+    /// any not known yet.
+    fn remember_accounts(&mut self) -> Task<Message> {
+        self.log_accounts = scores::log_accounts();
+        let mut changed = false;
+        for &(id, _) in &self.log_accounts {
+            if !self.settings.ch_accounts.iter().any(|a| a.0 == id) {
+                self.settings.ch_accounts.push((id, String::new()));
+                changed = true;
+            }
+        }
+        let names = self
+            .settings
+            .ch_accounts
+            .iter()
+            .filter(|a| a.1.is_empty())
+            .map(|a| {
+                let id = a.0;
+                Task::perform(scores::account_name(id), move |r| Message::AccountName(id, r))
+            })
+            .collect::<Vec<_>>();
+        let save = if changed { self.save_settings() } else { Task::none() };
+        Task::batch(names.into_iter().chain([save]))
+    }
+
+    /// The Clone Hero account Library's scores are from: one line when there's just one, a
+    /// choice when several have played on this computer.
+    fn ch_account_setting(&self) -> Element<'static, Message> {
+        let accounts: Vec<AccountChoice> = self.settings.ch_accounts.iter().map(|(id, name)| AccountChoice { id: *id, name: name.clone() }).collect();
+        let current = self.score_account().and_then(|id| accounts.iter().find(|a| a.id == id).cloned());
+        let muted = |t: &Theme| text::Style { color: Some(style::muted(t)) };
+        let (state, note): (Element<'static, Message>, &'static str) = match accounts.len() {
+            0 => (text("Not found yet").size(12).into(), "Load a leaderboard in Clone Hero while signed in, and it's found the next time Library opens"),
+            1 => (text(current.map(|c| c.to_string()).unwrap_or_default()).size(12).into(), "Found in Clone Hero's logs"),
+            _ => (
+                pick_list(accounts, current, Message::PickAccount).text_size(12).padding([4, 8]).into(),
+                if self.settings.ch_account.is_some() { "Chosen by you" } else { "The one Clone Hero uses most, until you choose" },
+            ),
+        };
+        row![
+            column![text("Clone Hero account").size(13), text("Whose scores the Library page shows").size(11).style(muted), text(note).size(11).style(muted)].spacing(2).width(Length::Fill),
+            state,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
     /// Clone Hero's folder: chosen, found, or not found.
     fn ch_folder_setting(&self) -> Element<'static, Message> {
         let s = &self.settings;
@@ -3756,7 +3865,9 @@ impl App {
             .push(rule::horizontal(1).style(crate::style::rule))
             .push(self.pack_folder_setting())
             .push(rule::horizontal(1).style(crate::style::rule))
-            .push(self.ch_folder_setting());
+            .push(self.ch_folder_setting())
+            .push(rule::horizontal(1).style(crate::style::rule))
+            .push(self.ch_account_setting());
         // The Issue scanner's folders, while it's switched on (it's hidden for now).
         if tools_ui::ISSUE_SCANNER_ENABLED {
             lib_col = lib_col
@@ -4450,6 +4561,22 @@ fn search_link<'a>(v: String, size: u32) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_whose_scores_to_show() {
+        let mut s = settings::Settings::default();
+        s.ch_accounts = vec![(1, "a".into()), (2, "b".into())];
+        // Nothing chosen: the account the game's logs mention most.
+        assert_eq!(score_account(&s, &[(2, 40), (1, 3)]), Some(2));
+        // Logs rewritten without any: the first remembered.
+        assert_eq!(score_account(&s, &[]), Some(1));
+        // Chosen in Settings: that one, whatever the logs say.
+        s.ch_account = Some(1);
+        assert_eq!(score_account(&s, &[(2, 40)]), Some(1));
+        // A choice that's no longer remembered doesn't count.
+        s.ch_account = Some(9);
+        assert_eq!(score_account(&s, &[(2, 40)]), Some(2));
+    }
 
     /// TRUSS_TEST_ICON_DIR=<dir>: write the app icon in a few themes as PNGs to look at.
     #[test]
