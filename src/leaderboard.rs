@@ -5,11 +5,16 @@
 
 use crate::api::Chart;
 use crate::trackhash::Computed;
-use serde::Deserialize;
 
-const API: &str = "https://api.clonehero.net/v1";
-pub const SITE: &str = "https://leaderboards.clonehero.net";
+/// One score on a board, as the leaderboard server gives it.
+pub use open_chl_api::Score;
+
 const TOP: u32 = 50;
+
+/// The leaderboard API, over Truss's shared HTTP client.
+pub fn ch_api() -> open_chl_api::Api {
+    open_chl_api::Api::new(crate::api::CLIENT.clone())
+}
 
 /// One leaderboard you can pick for a chart.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -110,47 +115,12 @@ fn local_note_files(path: &std::path::Path) -> Result<NoteFiles, String> {
     Ok((files, Some(idx.metadata.clone())))
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Score {
-    pub placement: u32,
-    pub username: String,
-    pub total_score: i64,
-    /// "99.8"; missing on some runs.
-    pub accuracy: Option<String>,
-    pub is_fc: bool,
-    pub is_pfc: bool,
-    pub notes_hit: u32,
-    pub note_count: u32,
-    pub speed: u32,
-    pub modifiers: Vec<String>,
-    pub controller_type: String,
-    pub song_hash: String,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Board {
     pub scores: Vec<Score>,
     pub players: u64,
     /// The chart's page on the leaderboards website, when it has any scores.
     pub page: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Resp {
-    summary: Summary,
-    top: Top,
-}
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Summary {
-    total_player_count: u64,
-}
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Top {
-    score_data: Vec<Score>,
 }
 
 /// Display name for a leaderboard instrument key.
@@ -232,18 +202,14 @@ pub async fn top(track: Track) -> Result<Board, String> {
 }
 
 async fn top_for(hash: &str, track: &Track) -> Result<Board, String> {
-    let url = format!(
-        "{API}/scores?trackHash={hash}&instrument={}&difficulty={}&minSpeed=100&maxSpeed=100&topScores={TOP}&sort=score",
-        track.instrument, track.difficulty
-    );
-    let resp = crate::api::CLIENT.get(url).send().await.map_err(|e| format!("Couldn't reach the leaderboards: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("The leaderboards answered {}", resp.status()));
-    }
-    let r: Resp = resp.json().await.map_err(|e| format!("Unexpected leaderboard reply: {e}"))?;
-    let page = r.top.score_data.first().filter(|s| !s.song_hash.is_empty()).map(|s| {
-        format!("{SITE}/scores/{}?instrument={}&difficulty={}&minSpeed=100&maxSpeed=100&sort=score", s.song_hash, track.instrument, track.difficulty)
-    });
+    let q = open_chl_api::ScoresQuery::track(hash, &track.instrument, &track.difficulty).speed(100).top(TOP).sort("score");
+    let r = ch_api().scores(&q).await?;
+    let page = r
+        .top
+        .score_data
+        .first()
+        .filter(|s| !s.song_hash.is_empty())
+        .map(|s| open_chl_api::site::song_page(&s.song_hash, &track.instrument, &track.difficulty, 100, "score"));
     let mut scores = r.top.score_data;
     scores.truncate(TOP as usize);
     Ok(Board { scores, players: r.summary.total_player_count, page })
@@ -282,7 +248,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!b.scores.is_empty());
-        assert_eq!(b.scores[0].placement, 1);
+        assert_eq!(b.scores[0].placement, Some(1));
         assert!(b.scores.windows(2).all(|w| w[0].total_score >= w[1].total_score));
         assert!(b.page.unwrap().contains("/scores/"));
     }

@@ -252,7 +252,7 @@ impl App {
             let acc = s.accuracy.as_deref().map(|a| format!("{}%", a.trim_end_matches(".0"))).unwrap_or_default();
             list = list.push(
                 row![
-                    text(format!("{}.", s.placement)).size(12).width(24).style(muted),
+                    text(s.placement.map(|p| format!("{p}.")).unwrap_or_default()).size(12).width(24).style(muted),
                     container(who).width(Length::Fill).clip(true),
                     container(badge).width(30).center_x(30),
                     text(acc).size(12).width(44).align_x(iced::alignment::Horizontal::Right).style(muted),

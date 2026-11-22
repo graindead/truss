@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const API: &str = "https://api.clonehero.net/v1";
-
 /// One of your best scores: a chart, on one instrument and difficulty.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -107,13 +105,7 @@ pub fn log_accounts() -> Vec<(u64, usize)> {
 
 /// An account's name, from its public profile.
 pub async fn account_name(account: u64) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct Profile {
-        username: String,
-    }
-    let resp = crate::api::CLIENT.get(format!("{API}/account/{account}/profile")).send().await.map_err(|e| e.to_string())?;
-    let p: Profile = resp.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
-    Ok(p.username)
+    crate::leaderboard::ch_api().profile(account).await.map(|p| p.username)
 }
 
 /// The kept copy of your scores.
@@ -133,30 +125,30 @@ pub fn kept(account: u64) -> Option<Scores> {
     (k.account == account).then(|| Scores::new(k.scores))
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Page {
-    scores: Vec<Best>,
-    total_count: usize,
-    page_size: usize,
+impl From<open_chl_api::Score> for Best {
+    fn from(s: open_chl_api::Score) -> Self {
+        Best {
+            name: s.name,
+            artist: s.artist,
+            charter: s.charter,
+            instrument: s.instrument,
+            difficulty: s.difficulty,
+            speed: s.speed,
+            stars: s.stars,
+            is_fc: s.is_fc,
+            is_pfc: s.is_pfc,
+            total_score: s.total_score.max(0) as u64,
+            accuracy: s.accuracy.unwrap_or_default(),
+            notes_hit: s.notes_hit,
+            note_count: s.note_count,
+        }
+    }
 }
 
 /// An account's best score on every chart, fresh from the server (and kept).
 pub async fn fetch(account: u64) -> Result<Scores, String> {
-    let mut all = Vec::new();
-    for page in 1..=200 {
-        let url = format!("{API}/account/{account}/scores?page={page}&bestPerChart=true");
-        let resp = crate::api::CLIENT.get(&url).send().await.map_err(|e| format!("Couldn't reach Clone Hero's leaderboards: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("Clone Hero's leaderboards answered {}", resp.status()));
-        }
-        let p: Page = resp.json().await.map_err(|e| format!("Unexpected answer from the leaderboards: {e}"))?;
-        let done = p.scores.is_empty() || page * p.page_size.max(1) >= p.total_count;
-        all.extend(p.scores);
-        if done {
-            break;
-        }
-    }
+    let q = open_chl_api::AccountScoresQuery { best_per_chart: true, ..Default::default() };
+    let all: Vec<Best> = crate::leaderboard::ch_api().account_scores_all(account, &q, 200).await?.into_iter().map(Best::from).collect();
     if let Some(path) = kept_path(account)
         && let Ok(bytes) = serde_json::to_vec(&Kept { account, scores: all.clone() })
     {

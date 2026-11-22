@@ -2946,6 +2946,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-chl-api"
+version = "0.1.0"
+source = "git+https://github.com/graindead/open-chl-api?rev=e10f1118db183bee52cd8f11b83ffd9c35b44935#e10f1118db183bee52cd8f11b83ffd9c35b44935"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4737,6 +4747,7 @@ dependencies = [
  "log",
  "midly",
  "open",
+ "open-chl-api",
  "reqwest",
  "rfd",
  "rtrb",
