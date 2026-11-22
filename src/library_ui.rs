@@ -17,6 +17,9 @@ pub enum Filter {
     NoArt,
     NoLyrics,
     Duplicates,
+    /// Charts you have a score on, and ones you've full-combo'd.
+    Played,
+    FullCombo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -130,7 +133,12 @@ pub struct Ctx<'a> {
     pub notice: Option<&'a str>,
     /// A clean-up is running.
     pub busy: bool,
+    /// Your Clone Hero scores, once known, and why they couldn't be fetched.
+    pub scores: Option<&'a crate::scores::Scores>,
+    pub scores_error: Option<&'a str>,
 }
+
+
 
 #[derive(Default)]
 pub struct Page {
@@ -149,6 +157,11 @@ pub struct Page {
     dup_keys: HashSet<String>,
     /// Lowercased "artist name charter album" per catalog entry, for searching.
     hay: Vec<String>,
+    /// Your best play of each catalog entry (worked out when the catalog or scores change),
+    /// and how many you've played and full-combo'd.
+    best: Vec<Option<crate::scores::Best>>,
+    played: usize,
+    full_combos: usize,
 }
 
 impl Page {
@@ -176,6 +189,9 @@ impl Page {
             }
         }
         self.dup_keys = count.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k.to_string()).collect();
+        self.best = cx.catalog.iter().map(|c| cx.scores.and_then(|s| s.best(&c.artist, &c.name, &c.charter)).cloned()).collect();
+        self.played = self.best.iter().flatten().count();
+        self.full_combos = self.best.iter().flatten().filter(|b| b.is_fc).count();
         let existing: HashSet<&PathBuf> = cx.catalog.iter().map(|c| &c.path).collect();
         self.selected.retain(|p| existing.contains(p));
         if self.open.as_ref().is_some_and(|p| !existing.contains(p)) {
@@ -189,7 +205,9 @@ impl Page {
         self.open.as_ref()
     }
 
-    fn passes(&self, c: &LocalChart, cx: &Ctx) -> bool {
+    fn passes(&self, i: usize, cx: &Ctx) -> bool {
+        let c = &cx.catalog[i];
+        let best = self.best.get(i).and_then(Option::as_ref);
         match self.filter.unwrap_or(Filter::All) {
             Filter::All => true,
             Filter::NoVideo => !c.has_video,
@@ -197,6 +215,8 @@ impl Page {
             Filter::NoArt => !c.has_album_art,
             Filter::NoLyrics => cx.lyrics.get(&c.path) == Some(&false),
             Filter::Duplicates => self.dup_keys.contains(&c.key),
+            Filter::Played => best.is_some(),
+            Filter::FullCombo => best.is_some_and(|b| b.is_fc),
         }
     }
 
@@ -212,7 +232,7 @@ impl Page {
             .filter(|&i| {
                 let c = &cx.catalog[i];
                 self.kind.is_none_or(|k| c.chart_type == k)
-                    && self.passes(c, cx)
+                    && self.passes(i, cx)
                     && words.iter().all(|w| self.hay.get(i).is_some_and(|h| h.contains(w)))
             })
             .collect();
@@ -373,12 +393,24 @@ impl Page {
                 Filter::NoLyrics
             ),
             tile("Duplicates", dups.to_string(), Filter::Duplicates),
+            tile(
+                "Played",
+                if cx.scores.is_some() { self.played.to_string() } else { "—".into() },
+                Filter::Played
+            ),
+            tile(
+                "Full combo",
+                if cx.scores.is_some() { self.full_combos.to_string() } else { "—".into() },
+                Filter::FullCombo
+            ),
         ]
         .spacing(8);
 
         let status = if cx.scanning {
             "Scanning your library…".to_string()
         } else if let Some(e) = cx.error {
+            e.to_string()
+        } else if let Some(e) = cx.scores_error.filter(|_| matches!(self.filter, Some(Filter::Played | Filter::FullCombo))) {
             e.to_string()
         } else {
             format!("{} of {} charts", self.shown.len(), cat.len())
@@ -442,6 +474,7 @@ impl Page {
         const ADDED_W: f32 = 84.0;
         const ASSET_W: f32 = 48.0;
         const OPEN_W: f32 = 56.0;
+        const SCORE_W: f32 = 92.0;
         const GAP: f32 = 10.0;
         // Right side leaves room for the scrollbar, which floats over the list.
         let row_pad = iced::Padding { top: 0.0, right: 26.0, bottom: 0.0, left: 12.0 };
@@ -479,6 +512,7 @@ impl Page {
                 fixed_head("BG", ASSET_W),
                 fixed_head("Video", ASSET_W),
                 fixed_head("Lyrics", ASSET_W),
+                fixed_head("Score", SCORE_W),
                 space().width(OPEN_W),
             ]
             .spacing(GAP)
@@ -545,6 +579,7 @@ impl Page {
                         mark(Some(c.has_background)),
                         mark(Some(c.has_video)),
                         mark(cx.lyrics.get(&c.path).copied()),
+                        score_cell(self.best.get(i).and_then(Option::as_ref), SCORE_W),
                         container(button(text("Open").size(11)).padding([2, 8]).style(button::text).on_press(Msg::Open(open)))
                             .width(OPEN_W)
                             .center_x(OPEN_W),
@@ -596,6 +631,34 @@ impl Page {
     }
 }
 
+/// Your best play of a chart, in its row: a full-combo badge or the accuracy, the stars, and
+/// the instrument when it isn't guitar.
+fn score_cell<'a>(best: Option<&crate::scores::Best>, width: f32) -> Element<'a, Msg> {
+    let Some(b) = best else {
+        return text("·").size(13).width(width).center().style(|t: &Theme| text::Style { color: Some(t.extended_palette().background.base.text.scale_alpha(0.45)) }).into();
+    };
+    let lead = if b.is_pfc {
+        "PFC".to_string()
+    } else if b.is_fc {
+        "FC".to_string()
+    } else {
+        format!("{}%", b.accuracy)
+    };
+    let inst = match b.instrument.as_str() {
+        "guitar" | "" => String::new(),
+        "drums" => "Drums ".into(),
+        other => format!("{} ", crate::leaderboard::instrument_label(other)),
+    };
+    let fc = b.is_fc;
+    text(format!("{inst}{lead} ★{}", b.stars))
+        .size(12)
+        .width(width)
+        .center()
+        .wrapping(text::Wrapping::None)
+        .style(move |t: &Theme| text::Style { color: fc.then(|| t.extended_palette().success.base.color) })
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +679,8 @@ mod tests {
             error: None,
             notice: None,
             busy: false,
+            scores: None,
+            scores_error: None,
         };
         let names = |p: &Page| p.shown.iter().map(|&i| cat[i].name.clone()).collect::<Vec<_>>();
 

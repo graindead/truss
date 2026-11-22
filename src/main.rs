@@ -54,6 +54,7 @@ mod ch_sprites;
 mod unity_assets;
 mod color_editor;
 mod color_profile;
+mod scores;
 mod game_sources;
 mod patches;
 mod pack_index;
@@ -407,6 +408,11 @@ struct App {
     /// Which local charts have lyrics; filled in the first time Library/Tools is opened.
     lyrics_map: HashMap<PathBuf, bool>,
     lyrics_scanning: bool,
+    /// Your Clone Hero scores (the kept copy until fresh ones arrive), and when they were
+    /// last asked for.
+    my_scores: Option<Arc<scores::Scores>>,
+    scores_asked: Option<std::time::Instant>,
+    scores_error: Option<String>,
     /// Downloads/deletes happened since the last scan.
     catalog_stale: bool,
     library_error: Option<String>,
@@ -529,6 +535,7 @@ enum Message {
     ToolsPage(tools_ui::Msg),
     PacksPage(packs::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
+    ScoresFetched(Result<Arc<scores::Scores>, String>),
     LibraryDeleted(Result<(), String>),
     /// Loose copies of pack charts were found (`Some`: the pack just downloaded).
     PackDuplicates(Vec<library_tools::Duplicate>, Option<String>),
@@ -834,6 +841,9 @@ impl App {
             catalog: Vec::new(),
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
+            my_scores: scores::kept().map(Arc::new),
+            scores_asked: None,
+            scores_error: None,
             catalog_stale: false,
             library_error: None,
             library_notice: None,
@@ -1014,6 +1024,8 @@ impl App {
             error: self.library_error.as_deref(),
             notice: self.library_notice.as_deref(),
             busy: self.library_busy,
+            scores: self.my_scores.as_deref(),
+            scores_error: self.scores_error.as_deref(),
         }
     }
 
@@ -2506,6 +2518,17 @@ impl App {
                 self.refresh_pages();
                 Task::none()
             }
+            Message::ScoresFetched(r) => {
+                match r {
+                    Ok(s) => {
+                        self.my_scores = Some(s);
+                        self.scores_error = None;
+                    }
+                    Err(e) => self.scores_error = Some(e),
+                }
+                self.refresh_pages();
+                Task::none()
+            }
             Message::LibraryPage(m) => {
                 let mut page = std::mem::take(&mut self.library_page);
                 let out = page.update(m, &self.library_ctx());
@@ -2838,6 +2861,11 @@ impl App {
                     tasks.push(self.tools_page.shown().map(Message::ToolsPage));
                 }
                 if s == Screen::Library {
+                    // Your scores: asked for again at most every ten minutes.
+                    if self.scores_asked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(600)) {
+                        self.scores_asked = Some(std::time::Instant::now());
+                        tasks.push(Task::perform(scores::fetch(), |r| Message::ScoresFetched(r.map(Arc::new))));
+                    }
                     if self.catalog_stale && !self.library_scanning {
                         tasks.push(self.scan_library());
                     } else if self.lyrics_map.is_empty() {
