@@ -3,6 +3,14 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.28
+
+- **Refresh:** a Refresh button next to Advanced searches again, picking up charts uploaded while
+  Truss is open (and asks RhythmVerse for new ones when it's on).
+- **Deselect:** click the selected chart again to deselect it.
+- **Security:** Windows calls for thread priority and saved sign-ins now go through well-used
+  libraries instead of Truss's own unsafe code (saved Twitch and Ouvert sign-ins keep working).
+
 ## v0.1.27
 
 - **Faster start:** charts show in Browse about a second after opening instead of four or five
