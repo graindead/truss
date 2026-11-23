@@ -1,10 +1,11 @@
 # Truss
 
-Truss is a rewrite of [Bridge](https://github.com/Geomitron/Bridge) in Rust. Search Chorus
-Encore (and RhythmVerse, if you turn it on), pick some charts, and they land straight in your
-Clone Hero or YARG songs folder.
+Truss is a chart manager for Clone Hero and YARG. It searches Chorus Encore (and RhythmVerse, if
+you turn it on), downloads charts and packs straight into your songs folder, and keeps your
+library in order. It started as a rewrite of [Bridge](https://github.com/Geomitron/Bridge) in
+Rust.
 
-It's a single .exe. There's no installer and nothing else to set up: download it and run it.
+It's a single .exe (about 31 MB, Windows). There's no installer: download it and run it.
 
 ![Searching charts in Truss, with album art and chart details](docs/screenshots/browse.png)
 
@@ -23,72 +24,69 @@ It's a single .exe. There's no installer and nothing else to set up: download it
   </tr>
 </table>
 
-## What it does
+## Features
 
-**Search and download.** Search Encore, tick as many charts as you like, and download them in one
-go. Downloads run in the background, and a small button in the corner shows how far along they
-are. Charts you already have get a ✓ in the results. New uploads show up while Truss is open:
-it checks every few minutes, no restart needed.
+**Search and download.** Search Encore, and RhythmVerse too if you turn it on in Settings, tick
+as many charts as you like and download them in one go. Downloads run in the background. Charts
+you already have are marked with a ✓, and new uploads show up while Truss is open.
 
-**Packs.** The Packs tab lists the chart packs, setlists, monthly packs and full albums posted on
-[Custom Songs Central](https://customsongscentral.com/), newest first, with a filter and
-categories. Click one to read its description and download it: packs go through the same
-download queue as charts, into a folder named after the pack. Packs go to your songs folder,
-or to a separate pack folder if you choose one in Settings > Library folders. Truss downloads
-from the site's own server, Google Drive (files and folders) and MEGA (file links), and unpacks
-.zip, .7z and .rar for you. The odd pack hosted anywhere else opens in your browser instead.
-Under "Game setlists" are the Guitar Hero and Rock Band games (and their DLC) converted for
-Clone Hero, as listed in the community's Master List spreadsheet; they go into a Game Setlists
-folder. Install gets each of a game's charts on its own from Chorus Encore (a handful from
-RhythmVerse), so only the ones you don't have are downloaded; Download archive gets the
-spreadsheet's whole archive from Google Drive instead, which can hit Drive's daily download
-limit (Truss tells you when it has).
-Each pack shows whether you already have it ("Installed", or "12 of 18 charts"), wherever
-your charts are and however they're organised, and you can hide the ones you have.
+**Packs.** Chart packs, setlists, monthly packs and full albums from
+[Custom Songs Central](https://customsongscentral.com/), plus the Guitar Hero and Rock Band games
+converted for Clone Hero. Truss downloads from the site, Google Drive and MEGA, unpacks .zip, .7z
+and .rar, and shows which packs you already have.
 
-**Previews.** Watch a chart scroll by before you download it. For charts you already have, the
-preview plays from your own copy.
+**Chart preview.** Watch a chart play before you download it. With Clone Hero installed, the
+preview is drawn the way the game draws it, using the game's own files: its camera, lane spacing,
+strike rings, rails, notes and timing, sustains that glow while held, hit flames and sparks, and
+beat lines. It follows your Clone Hero profile too: your highway, colour profile, note speed,
+highway length and lefty flip. Jump to a section, loop it, or slow it down to 50% without
+changing the pitch.
 
-**RhythmVerse.** Turn it on in Settings > Chart sources and its Clone Hero charts show up next to
-Encore's. They download from RhythmVerse, Google Drive or MediaFire (.zip, .7z, .rar or .sng).
-Truss keeps its own copy of RhythmVerse's chart list on your PC, so searching it is instant,
-and tops it up from RhythmVerse every few minutes.
-RhythmVerse has no public API, so this could stop working if the site changes.
+**Leaderboards and your scores.** See the top Clone Hero scores for any chart, including
+RhythmVerse charts. The Library tab shows your own best score on every chart, and can list the
+ones you nearly full-combo'd and unplayed charts at your level.
 
-**Leaderboards.** See the top 50 Clone Hero scores for a chart. This works for RhythmVerse charts
-too, and for Encore charts whose listed hashes are out of date, because Truss reads the chart and
-works the hash out itself.
+**Difficulty.** [Fretwork](https://github.com/Staycation44/fretwork) tiers on every chart. For
+charts in your library, the Library tab also graphs how hard each part of the song is.
 
-**How hard is it?** Hover a difficulty to see its [Fretwork](https://github.com/Staycation44/fretwork)
-tier, or turn tiers on everywhere in Settings. The Library tab also graphs difficulty across the
-song, so you can see where the hard parts are.
+**Star Power paths.** CHOpt is built in (Tools tab). Pick a chart and Truss draws the best Star
+Power path, matching CHOpt 1.19.
 
-**Star Power paths.** CHOpt is built into the Tools tab. Pick a chart from your library and Truss
-draws the best Star Power path for it. It covers guitar, bass, rhythm, keys and co-op with Clone
-Hero's standard and precision scoring, and has CHOpt's squeeze, early whammy, video calibration,
-speed and lefty options. Results match CHOpt 1.19.
+**Library.** Shows which charts are missing album art, backgrounds, video or lyrics, finds
+duplicates and exact copies, and moves charts you don't want to the Recycle Bin.
 
-**Your library.** Click any chart to see its details: album art, difficulties, a preview and its
-leaderboard. The Library tab also shows which charts are missing album art, backgrounds, video or
-lyrics, spots duplicates, and can move charts you don't want to the Recycle Bin. Your library is
-remembered between runs, so it's ready as soon as Truss opens.
+**Note colors and themes.** Edit Clone Hero colour profiles with a live preview of the game's own
+notes, and pick or make a theme for Truss itself.
 
-**Scene Switcher.** For streamers using OBS (Tools tab). It switches scenes when Clone Hero starts
-and ends a song, shows your Ouvert request queue, and can skip to the next song through Ouvert or
-a Twitch chat command. It shares its settings with the standalone
+**Scene Switcher.** For OBS streamers: switches scenes when a song starts and ends, and works
+with Ouvert song requests. Shares its settings with
 [CH Scene Switcher](https://github.com/graindead/chswitcher).
 
-**Themes.** Pick a built-in theme, or make your own in Tools > Themes: choose each colour with a
-picker and see a preview as you go. A theme can also decide whether the window is solid or
-frosted glass (which blurs whatever is behind it, on Windows). Export a theme to share it as a
-small file, and import ones other people made.
+## Performance
 
-**Coloured names.** On the Library tab, song names, artists and charters show the colours
-charters gave them in Clone Hero (you can turn this off).
+Truss is a native Rust app drawn on the graphics card with [iced](https://iced.rs), not a web
+page in an Electron wrapper. There's no bundled browser, so it opens instantly and runs light.
+
+- Charts show in Browse about a second after opening.
+- About 200 MB of memory with a 30,000-chart library open, about 250 MB while a preview plays.
+- Long lists stay smooth: only the rows on screen are built.
+- Starting up only looks at chart folders that are new or changed, in the background at low
+  priority, so it's quick even on a slow hard drive.
+- RhythmVerse's chart list is kept on your PC, so searching it is instant.
+- Album art and the game's pictures are cached once and reused.
 
 ## Not in Truss yet
 
-A few things from Bridge haven't been ported: Report issue and UI zoom.
+Report issue and UI zoom from Bridge haven't been ported.
+
+## Open source
+
+Truss is fully open source under GPL-3.0, and it always will be. All of its code is here, and
+anyone can read it, build it or change it.
+
+Truss builds on tools and sites made by other people in the community (listed below). If you
+made one of them and want it taken out of Truss, open an issue or get in touch and I'll remove
+it, no questions asked.
 
 ## Credits and licence
 
@@ -123,7 +121,7 @@ paths are a Rust port of Raymond Wright's [CHOpt](https://github.com/GenericMadS
 cargo build --release
 ```
 
-That gives you `target/release/truss.exe`, a single file of about 22 MB. The C runtime is linked
+That gives you `target/release/truss.exe`, a single file of about 31 MB. The C runtime is linked
 in, so it runs on a fresh Windows install. To leave RhythmVerse out:
 `cargo build --release --no-default-features`.
 
