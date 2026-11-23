@@ -57,8 +57,12 @@ fn connect(path: &std::path::Path) -> rusqlite::Result<Connection> {
 /// Whether a database file opens and passes SQLite's own check. Err = couldn't tell (for
 /// example another copy of Truss has it locked), which is never treated as damage.
 fn check(c: &Connection) -> Result<bool, rusqlite::Error> {
-    match c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)) {
-        Ok(v) => Ok(v == "ok"),
+    // Only the header and the list of tables (the first page), not every page: a full check
+    // read the whole ~40 MB file at every start (a second or more on a slow drive, before the
+    // window showed). Damage found later, by any query, still puts the backup in its place (see
+    // `with_db`).
+    match c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
+        Ok(_) => Ok(true),
         Err(e) if is_corrupt(&e) => Ok(false),
         Err(e) => Err(e),
     }

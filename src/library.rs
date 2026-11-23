@@ -85,6 +85,11 @@ pub struct LocalChart {
     /// Lead guitar's difficulty rating from song.ini (0 to 6, sometimes more), if it has one.
     #[serde(default)]
     pub diff_guitar: Option<i8>,
+    /// The chart folder's own modified time when it was read (nanoseconds; 0 unknown). It
+    /// changes when a file in it is added, removed or renamed, so while it's the same a quick
+    /// scan reuses the chart without opening the folder.
+    #[serde(default)]
+    pub folder_stamp: u64,
 }
 
 impl LocalChart {
@@ -262,11 +267,18 @@ pub enum ScanEvent {
 
 /// Scans the library folders, reporting progress. With `use_cache`, first sends the library
 /// saved by the last scan of the same folders so it shows straight away.
-pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item = ScanEvent> {
+/// Scans the library folders. A quick scan (`full` false) opens only chart folders that are new
+/// or whose date changed, reusing the rest from the last scan; it becomes a full one when the
+/// last full scan is a week old, the cache is from another version, or there's no cache.
+pub fn scan(folders: Vec<PathBuf>, use_cache: bool, full: bool) -> impl futures::Stream<Item = ScanEvent> {
     iced::stream::channel(8, async move |mut tx: Sender<ScanEvent>| {
         // The last scan's charts: shown straight away at start-up, and reused by this scan for
         // every chart whose song.ini (or .sng) hasn't changed.
         let cache = tokio::task::spawn_blocking(load_cache).await.ok().flatten();
+        let now = now_secs();
+        let quick = !full
+            && cache.as_ref().is_some_and(|c| c.version == CACHE_VERSION && c.folders == folders && now.saturating_sub(c.full_scan) < FULL_SCAN_EVERY);
+        let full_scan = if quick { cache.as_ref().map_or(0, |c| c.full_scan) } else { now };
         let prev: HashMap<PathBuf, Arc<LocalChart>> = match cache {
             Some(c) => {
                 if use_cache && c.folders == folders {
@@ -275,9 +287,10 @@ pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item
                 // Charts read by an older version have their song.ini read again, in case the
                 // reading changed (their chart files aren't hashed again while unchanged).
                 let reuse = c.version == CACHE_VERSION;
+                // Every chart (even one without a song.ini, which a quick scan still reuses by its
+                // folder's date; a full scan checks the song.ini's own stamp before reusing).
                 c.charts
                     .into_iter()
-                    .filter(|c| c.stamp != 0)
                     .map(|c| {
                         let c = if reuse {
                             c
@@ -295,9 +308,14 @@ pub fn scan(folders: Vec<PathBuf>, use_cache: bool) -> impl futures::Stream<Item
         let found = Arc::new(AtomicUsize::new(0));
         let counter = found.clone();
         let mut job = tokio::task::spawn_blocking(move || {
-            let lib = scan_with(&folders, &counter, &prev);
+            let lib = scan_with(&folders, &counter, &prev, quick);
+            // Saved only when something changed: a quick scan that reused every chart as it was
+            // leaves the (19 MB or so) file alone.
+            let unchanged = quick && lib.catalog.len() == prev.len() && lib.catalog.iter().all(|c| prev.get(&c.path).is_some_and(|o| Arc::ptr_eq(o, c)));
             drop(prev);
-            save_cache(&folders, &lib);
+            if !unchanged {
+                save_cache(&folders, &lib, full_scan);
+            }
             lib
         });
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(120));
@@ -320,6 +338,17 @@ struct Cache {
     version: u32,
     folders: Vec<PathBuf>,
     charts: Vec<Arc<LocalChart>>,
+    /// When the last full scan was (seconds since the epoch).
+    #[serde(default)]
+    full_scan: u64,
+}
+
+/// How long quick scans are trusted before a full one (which opens every chart folder, to
+/// catch a file changed in place, which doesn't change its folder's date).
+const FULL_SCAN_EVERY: u64 = 7 * 24 * 3600;
+
+fn now_secs() -> u64 {
+    secs(Ok(std::time::SystemTime::now())).unwrap_or(0)
 }
 /// Bumped when the way charts are read changes, so the next scan reads them all again.
 /// 2: a line like `[song] =` no longer starts a new section of song.ini.
@@ -329,45 +358,69 @@ const CACHE_VERSION: u32 = 3;
 const STALE_STAMP: u64 = u64::MAX;
 
 fn cache_path() -> Option<PathBuf> {
+    crate::settings::cache_dir().map(|d| d.join("library.msgpack"))
+}
+
+/// Where versions before 0.1.27 kept it (read once, to carry it over).
+fn old_cache_path() -> Option<PathBuf> {
     crate::settings::cache_dir().map(|d| d.join("library.json"))
 }
 
 fn load_cache() -> Option<Cache> {
-    let b = std::fs::read(cache_path()?).ok()?;
-    serde_json::from_slice(&b).ok()
+    if let Some(c) = cache_path().and_then(|p| std::fs::read(p).ok()).and_then(|b| rmp_serde::from_slice(&b).ok()) {
+        return Some(c);
+    }
+    serde_json::from_slice(&std::fs::read(old_cache_path()?).ok()?).ok()
 }
 
-fn save_cache(folders: &[PathBuf], lib: &Library) {
+fn save_cache(folders: &[PathBuf], lib: &Library, full_scan: u64) {
     let Some(path) = cache_path() else { return };
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
-    let c = Cache { version: CACHE_VERSION, folders: folders.to_vec(), charts: lib.catalog.clone() };
+    let c = Cache { version: CACHE_VERSION, folders: folders.to_vec(), charts: lib.catalog.clone(), full_scan };
     // Written beside it and renamed, so a crash can't leave half a file.
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension("msgpack.tmp");
+    // With field names, so a file written before a field was added still reads.
     let ok = std::fs::File::create(&tmp)
         .ok()
         .and_then(|f| {
             let mut w = std::io::BufWriter::new(f);
-            serde_json::to_writer(&mut w, &c).ok()?;
+            c.serialize(&mut rmp_serde::Serializer::new(&mut w).with_struct_map()).ok()?;
             std::io::Write::flush(&mut w).ok()
         })
         .is_some();
     if ok {
-        let _ = std::fs::rename(&tmp, &path);
+        if std::fs::rename(&tmp, &path).is_ok()
+            && let Some(old) = old_cache_path()
+        {
+            let _ = std::fs::remove_file(old);
+        }
     } else {
         let _ = std::fs::remove_file(&tmp);
     }
 }
 
 pub fn scan_blocking(folders: &[PathBuf]) -> Library {
-    scan_with(folders, &AtomicUsize::new(0), &HashMap::new())
+    scan_with(folders, &AtomicUsize::new(0), &HashMap::new(), false)
 }
 
-/// A directory to read, and when it was created (from its parent's listing, if known).
-type Dir = (PathBuf, Option<u64>);
+/// A directory to read: when it was created and its modified time (nanoseconds), from its
+/// parent's listing (none and 0 for the library folders themselves).
+type Dir = (PathBuf, Option<u64>, u64);
 
-fn scan_with(folders: &[PathBuf], found: &AtomicUsize, prev: &HashMap<PathBuf, Arc<LocalChart>>) -> Library {
+/// Lowers this thread's processor and disk priority, so a scan never slows what you're doing
+/// (or other programs) on a slow drive.
+fn lower_priority() {
+    #[cfg(windows)]
+    // nosemgrep: a Windows API call (Rust requires unsafe for these)
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    }
+}
+
+fn scan_with(folders: &[PathBuf], found: &AtomicUsize, prev: &HashMap<PathBuf, Arc<LocalChart>>, quick: bool) -> Library {
     let mut lib = Library::default();
-    let mut frontier: Vec<Dir> = folders.iter().filter(|f| f.is_dir()).map(|f| (f.clone(), None)).collect();
+    let mut frontier: Vec<Dir> = folders.iter().filter(|f| f.is_dir()).map(|f| (f.clone(), None, 0)).collect();
     // Breadth-first, one directory level at a time, each level split across a few threads.
     while !frontier.is_empty() {
         let chunk = frontier.len().div_ceil(THREADS).max(1);
@@ -376,9 +429,10 @@ fn scan_with(folders: &[PathBuf], found: &AtomicUsize, prev: &HashMap<PathBuf, A
                 .chunks(chunk)
                 .map(|dirs| {
                     s.spawn(move || {
+                        lower_priority();
                         dirs.iter().fold((Vec::new(), Vec::new()), |mut acc, d| {
                             let before = acc.1.len();
-                            visit(d, prev, &mut acc.0, &mut acc.1);
+                            visit(d, prev, quick, &mut acc.0, &mut acc.1);
                             found.fetch_add(acc.1.len() - before, Ordering::Relaxed);
                             acc
                         })
@@ -454,7 +508,7 @@ fn assets_from_names<'a>(names: impl Iterator<Item = &'a str>) -> Assets {
 /// Reads one directory: a chart folder yields one chart; otherwise its subfolders are queued.
 /// `.sng` files are read wherever they are. Charts in `prev` whose file is unchanged are reused
 /// instead of read again.
-fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs: &mut Vec<Dir>, charts: &mut Vec<Arc<LocalChart>>) {
+fn visit((dir, created, folder_stamp): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, quick: bool, subdirs: &mut Vec<Dir>, charts: &mut Vec<Arc<LocalChart>>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut dirs = Vec::new();
     // File names, and their modified time and size (free from the listing on Windows).
@@ -466,8 +520,19 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
         if ft.is_dir() {
             // Unfinished downloads (".bridge-rs-tmp-" from before the rename).
             if !name.starts_with(".truss-tmp-") && !name.starts_with(".bridge-rs-tmp-") {
-                let created = e.metadata().ok().and_then(|m| secs(m.created()));
-                dirs.push((e.path(), created));
+                let meta = e.metadata().ok();
+                let created = meta.as_ref().and_then(|m| secs(m.created()));
+                let stamp = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
+                // A chart folder whose date hasn't changed: the chart as it was, without
+                // opening the folder.
+                if quick
+                    && stamp != 0
+                    && let Some(old) = prev.get(&e.path()).filter(|o| o.folder_stamp == stamp)
+                {
+                    charts.push(old.clone());
+                    continue;
+                }
+                dirs.push((e.path(), created, stamp));
             }
         } else if ext_of(&name) == "sng" {
             sngs.push((e.path(), e.metadata().ok()));
@@ -518,6 +583,7 @@ fn visit((dir, created): &Dir, prev: &HashMap<PathBuf, Arc<LocalChart>>, subdirs
             }
         };
         chart.chart_hash = hash;
+        chart.folder_stamp = *folder_stamp;
         charts.push(Arc::new(chart));
     } else {
         subdirs.extend(dirs);
@@ -617,6 +683,7 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         has_drums: has("diff_drums"),
         has_keys: has("diff_keys"),
         has_vocals: has("diff_vocals"),
+        folder_stamp: 0,
         diff_guitar: get("diff_guitar").trim().parse::<f64>().ok().filter(|d| *d >= 0.0).map(|d| d.min(100.0) as i8),
         modified,
         added,
@@ -814,6 +881,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_keeps_charts_and_reads_older_files() {
+        let mut c = test_chart("Band", "Song", 5);
+        c.chart_hash = Some("h".into());
+        c.folder_stamp = 42;
+        let cache = Cache { version: CACHE_VERSION, folders: vec![PathBuf::from("Songs")], charts: vec![Arc::new(c)], full_scan: 7 };
+        let mut bytes = Vec::new();
+        cache.serialize(&mut rmp_serde::Serializer::new(&mut bytes).with_struct_map()).unwrap();
+        let back: Cache = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!((back.full_scan, back.charts[0].folder_stamp, back.charts[0].chart_hash.as_deref()), (7, 42, Some("h")));
+        // A file from before `full_scan` and `folder_stamp` existed still reads (as 0).
+        let mut old = serde_json::to_value(&cache).unwrap();
+        old.as_object_mut().unwrap().remove("full_scan");
+        old["charts"][0].as_object_mut().unwrap().remove("folder_stamp");
+        let mut bytes = Vec::new();
+        old.serialize(&mut rmp_serde::Serializer::new(&mut bytes).with_struct_map()).unwrap();
+        let back: Cache = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!((back.full_scan, back.charts[0].folder_stamp, back.charts[0].name.as_str()), (0, 0, "Song"));
+    }
+
+    #[test]
     fn ini_key() {
         let ini = "\u{feff}[Song]\r\nname = Through the Fire and Flames\r\nartist=DragonForce\r\nfrets = Neversoft\r\n[other]\r\nname = nope\r\n";
         let c = make_chart(PathBuf::from("x"), &parse_ini(ini), assets_from_names(["notes.mid", "song.ogg"].into_iter()), 0, 0);
@@ -867,7 +954,7 @@ mod tests {
         println!("full scan: {} in {:?}", first.charts, t.elapsed());
         let prev: HashMap<PathBuf, Arc<LocalChart>> = first.catalog.iter().map(|c| (c.path.clone(), c.clone())).collect();
         let t = std::time::Instant::now();
-        let again = scan_with(&c.folders, &AtomicUsize::new(0), &prev);
+        let again = scan_with(&c.folders, &AtomicUsize::new(0), &prev, false);
         println!("rescan with cache: {} in {:?}", again.charts, t.elapsed());
         assert_eq!(first.charts, again.charts);
         for (a, b) in first.catalog.iter().zip(again.catalog.iter()) {

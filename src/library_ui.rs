@@ -144,6 +144,8 @@ pub enum Out {
 /// What the page reads from the app.
 pub struct Ctx<'a> {
     pub catalog: &'a [Arc<LocalChart>],
+    /// Goes up each time the catalog is replaced.
+    pub catalog_rev: u64,
     /// Which charts have lyrics (filled in by a background check).
     pub lyrics: &'a HashMap<PathBuf, bool>,
     pub scanning: bool,
@@ -180,6 +182,11 @@ pub struct Page {
     dup_keys: HashSet<String>,
     /// Lowercased "artist name charter album" per catalog entry, for searching.
     hay: Vec<String>,
+    /// Each catalog entry's key for matching scores (see `scores::key`).
+    score_keys: Vec<String>,
+    /// The catalog the above (and `dup_keys`) were worked out for (its `catalog_rev`, plus one:
+    /// 0 is nothing yet).
+    built_for: u64,
     /// Your best play of each catalog entry (worked out when the catalog or scores change),
     /// and how many you've played and full-combo'd.
     best: Vec<Option<crate::scores::Best>>,
@@ -208,19 +215,26 @@ impl Page {
 
     /// Call when the catalog or lyrics data changed.
     pub fn refresh(&mut self, cx: &Ctx) {
-        self.hay = cx
-            .catalog
-            .iter()
-            .map(|c| format!("{} {} {} {}", c.artist, c.name, c.charter, c.album).to_lowercase())
-            .collect();
-        let mut count: HashMap<&str, usize> = HashMap::new();
-        for c in cx.catalog {
-            if c.key != "||" {
-                *count.entry(c.key.as_str()).or_default() += 1;
+        // What depends only on the charts is worked out once for each catalog (a refresh for new
+        // scores or lyrics reuses it).
+        let catalog_id = cx.catalog_rev + 1;
+        if self.built_for != catalog_id || self.hay.len() != cx.catalog.len() {
+            self.built_for = catalog_id;
+            self.hay = cx
+                .catalog
+                .iter()
+                .map(|c| format!("{} {} {} {}", c.artist, c.name, c.charter, c.album).to_lowercase())
+                .collect();
+            self.score_keys = cx.catalog.iter().map(|c| crate::scores::key(&c.artist, &c.name, &c.charter)).collect();
+            let mut count: HashMap<&str, usize> = HashMap::new();
+            for c in cx.catalog {
+                if c.key != "||" {
+                    *count.entry(c.key.as_str()).or_default() += 1;
+                }
             }
+            self.dup_keys = count.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k.to_string()).collect();
         }
-        self.dup_keys = count.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k.to_string()).collect();
-        self.best = cx.catalog.iter().map(|c| cx.scores.and_then(|s| s.best(&c.artist, &c.name, &c.charter)).cloned()).collect();
+        self.best = self.score_keys.iter().map(|k| cx.scores.and_then(|s| s.best_for_key(k)).cloned()).collect();
         self.played = self.best.iter().flatten().count();
         self.full_combos = self.best.iter().flatten().filter(|b| b.is_fc).count();
         self.almost_fc = self.best.iter().flatten().filter(|b| !b.is_fc && b.accuracy() >= ALMOST_FC).count();
@@ -760,6 +774,7 @@ mod tests {
         let lyrics = HashMap::new();
         let cx = Ctx {
             catalog: &cat,
+            catalog_rev: 0,
             lyrics: &lyrics,
             scanning: false,
             lyrics_scanning: false,

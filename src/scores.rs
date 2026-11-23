@@ -67,13 +67,18 @@ impl Scores {
 
     /// Your best play of a chart: on its hardest difficulty you've played, the best of those.
     pub fn best(&self, artist: &str, name: &str, charter: &str) -> Option<&Best> {
-        self.by_chart.get(&key(artist, name, charter))?.iter().max_by_key(|b| b.rank())
+        self.best_for_key(&key(artist, name, charter))
+    }
+
+    /// The same, for a chart's `key` worked out already.
+    pub fn best_for_key(&self, key: &str) -> Option<&Best> {
+        self.by_chart.get(key)?.iter().max_by_key(|b| b.rank())
     }
 }
 
 /// A chart as scores are matched to it: artist, name and charter without colour tags, in lower
 /// case, with spaces evened out.
-fn key(artist: &str, name: &str, charter: &str) -> String {
+pub fn key(artist: &str, name: &str, charter: &str) -> String {
     let norm = |s: &str| crate::api::strip_tags(s).to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
     format!("{}|{}|{}", norm(artist), norm(name), norm(charter))
 }

@@ -399,12 +399,16 @@ struct App {
     library_scan_found: usize,
     library_scan_expected: Option<usize>,
     library_scan_handle: Option<iced::task::Handle>,
+    /// The next library scan opens every chart folder (Rescan), not only changed ones.
+    scan_full: bool,
     /// The library chart whose details are open on the Library page.
     lib_details: Option<LibDetails>,
     /// The instrument picked for the Library details' difficulty graph.
     lib_graph_inst: Option<String>,
     /// Every chart in the library folders (Library page and tools).
     catalog: Vec<Arc<library::LocalChart>>,
+    /// Goes up each time the catalog is replaced (so pages know to work it out again).
+    catalog_rev: u64,
     /// Which local charts have lyrics; filled in the first time Library/Tools is opened.
     lyrics_map: HashMap<PathBuf, bool>,
     lyrics_scanning: bool,
@@ -867,9 +871,11 @@ impl App {
             library_scan_found: 0,
             library_scan_expected: None,
             library_scan_handle: None,
+            scan_full: false,
             lib_details: None,
             lib_graph_inst: None,
             catalog: Vec::new(),
+            catalog_rev: 0,
             lyrics_map: HashMap::new(),
             lyrics_scanning: false,
             my_scores: score_account(&settings, &scores::log_accounts()).and_then(scores::kept).map(Arc::new),
@@ -939,9 +945,13 @@ impl App {
             Task::none()
         };
         let icon_list = Task::perform(icons::fetch_list(), Message::IconList);
+        // RhythmVerse's local chart list first, so the first search can use it (instead of its
+        // much slower website) when it's already been copied.
+        #[cfg(feature = "rhythmverse")]
+        let rv_sync = app.rv_auto_sync();
         let task = Task::batch([app.search(false), icon_list, app.scan_library(), update_check]);
         #[cfg(feature = "rhythmverse")]
-        let task = Task::batch([task, app.rv_auto_sync(), pin_icon_task(&app.theme), app.backdrop_task()]);
+        let task = Task::batch([task, rv_sync, pin_icon_task(&app.theme), app.backdrop_task()]);
         (app, Task::batch([task, iced::widget::operation::focus(SEARCH_ID)]))
     }
 
@@ -1049,6 +1059,7 @@ impl App {
     fn library_ctx(&self) -> library_ui::Ctx<'_> {
         library_ui::Ctx {
             catalog: &self.catalog,
+            catalog_rev: self.catalog_rev,
             lyrics: &self.lyrics_map,
             scanning: self.library_scanning,
             lyrics_scanning: self.lyrics_scanning,
@@ -1133,7 +1144,8 @@ impl App {
         self.library_scan_expected = (self.library_charts > 0).then_some(self.library_charts);
         // Show the library saved by the last scan while this one runs (at start-up).
         let use_cache = self.catalog.is_empty() && self.library.is_empty();
-        let (task, handle) = Task::run(library::scan(folders, use_cache), Message::LibraryScan).abortable();
+        let full = std::mem::take(&mut self.scan_full);
+        let (task, handle) = Task::run(library::scan(folders, use_cache, full), Message::LibraryScan).abortable();
         self.library_scan_handle = Some(handle);
         task
     }
@@ -2505,6 +2517,7 @@ impl App {
                 self.library_hashes = lib.hashes;
                 self.library_songs = lib.songs;
                 self.catalog = lib.catalog;
+                self.catalog_rev += 1;
                 // Downloads and deletions since start-up are replayed onto the cached library.
                 // (Each is recorded again for the scan's result.)
                 for change in std::mem::take(&mut self.library_changes) {
@@ -2525,6 +2538,7 @@ impl App {
                 self.library_songs = lib.songs;
                 self.local_tracks.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 self.catalog = lib.catalog;
+                self.catalog_rev += 1;
                 self.list_rev += 1;
                 // Downloads and deletions that finished during the scan may be missing from it.
                 for (key, added, removed) in std::mem::take(&mut self.library_changes) {
@@ -2596,6 +2610,7 @@ impl App {
                     }
                     library_ui::Out::Rescan => {
                         self.lyrics_map.clear();
+                        self.scan_full = true;
                         self.scan_library()
                     }
                     library_ui::Out::Open(p) => {
@@ -2793,7 +2808,10 @@ impl App {
                 let task = task.map(Message::ToolsPage);
                 let extra = match out {
                     tools_ui::Out::None => Task::none(),
-                    tools_ui::Out::Rescan => self.scan_library(),
+                    tools_ui::Out::Rescan => {
+                        self.scan_full = true;
+                        self.scan_library()
+                    }
                     tools_ui::Out::Open(p) => {
                         let _ = open::that_detached(p);
                         Task::none()
@@ -2811,7 +2829,10 @@ impl App {
                 };
                 Task::batch([task, extra])
             }
-            Message::RescanLibrary => self.scan_library(),
+            Message::RescanLibrary => {
+                self.scan_full = true;
+                self.scan_library()
+            }
             Message::AddLibraryFolder => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
