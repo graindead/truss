@@ -253,10 +253,9 @@ fn worker_count() -> usize {
 /// Lowers the current thread's priority, so the search gives way to everything else.
 fn lower_priority() {
     #[cfg(windows)]
-    // nosemgrep: a Windows API call (thread priority)
-    unsafe {
-        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    {
+        use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
+        let _ = set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::BelowNormal.into()));
     }
 }
 

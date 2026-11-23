@@ -130,8 +130,7 @@ mod tests {
 
     #[test]
     fn trims_oldest_first() {
-        // nosemgrep: a test's own scratch folder
-        let d = std::env::temp_dir().join(format!("truss-art-trim-{}", std::process::id()));
+        let d = crate::test_dir().join(format!("truss-art-trim-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let t0 = std::time::SystemTime::now() - std::time::Duration::from_secs(1000);
         for i in 0..5u64 {

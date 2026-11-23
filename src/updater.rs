@@ -70,6 +70,11 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// The latest release if it's newer than this build (None when up to date or there are no
 /// releases yet).
 pub async fn check() -> Result<Option<Release>, String> {
+    check_against(&current_version()).await
+}
+
+/// The same, as if this were version `current`.
+async fn check_against(current: &str) -> Result<Option<Release>, String> {
     let r = HTTP
         .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .header("Accept", "application/vnd.github+json")
@@ -84,7 +89,7 @@ pub async fn check() -> Result<Option<Release>, String> {
         return Err(format!("GitHub returned {}", r.status()));
     }
     let rel: GhRelease = r.json().await.map_err(|e| format!("Unexpected answer from GitHub: {e}"))?;
-    if rel.draft || rel.prerelease || !is_newer(&rel.tag_name, &current_version()) {
+    if rel.draft || rel.prerelease || !is_newer(&rel.tag_name, current) {
         return Ok(None);
     }
     let asset = |n: &str| rel.assets.iter().find(|a| a.name.eq_ignore_ascii_case(n));
@@ -235,8 +240,7 @@ mod tests {
 
     #[test]
     fn swaps_and_keeps_old() {
-        // nosemgrep: a test's own scratch folder
-        let dir = std::env::temp_dir().join(format!("truss-upd-{}", std::process::id()));
+        let dir = crate::test_dir().join(format!("truss-upd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("truss.exe");
         let new = dir.join("truss.exe.new");
@@ -256,9 +260,7 @@ mod tests {
             return;
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
-        // nosemgrep: test setup (set_var is unsafe in Rust 2024)
-        unsafe { std::env::set_var("TRUSS_FAKE_VERSION", "0.0.1") };
-        let r = tokio::runtime::Runtime::new().unwrap().block_on(check());
+        let r = tokio::runtime::Runtime::new().unwrap().block_on(check_against("0.0.1"));
         println!("{r:?}");
         assert!(r.unwrap().is_some());
     }

@@ -272,8 +272,7 @@ mod tests {
         let (wanted, offsets) = parse_directory(&bytes[off..off + size], &keep).unwrap();
         assert_eq!(wanted.len(), 2);
         assert_eq!(offsets.len(), 3);
-        // nosemgrep: a test's own scratch folder
-        let dir = std::env::temp_dir().join(format!("truss-zipranges-{}", std::process::id()));
+        let dir = crate::test_dir().join(format!("truss-zipranges-{}", std::process::id()));
         for e in &wanted {
             let base = e.local_offset as usize;
             let n = u16_at(&bytes, base + 26).unwrap() as usize;

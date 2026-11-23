@@ -1019,8 +1019,7 @@ c:\\songs\\pack\\c\r\n";
     #[test]
     fn repairs_scratch_folder() {
         let Some(src) = std::env::var_os("TRUSS_TEST_REPAIR_CHART") else { return };
-        // nosemgrep: a test's own scratch folder
-        let root = std::env::temp_dir().join(format!("truss-repair-{}", std::process::id()));
+        let root = crate::test_dir().join(format!("truss-repair-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let long = "x".repeat(260 - root.as_os_str().len() - 20);
         let dir = root.join(format!("Artist - {long} (Me)"));

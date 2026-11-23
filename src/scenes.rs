@@ -227,57 +227,20 @@ pub fn save(c: &Config) -> Result<(), String> {
     std::fs::rename(&tmp, ini_path()).map_err(|e| e.to_string())
 }
 
-/// Windows DPAPI: encrypts for this Windows user only.
+/// Windows DPAPI: encrypts for this Windows user only (as before: user scope, no extra
+/// entropy, so values saved by earlier versions still decrypt).
 mod dpapi {
     use super::B64;
     use base64::Engine;
-
-    #[repr(C)]
-    struct Blob {
-        cb: u32,
-        pb: *mut u8,
-    }
-
-    #[link(name = "crypt32")]
-    unsafe extern "system" {
-        fn CryptProtectData(i: *const Blob, d: *const u16, e: *const Blob, r: *const u8, p: *const u8, f: u32, o: *mut Blob) -> i32;
-        fn CryptUnprotectData(i: *const Blob, d: *mut *mut u16, e: *const Blob, r: *const u8, p: *const u8, f: u32, o: *mut Blob) -> i32;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(p: *mut u8) -> *mut u8;
-    }
-
-    const UI_FORBIDDEN: u32 = 1;
+    use windows_dpapi::{Scope, decrypt_data, encrypt_data};
 
     pub fn encrypt(s: &str) -> Option<String> {
-        let input = Blob { cb: s.len() as u32, pb: s.as_ptr() as *mut u8 };
-        let mut out = Blob { cb: 0, pb: std::ptr::null_mut() };
-        // SAFETY: valid blobs; the output is freed with LocalFree as documented.
-        // nosemgrep: a Windows API call (Rust requires unsafe for these)
-        unsafe {
-            if CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), UI_FORBIDDEN, &mut out) == 0 {
-                return None;
-            }
-            let enc = B64.encode(std::slice::from_raw_parts(out.pb, out.cb as usize));
-            LocalFree(out.pb);
-            Some(enc)
-        }
+        encrypt_data(s.as_bytes(), Scope::User, None).ok().map(|e| B64.encode(e))
     }
 
     pub fn decrypt(b64: &str) -> Option<String> {
-        let mut bin = B64.decode(b64.trim()).ok()?;
-        let input = Blob { cb: bin.len() as u32, pb: bin.as_mut_ptr() };
-        let mut out = Blob { cb: 0, pb: std::ptr::null_mut() };
-        // SAFETY: as above.
-        unsafe {
-            if CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), UI_FORBIDDEN, &mut out) == 0 {
-                return None;
-            }
-            let s = String::from_utf8_lossy(std::slice::from_raw_parts(out.pb, out.cb as usize)).into_owned();
-            LocalFree(out.pb);
-            Some(s)
-        }
+        let bin = B64.decode(b64.trim()).ok()?;
+        decrypt_data(&bin, Scope::User, None).ok().map(|d| String::from_utf8_lossy(&d).into_owned())
     }
 }
 
@@ -887,8 +850,7 @@ mod tests {
                 }
             });
 
-            // nosemgrep: a test's own scratch folder
-            let dir = std::env::temp_dir().join(format!("truss-chss-test-{port}"));
+            let dir = crate::test_dir().join(format!("truss-chss-test-{port}"));
             std::fs::create_dir_all(&dir).unwrap();
             let song = dir.join("currentsong.txt");
             std::fs::write(&song, "").unwrap();

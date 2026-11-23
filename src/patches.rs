@@ -329,8 +329,7 @@ mod tests {
 
     #[test]
     fn patches_and_reverts_on_scratch_copies() {
-        // nosemgrep: a test's own scratch folder
-        let base = std::env::temp_dir().join(format!("truss-patch-test-{}", std::process::id()));
+        let base = crate::test_dir().join(format!("truss-patch-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let game = base.join("Game Setlists").join("Guitar Hero III");
         let song = game.join("Quickplay").join("Pearl Jam - Even Flow");

@@ -287,8 +287,7 @@ mod tests {
     /// A previewed chart in the temp folder (C:) moves into a library on another drive.
     #[test]
     fn move_or_copy_across_drives() {
-        // nosemgrep: a test's own scratch folder
-        let from = std::env::temp_dir().join(format!("truss-moc-{}", std::process::id()));
+        let from = crate::settings::cache_dir().expect("a cache folder").join(format!("truss-moc-{}", std::process::id()));
         let to = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("truss-moc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&to);
         std::fs::create_dir_all(from.join("sub")).unwrap();

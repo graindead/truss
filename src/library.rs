@@ -411,10 +411,9 @@ type Dir = (PathBuf, Option<u64>, u64);
 /// (or other programs) on a slow drive.
 fn lower_priority() {
     #[cfg(windows)]
-    // nosemgrep: a Windows API call (Rust requires unsafe for these)
-    unsafe {
-        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    {
+        use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
+        let _ = set_current_thread_priority(ThreadPriority::Os(WinAPIThreadPriority::BackgroundModeBegin.into()));
     }
 }
 

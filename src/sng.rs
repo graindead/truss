@@ -495,8 +495,7 @@ mod tests {
     fn extract_matches_across_chunk_sizes() {
         let Ok(path) = std::env::var("TRUSS_TEST_SNG") else { return };
         let data = std::fs::read(path).unwrap();
-        // nosemgrep: a test's own scratch folder
-        let base = std::env::temp_dir().join(format!("truss-test-{}", std::process::id()));
+        let base = crate::test_dir().join(format!("truss-test-{}", std::process::id()));
         let a = base.join("whole");
         let b = base.join("chunks");
         std::fs::create_dir_all(&a).unwrap();

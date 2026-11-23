@@ -55,6 +55,14 @@ mod unity_assets;
 mod color_editor;
 mod color_profile;
 mod scores;
+
+/// A scratch folder for tests (under `target`, not the system's shared temp folder).
+#[cfg(test)]
+pub fn test_dir() -> std::path::PathBuf {
+    let d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("test-scratch");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
 mod game_sources;
 mod patches;
 mod pack_index;

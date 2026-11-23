@@ -1488,8 +1488,7 @@ mod tests {
     #[cfg(feature = "rhythmverse")]
     #[test]
     fn unwraps_wrapper_folders() {
-        // nosemgrep: a test's own scratch folder
-        let root = std::env::temp_dir().join(format!("truss-single-folder-{}", std::process::id()));
+        let root = crate::test_dir().join(format!("truss-single-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mk = |p: &str| {
             let p = root.join(p);
@@ -1516,8 +1515,7 @@ mod tests {
     fn downloads_pack() {
         let Some(url) = std::env::var_os("TRUSS_TEST_PACK_DL") else { return };
         let url = url.to_string_lossy().to_string();
-        // nosemgrep: a test's own scratch folder
-        let lib = std::env::temp_dir().join(format!("truss-pack-test-{}", std::process::id()));
+        let lib = crate::test_dir().join(format!("truss-pack-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&lib);
         std::fs::create_dir_all(&lib).unwrap();
         let settings = crate::settings::Settings { library_path: Some(lib.clone()), ..Default::default() };
