@@ -1,5 +1,7 @@
 # Truss
 
+[![Codacy grade](https://app.codacy.com/project/badge/Grade/8c66e309ce354ae0ba42ad67457e692c)](https://app.codacy.com/gh/graindead/truss/dashboard)
+
 Truss is a chart manager for Clone Hero and YARG. It searches Chorus Encore (and RhythmVerse, if
 you turn it on), downloads charts and packs straight into your songs folder, and keeps your
 library in order. It started as a rewrite of [Bridge](https://github.com/Geomitron/Bridge) in
