@@ -581,6 +581,8 @@ enum Message {
     MakeDefaultLibrary(usize),
     SortBy(api::SortKey),
     ToggleAdvanced,
+    /// Search again (and ask RhythmVerse for new uploads), for charts uploaded since.
+    RefreshResults,
     Advanced(advanced::Msg),
     SearchDone { generation: u64, append: bool, result: Result<api::SearchResponse, String> },
     /// Every few minutes: look for charts uploaded since the list loaded.
@@ -1897,6 +1899,16 @@ impl App {
                     _ => Some(Sort { key, direction: SortDir::Asc }),
                 };
                 self.search(false)
+            }
+            Message::RefreshResults => {
+                // From another tab: go to Browse the usual way (a preview there stops, as when
+                // changing tabs).
+                let show = if self.screen != Screen::Browse { self.update(Message::ShowScreen(Screen::Browse)) } else { Task::none() };
+                #[cfg(feature = "rhythmverse")]
+                let sync = if self.rv_enabled() { self.rv_start_sync() } else { Task::none() };
+                #[cfg(not(feature = "rhythmverse"))]
+                let sync = Task::none();
+                Task::batch([show, self.search(false), sync])
             }
             Message::ToggleAdvanced => {
                 self.advanced_open = !self.advanced_open;
@@ -3242,8 +3254,12 @@ impl App {
         .push(self.update_button())
         .spacing(14)
         .align_y(Alignment::Center);
+        // Searches again for charts uploaded while Truss is open.
+        // Always the same (a second press only starts the search again).
+        let refresh = button(text("Refresh").size(13)).padding([6, 12]).style(style::quiet_button(false)).on_press(Message::RefreshResults);
         let mut filters = row![
             advanced,
+            refresh,
             pick(pick_list(self.instrument_opts.as_slice(), Some(&self.instrument), Message::InstrumentPicked)),
             pick(pick_list(self.difficulty_opts.as_slice(), Some(&self.difficulty), Message::DifficultyPicked)),
         ]
