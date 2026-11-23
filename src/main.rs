@@ -1849,6 +1849,7 @@ impl App {
     /// Closes the preview (stopping audio) and remembers its volume.
     fn close_preview(&mut self) -> Task<Message> {
         ch_sprites::release_chart_textures();
+        textures::release();
         if let Some(p) = self.preview.take() {
             if (p.volume() - self.settings.preview_volume).abs() > f32::EPSILON {
                 self.settings.preview_volume = p.volume();

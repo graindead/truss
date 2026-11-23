@@ -468,8 +468,9 @@ pub async fn load() -> Result<Arc<Kit>, String> {
 }
 
 async fn load_new(install: Option<PathBuf>) -> Result<Arc<Kit>, String> {
-    let guitar = crate::textures::get(InstrumentType::FiveFret).await?;
-    let drums = crate::textures::get(InstrumentType::Drums).await?;
+    // Only their highway, strikeline and colours are used (the notes are the game's own).
+    let guitar = crate::textures::frame(InstrumentType::FiveFret).await?;
+    let drums = crate::textures::frame(InstrumentType::Drums).await?;
     if let Some(install) = install {
         let from = install.clone();
         match tokio::task::spawn_blocking(move || game_pictures(&from)).await.map_err(|e| e.to_string())? {

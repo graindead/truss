@@ -337,6 +337,14 @@ static CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<InstrumentType, Arc<T
     std::sync::LazyLock::new(Default::default);
 
 /// Already-decoded textures for this instrument type, if any.
+/// Lets go of the kept textures (when the preview closes): they're read again from the disk
+/// cache, quickly, next time. Anything still showing keeps its own.
+pub fn release() {
+    if let Ok(mut c) = CACHE.lock() {
+        c.clear();
+    }
+}
+
 pub fn cached(itype: InstrumentType) -> Option<Arc<TextureSet>> {
     CACHE.lock().ok()?.get(&itype).cloned()
 }
@@ -353,13 +361,24 @@ pub async fn get(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
     Ok(set)
 }
 
+/// The highway, strikeline and colours for this instrument, without the note pictures: all
+/// that's used under Clone Hero's own notes (its sprites), and a fraction of the memory (the
+/// animated notes, decoded at every size, are tens of megabytes). Not kept: what uses it does.
+pub async fn frame(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
+    load_with(itype, false).await
+}
+
 async fn load(itype: InstrumentType) -> Result<Arc<TextureSet>, String> {
+    load_with(itype, true).await
+}
+
+async fn load_with(itype: InstrumentType, with_notes: bool) -> Result<Arc<TextureSet>, String> {
     let strikeline = match itype {
         InstrumentType::Drums => "preview-drums-strikeline.png",
         InstrumentType::SixFret => "preview-6fret-strikeline.png",
         InstrumentType::FiveFret => "preview-5fret-strikeline.png",
     };
-    let list = note_texture_list(itype);
+    let list = if with_notes { note_texture_list(itype) } else { Vec::new() };
     let mut files: Vec<String> = list.iter().map(|(_, _, s)| format!("preview-{s}.webp")).collect();
     files.sort();
     files.dedup();
