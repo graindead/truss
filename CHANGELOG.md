@@ -3,6 +3,20 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.27
+
+- **Faster start:** charts show in Browse about a second after opening instead of four or five
+  (RhythmVerse charts come from the local copy straight away, not its website).
+- **Gentler on slow drives:** each start, only chart folders that are new or changed are looked
+  at (here, about 2,000 folders instead of 33,000), quietly in the background. Rescan, and once a
+  week on its own, still checks every one.
+- **Less memory while previewing:** about a third less while a chart plays, and most of it is
+  given back when the preview closes.
+- **Library:** smaller and quicker library cache, and quicker refreshes when scores or lyrics
+  update.
+- **Leaderboards:** now read through open-chl-api, an unofficial client for Clone Hero's
+  leaderboards (no change in what you see).
+
 ## v0.1.26
 
 - **Chart preview:**
