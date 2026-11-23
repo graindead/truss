@@ -2045,6 +2045,14 @@ impl App {
                 self.list_rev += 1;
                 Task::none()
             }
+            // Clicking the selected chart again deselects it (and closes its preview).
+            Message::Select(i) if self.selected == Some(i) => {
+                self.selected = None;
+                self.show_versions = false;
+                self.confirm_delete = None;
+                self.delete_error = None;
+                self.close_preview()
+            }
             Message::Select(i) => {
                 self.selected = Some(i);
                 self.anchor = Some(i);
