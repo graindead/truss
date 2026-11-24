@@ -245,6 +245,13 @@ pub fn hash_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>)
     })
 }
 
+/// The Fretwork tier of a chart's Expert lead guitar track (none if it has none).
+pub fn guitar_tier(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Option<u32> {
+    let parsed = parse_files(files, ini).ok()?;
+    let t = parsed.tracks.iter().find(|t| t.instrument == "guitar" && t.difficulty == "expert")?;
+    Some(crate::fretwork::rate("guitar", t)?.tier)
+}
+
 /// Just the track hashes (instrument, difficulty, hash) of `hash_files`.
 pub fn hash_tracks(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<Vec<(String, String, String)>, String> {
     let parsed = parse_files(files, ini)?;

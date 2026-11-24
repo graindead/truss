@@ -55,6 +55,7 @@ mod unity_assets;
 mod color_editor;
 mod color_profile;
 mod scores;
+mod library_fretwork;
 
 /// A scratch folder for tests (under `target`, not the system's shared temp folder).
 #[cfg(test)]
@@ -424,6 +425,11 @@ struct App {
     /// last asked for.
     my_scores: Option<Arc<scores::Scores>>,
     scores_asked: Option<std::time::Instant>,
+    /// Fretwork tiers of the library's charts, the catalog they're for (its `catalog_rev`), and
+    /// how far rating them is.
+    library_tiers: Option<Arc<library_fretwork::Tiers>>,
+    tiers_for: u64,
+    tiers_progress: Option<(usize, usize)>,
     /// Accounts in Clone Hero's current logs, and how often each comes up (most first).
     log_accounts: Vec<(u64, usize)>,
     scores_error: Option<String>,
@@ -549,6 +555,7 @@ enum Message {
     ToolsPage(tools_ui::Msg),
     PacksPage(packs::Msg),
     LyricsScanned(HashMap<PathBuf, bool>),
+    LibraryRating(library_fretwork::Event),
     /// An account's scores arrived (or couldn't be fetched).
     ScoresFetched(u64, Result<Arc<scores::Scores>, String>),
     /// An account's name was looked up.
@@ -891,6 +898,9 @@ impl App {
             my_scores: score_account(&settings, &scores::log_accounts()).and_then(scores::kept).map(Arc::new),
             scores_asked: None,
             log_accounts: Vec::new(),
+            library_tiers: None,
+            tiers_for: 0,
+            tiers_progress: None,
             scores_error: None,
             catalog_stale: false,
             library_error: None,
@@ -1079,6 +1089,9 @@ impl App {
             busy: self.library_busy,
             scores: self.my_scores.as_deref(),
             scores_error: self.scores_error.as_deref(),
+            near_fc_misses: self.settings.near_fc_misses,
+            tiers: self.library_tiers.as_deref(),
+            rating: self.tiers_progress,
             roots: self.settings.scan_folders(),
         }
     }
@@ -1133,6 +1146,16 @@ impl App {
         }
         self.lyrics_scanning = true;
         Task::perform(lyrics::scan(self.catalog.clone()), Message::LyricsScanned)
+    }
+
+    /// Works out the Fretwork tiers of library charts that don't have one yet.
+    fn rate_library(&mut self) -> Task<Message> {
+        if self.tiers_progress.is_some() || self.catalog.is_empty() || self.tiers_for == self.catalog_rev {
+            return Task::none();
+        }
+        self.tiers_for = self.catalog_rev;
+        self.tiers_progress = Some((0, 0));
+        Task::run(library_fretwork::rate(self.catalog.clone()), Message::LibraryRating)
     }
 
     fn scan_library(&mut self) -> Task<Message> {
@@ -2586,6 +2609,8 @@ impl App {
                     let packs = std::mem::take(&mut self.pack_dup_check);
                     self.find_pack_duplicates(Some(packs))
                 };
+                let rate = if self.screen == Screen::Library || self.library_tiers.is_some() { self.rate_library() } else { Task::none() };
+                let dup_check = Task::batch([dup_check, rate]);
                 if matches!(self.screen, Screen::Library | Screen::Tools) || !self.lyrics_map.is_empty() {
                     return Task::batch([dup_check, self.scan_lyrics()]);
                 }
@@ -2604,6 +2629,17 @@ impl App {
                 self.save_settings()
             }
             Message::AccountName(_, Err(_)) => Task::none(),
+            Message::LibraryRating(library_fretwork::Event::Progress(done, total)) => {
+                self.tiers_progress = Some((done, total));
+                Task::none()
+            }
+            Message::LibraryRating(library_fretwork::Event::Done(t)) => {
+                self.tiers_progress = None;
+                self.library_tiers = Some(t);
+                self.refresh_pages();
+                // Charts that arrived meanwhile.
+                self.rate_library()
+            }
             Message::PickAccount(c) => {
                 self.settings.ch_account = Some(c.id);
                 self.my_scores = scores::kept(c.id).map(Arc::new);
@@ -2632,6 +2668,11 @@ impl App {
                 self.library_page = page;
                 let task = match out {
                     library_ui::Out::None => Task::none(),
+                    library_ui::Out::NearFc(n) => {
+                        self.settings.near_fc_misses = n;
+                        self.refresh_pages();
+                        self.save_settings()
+                    }
                     library_ui::Out::Sorted(key) => {
                         self.settings.library_sort = key;
                         self.save_settings()
@@ -2972,6 +3013,9 @@ impl App {
                             Some(id) => tasks.push(Task::perform(scores::fetch(id), move |r| Message::ScoresFetched(id, r.map(Arc::new)))),
                             None => self.scores_error = Some("Load a leaderboard in Clone Hero while signed in, so Truss can find your account".into()),
                         }
+                    }
+                    if !self.library_scanning {
+                        tasks.push(self.rate_library());
                     }
                     if self.catalog_stale && !self.library_scanning {
                         tasks.push(self.scan_library());

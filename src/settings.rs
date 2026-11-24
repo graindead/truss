@@ -57,6 +57,8 @@ pub struct Settings {
     /// Clone Hero accounts seen in the game's logs (account number, name once looked up), kept
     /// because the logs are rewritten every time the game starts.
     pub ch_accounts: Vec<(u64, String)>,
+    /// Library's Near FC: how many missed notes still count as one.
+    pub near_fc_misses: u32,
     /// The account whose scores Library shows; none: the one the game uses most.
     pub ch_account: Option<u64>,
     /// Look for a new version on GitHub when Truss starts.
@@ -105,6 +107,7 @@ impl Default for Settings {
             setup_seen: 0,
             ch_accounts: Vec::new(),
             ch_account: None,
+            near_fc_misses: 5,
             check_updates: true,
             show_leaderboard: false,
             library_sort: String::new(),

@@ -82,9 +82,6 @@ pub struct LocalChart {
     /// reads differently (from a pack, say) still counts as this chart.
     #[serde(default)]
     pub chart_hash: Option<String>,
-    /// Lead guitar's difficulty rating from song.ini (0 to 6, sometimes more), if it has one.
-    #[serde(default)]
-    pub diff_guitar: Option<i8>,
     /// The chart folder's own modified time when it was read (nanoseconds; 0 unknown). It
     /// changes when a file in it is added, removed or renamed, so while it's the same a quick
     /// scan reuses the chart without opening the folder.
@@ -409,7 +406,7 @@ type Dir = (PathBuf, Option<u64>, u64);
 
 /// Lowers this thread's processor and disk priority, so a scan never slows what you're doing
 /// (or other programs) on a slow drive.
-fn lower_priority() {
+pub fn lower_priority() {
     #[cfg(windows)]
     {
         use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
@@ -683,7 +680,6 @@ fn make_chart(path: PathBuf, pairs: &[(String, String)], a: Assets, modified: u6
         has_keys: has("diff_keys"),
         has_vocals: has("diff_vocals"),
         folder_stamp: 0,
-        diff_guitar: get("diff_guitar").trim().parse::<f64>().ok().filter(|d| *d >= 0.0).map(|d| d.min(100.0) as i8),
         modified,
         added,
         stamp: 0,

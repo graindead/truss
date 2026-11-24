@@ -20,7 +20,7 @@ pub enum Filter {
     /// Charts you have a score on, and ones you've full-combo'd.
     Played,
     FullCombo,
-    /// Played, not full-combo'd, but close (closest first).
+    /// Played, not full-combo'd, but with few misses (fewest first).
     AlmostFc,
     /// Not played, at the difficulty most of your full combos are at (or a step up).
     YourLevel,
@@ -28,12 +28,8 @@ pub enum Filter {
     ExactCopies,
 }
 
-/// Accuracy from which a play counts as close to a full combo.
-const ALMOST_FC: f32 = 99.0;
-
-/// Your level: the guitar difficulty rating (song.ini's diff_guitar) three quarters of your
-/// guitar full combos are at or below, so a handful of easy ones don't pull it down.
-fn your_level(fc_diffs: &mut [i8]) -> Option<i8> {
+/// Your level: the Fretwork tier three quarters of your Expert guitar full combos are at or below, so a handful of easy ones don't pull it down.
+fn your_level(fc_diffs: &mut [u32]) -> Option<u32> {
     if fc_diffs.len() < 5 {
         return None;
     }
@@ -125,6 +121,8 @@ pub enum Msg {
     RemoveVideos,
     /// Remove the spare exact copies (asks again first).
     RemoveCopies,
+    /// The Near FC limit was typed.
+    NearFc(String),
 }
 
 /// Requests for the app.
@@ -132,6 +130,8 @@ pub enum Out {
     None,
     /// The sort order changed (its settings key), to remember it.
     Sorted(String),
+    /// The Near FC limit changed, to remember it.
+    NearFc(u32),
     Rescan,
     Delete(Vec<PathBuf>),
     Open(PathBuf),
@@ -159,6 +159,11 @@ pub struct Ctx<'a> {
     /// Your Clone Hero scores, once known, and why they couldn't be fetched.
     pub scores: Option<&'a crate::scores::Scores>,
     pub scores_error: Option<&'a str>,
+    /// Missed notes a play can have and still be a Near FC.
+    pub near_fc_misses: u32,
+    /// Fretwork tiers by chart file, and how far working them out is.
+    pub tiers: Option<&'a crate::library_fretwork::Tiers>,
+    pub rating: Option<(usize, usize)>,
     /// The library folders (charts directly in one are loose; deeper ones are in packs).
     pub roots: Vec<PathBuf>,
 }
@@ -194,7 +199,11 @@ pub struct Page {
     full_combos: usize,
     almost_fc: usize,
     /// Your level (see `your_level`), and how many unplayed charts are at it.
-    level: Option<i8>,
+    level: Option<u32>,
+    /// Each catalog entry's Fretwork tier (Expert guitar), if it has one.
+    tiers: Vec<Option<u32>>,
+    /// The Near FC box once it's been typed in (None: shows the setting).
+    near_text: Option<String>,
     at_level: usize,
     /// Which catalog entries are exact copies of another, and the spare ones to remove.
     copies: Vec<bool>,
@@ -237,17 +246,18 @@ impl Page {
         self.best = self.score_keys.iter().map(|k| cx.scores.and_then(|s| s.best_for_key(k)).cloned()).collect();
         self.played = self.best.iter().flatten().count();
         self.full_combos = self.best.iter().flatten().filter(|b| b.is_fc).count();
-        self.almost_fc = self.best.iter().flatten().filter(|b| !b.is_fc && b.accuracy() >= ALMOST_FC).count();
-        let mut fc_diffs: Vec<i8> = cx
-            .catalog
+        self.almost_fc = self.best.iter().flatten().filter(|b| b.near_fc(cx.near_fc_misses)).count();
+        self.tiers = cx.catalog.iter().map(|c| cx.tiers?.get(c.chart_hash.as_deref()?).copied().flatten()).collect();
+        let mut fc_diffs: Vec<u32> = self
+            .tiers
             .iter()
             .zip(&self.best)
-            .filter(|(_, b)| b.as_ref().is_some_and(|b| b.is_fc && b.instrument == "guitar"))
-            .filter_map(|(c, _)| c.diff_guitar)
+            .filter(|(_, b)| b.as_ref().is_some_and(|b| b.is_fc && b.instrument == "guitar" && b.difficulty == "expert"))
+            .filter_map(|(t, _)| *t)
             .collect();
         self.level = your_level(&mut fc_diffs);
         (self.copies, self.spares) = crate::library_tools::exact_copies(cx.catalog, &cx.roots, cx.lyrics);
-        self.at_level = (0..cx.catalog.len()).filter(|&i| self.at_your_level(i, cx)).count();
+        self.at_level = (0..cx.catalog.len()).filter(|&i| self.at_your_level(i)).count();
         let existing: HashSet<&PathBuf> = cx.catalog.iter().map(|c| &c.path).collect();
         self.selected.retain(|p| existing.contains(p));
         if self.open.as_ref().is_some_and(|p| !existing.contains(p)) {
@@ -262,9 +272,9 @@ impl Page {
     }
 
     /// An unplayed guitar chart at your level or a step up.
-    fn at_your_level(&self, i: usize, cx: &Ctx) -> bool {
-        let (Some(level), c) = (self.level, &cx.catalog[i]) else { return false };
-        c.has_guitar && self.best.get(i).is_some_and(Option::is_none) && c.diff_guitar.is_some_and(|d| d == level || d == level + 1)
+    fn at_your_level(&self, i: usize) -> bool {
+        let Some(level) = self.level else { return false };
+        self.best.get(i).is_some_and(Option::is_none) && self.tiers.get(i).copied().flatten().is_some_and(|t| t == level || t == level + 1)
     }
 
     fn passes(&self, i: usize, cx: &Ctx) -> bool {
@@ -279,8 +289,8 @@ impl Page {
             Filter::Duplicates => self.dup_keys.contains(&c.key),
             Filter::Played => best.is_some(),
             Filter::FullCombo => best.is_some_and(|b| b.is_fc),
-            Filter::AlmostFc => best.is_some_and(|b| !b.is_fc && b.accuracy() >= ALMOST_FC),
-            Filter::YourLevel => self.at_your_level(i, cx),
+            Filter::AlmostFc => best.is_some_and(|b| b.near_fc(cx.near_fc_misses)),
+            Filter::YourLevel => self.at_your_level(i),
             Filter::ExactCopies => self.copies.get(i).copied().unwrap_or(false),
         }
     }
@@ -314,9 +324,9 @@ impl Page {
             _ if self.filter == Some(Filter::Duplicates) => shown.sort_by_cached_key(|&i| cat[i].key.clone()),
             // Copies of a chart sit together.
             _ if self.filter == Some(Filter::ExactCopies) => shown.sort_by_cached_key(|&i| (cat[i].key.clone(), cat[i].chart_hash.clone())),
-            // Closest to a full combo first.
+            // Fewest misses first.
             _ if self.filter == Some(Filter::AlmostFc) => shown.sort_by_key(|&i| {
-                std::cmp::Reverse(self.best.get(i).and_then(Option::as_ref).map_or(0, |b| (b.accuracy() * 10.0) as u32))
+                self.best.get(i).and_then(Option::as_ref).map_or(u32::MAX, |b| b.misses())
             }),
             _ => {}
         }
@@ -404,6 +414,13 @@ impl Page {
                     return Out::RemoveVideos;
                 }
             }
+            Msg::NearFc(t) => {
+                let t: String = t.chars().filter(char::is_ascii_digit).take(4).collect();
+                let n = t.parse().ok();
+                // Empty while typing: the last limit stays until there's a number.
+                self.near_text = Some(t);
+                return n.map_or(Out::None, Out::NearFc);
+            }
             Msg::RemoveCopies => {
                 if !self.confirm_copies {
                     self.confirm_copies = true;
@@ -487,7 +504,7 @@ impl Page {
                 Filter::FullCombo
             ),
             tile("Near FC", if cx.scores.is_some() { self.almost_fc.to_string() } else { "—".into() }, Filter::AlmostFc),
-            tile("Your level", if self.level.is_some() { self.at_level.to_string() } else { "—".into() }, Filter::YourLevel),
+            tile("Your level", if cx.rating.is_some() { "…".into() } else if self.level.is_some() { self.at_level.to_string() } else { "—".into() }, Filter::YourLevel),
         ]
         .spacing(8);
 
@@ -500,11 +517,13 @@ impl Page {
         } else if self.filter == Some(Filter::ExactCopies) {
             format!("{} spare loose copies (packs are left alone)", self.spares.len())
         } else if self.filter == Some(Filter::AlmostFc) {
-            format!("{} at {ALMOST_FC:.0}%+ without an FC, closest first", self.shown.len())
+            format!("{} charts", self.shown.len())
+        } else if let (Some(Filter::YourLevel), Some((done, total))) = (self.filter, cx.rating) {
+            if total == 0 { "Reading Fretwork tiers…".to_string() } else { format!("Rating your charts: {done} of {total} (once)") }
         } else if let (Some(Filter::YourLevel), Some(l)) = (self.filter, self.level) {
-            format!("{} unplayed, rated {l}–{} on guitar", self.shown.len(), l + 1)
+            format!("{} unplayed, Fretwork {l}–{}", self.shown.len(), l + 1)
         } else if self.filter == Some(Filter::YourLevel) {
-            "FC a few rated guitar charts to find your level".to_string()
+            "FC five Expert guitar charts to find your level".to_string()
         } else {
             format!("{} of {} charts", self.shown.len(), cat.len())
         };
@@ -532,6 +551,12 @@ impl Page {
             bar = bar.push(
                 button(text("Select all shown").size(13).wrapping(text::Wrapping::None)).padding([6, 12]).style(crate::style::secondary).on_press(Msg::SelectAllShown),
             );
+        }
+        if self.filter == Some(Filter::AlmostFc) {
+            let shown = self.near_text.clone().unwrap_or_else(|| cx.near_fc_misses.to_string());
+            bar = bar
+                .push(text("Misses, up to").size(13).wrapping(text::Wrapping::None))
+                .push(text_input("", &shown).on_input(Msg::NearFc).padding(6).size(13).width(52));
         }
         if self.filter == Some(Filter::ExactCopies) {
             let n = self.spares.len();
@@ -681,7 +706,7 @@ impl Page {
                         mark(Some(c.has_background)),
                         mark(Some(c.has_video)),
                         mark(cx.lyrics.get(&c.path).copied()),
-                        score_cell(self.best.get(i).and_then(Option::as_ref), SCORE_W),
+                        score_cell(self.best.get(i).and_then(Option::as_ref), self.filter == Some(Filter::AlmostFc), SCORE_W),
                         container(button(text("Open").size(11)).padding([2, 8]).style(button::text).on_press(Msg::Open(open)))
                             .width(OPEN_W)
                             .center_x(OPEN_W),
@@ -735,7 +760,7 @@ impl Page {
 
 /// Your best play of a chart, in its row: a full-combo badge or the accuracy, the stars, and
 /// the instrument when it isn't guitar.
-fn score_cell<'a>(best: Option<&crate::scores::Best>, width: f32) -> Element<'a, Msg> {
+fn score_cell<'a>(best: Option<&crate::scores::Best>, misses: bool, width: f32) -> Element<'a, Msg> {
     let Some(b) = best else {
         return text("·").size(13).width(width).center().style(|t: &Theme| text::Style { color: Some(t.extended_palette().background.base.text.scale_alpha(0.45)) }).into();
     };
@@ -743,6 +768,8 @@ fn score_cell<'a>(best: Option<&crate::scores::Best>, width: f32) -> Element<'a,
         "PFC".to_string()
     } else if b.is_fc {
         "FC".to_string()
+    } else if misses {
+        format!("{} missed", b.misses())
     } else {
         format!("{}%", b.accuracy)
     };
@@ -784,6 +811,9 @@ mod tests {
             busy: false,
             scores: None,
             scores_error: None,
+            near_fc_misses: 5,
+            tiers: None,
+            rating: None,
             roots: Vec::new(),
         };
         let names = |p: &Page| p.shown.iter().map(|&i| cat[i].name.clone()).collect::<Vec<_>>();

@@ -92,7 +92,7 @@ pub async fn compute(src: Source) -> Result<Computed, String> {
 type NoteFiles = (Vec<(String, Vec<u8>)>, Option<Vec<(String, String)>>);
 
 /// The notes and song.ini of a chart on disk: a folder's files, or a .sng's entries and metadata.
-fn local_note_files(path: &std::path::Path) -> Result<NoteFiles, String> {
+pub fn local_note_files(path: &std::path::Path) -> Result<NoteFiles, String> {
     let wanted = |n: &str| {
         let l = n.to_ascii_lowercase();
         l.ends_with(".chart") || l.ends_with(".mid") || l.ends_with(".ini")

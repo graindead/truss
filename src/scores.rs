@@ -29,6 +29,16 @@ pub struct Best {
 }
 
 impl Best {
+    /// Notes missed (0 without a full combo: only overstrums broke it).
+    pub fn misses(&self) -> u32 {
+        self.note_count.saturating_sub(self.notes_hit)
+    }
+
+    /// Close to a full combo: not one, but with at most this many misses.
+    pub fn near_fc(&self, misses: u32) -> bool {
+        !self.is_fc && self.note_count > 0 && self.misses() <= misses
+    }
+
     pub fn accuracy(&self) -> f32 {
         self.accuracy.parse().unwrap_or(0.0)
     }
@@ -169,6 +179,16 @@ mod tests {
 
     fn best(diff: &str, acc: &str, fc: bool) -> Best {
         Best { name: "Song".into(), artist: "Band".into(), charter: "Someone".into(), difficulty: diff.into(), accuracy: acc.into(), is_fc: fc, speed: 100, ..Default::default() }
+    }
+
+    #[test]
+    fn near_full_combos_by_misses() {
+        let b = |hit: u32, fc: bool| Best { notes_hit: hit, note_count: 100, is_fc: fc, ..Default::default() };
+        assert!(b(95, false).near_fc(5) && !b(94, false).near_fc(5));
+        // Every note hit but the combo broken (an overstrum): near. A full combo isn't.
+        assert!(b(100, false).near_fc(0) && !b(100, true).near_fc(5));
+        // Unknown note counts don't count.
+        assert!(!Best::default().near_fc(5));
     }
 
     #[test]
