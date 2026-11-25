@@ -20,6 +20,7 @@ pub enum Tab {
     Themes,
     Colors,
     Repair,
+    Players,
     Issues,
 }
 
@@ -31,6 +32,8 @@ pub struct Ctx<'a> {
     pub theme: &'a Theme,
     /// Whether the window was opened see-through.
     pub glass_window: bool,
+    /// Your Clone Hero account, if it's known.
+    pub account: Option<u64>,
 }
 
 /// Requests for the app.
@@ -371,6 +374,7 @@ pub struct Page {
     themes: crate::theme_maker::ThemeMaker,
     colors: crate::color_editor::ColorTool,
     repair: crate::repair::RepairTool,
+    players: crate::players::PlayersTool,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +386,7 @@ pub enum Msg {
     Themes(crate::theme_maker::Msg),
     Colors(crate::color_editor::Msg),
     Repair(crate::repair::Msg),
+    Players(crate::players::Msg),
 }
 
 impl Page {
@@ -393,7 +398,11 @@ impl Page {
                     self.colors.left();
                 }
                 self.tab = t;
-                let task = if t == Tab::Colors { self.colors.opened().map(Msg::Colors) } else { Task::none() };
+                let task = match t {
+                    Tab::Colors => self.colors.opened().map(Msg::Colors),
+                    Tab::Players => self.players.opened(cx.account).map(Msg::Players),
+                    _ => Task::none(),
+                };
                 (task, Out::None)
             }
             Msg::Issues(m) => {
@@ -409,6 +418,10 @@ impl Page {
             Msg::Repair(m) => {
                 let (t, rescan) = self.repair.update(m, cx.settings);
                 (t.map(Msg::Repair), if rescan { Out::Rescan } else { Out::None })
+            }
+            Msg::Players(m) => {
+                let (t, page) = self.players.update(m, cx.account);
+                (t.map(Msg::Players), page.map_or(Out::None, |p| Out::Open(p.into())))
             }
             Msg::Themes(m) => {
                 let taken: Vec<String> = crate::themes::all().iter().map(|t| t.to_string()).collect();
@@ -445,7 +458,7 @@ impl Page {
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Note colors", Tab::Colors), tab("Repair bad songs", Tab::Repair)];
+        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Note colors", Tab::Colors), tab("Repair bad songs", Tab::Repair), tab("Player Stats", Tab::Players)];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -457,6 +470,7 @@ impl Page {
             Tab::Themes => self.themes.view(&cx.settings.custom_themes, cx.theme, cx.glass_window).map(Msg::Themes),
             Tab::Colors => self.colors.view(cx.settings).map(Msg::Colors),
             Tab::Repair => self.repair.view(cx.settings).map(Msg::Repair),
+            Tab::Players => self.players.view(cx.account).map(Msg::Players),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }

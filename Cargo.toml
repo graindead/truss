@@ -40,7 +40,9 @@ unrar = { version = "0.5.8", optional = true }
 aes = { version = "0.8", optional = true }
 ctr = { version = "0.9", optional = true }
 rusqlite = { version = "0.41.1", features = ["bundled"], optional = true }
-flate2 = { version = "1", optional = true }
+flate2 = "1"
+# Matching leaderboard scores to ratings by name (accents dropped).
+unicode-normalization = "0.1"
 crc32fast = { version = "1", optional = true }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
 sha2 = "0.11.1"
@@ -62,7 +64,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com"
 # RhythmVerse search/downloads are part of the normal build. To build without them:
 #   cargo build --release --no-default-features
 default = ["rhythmverse"]
-rhythmverse = ["dep:zip", "dep:sevenz-rust2", "dep:unrar", "dep:rusqlite", "dep:flate2", "dep:crc32fast", "dep:aes", "dep:ctr"]
+rhythmverse = ["dep:zip", "dep:sevenz-rust2", "dep:unrar", "dep:rusqlite", "dep:crc32fast", "dep:aes", "dep:ctr"]
 
 [profile.release]
 opt-level = 3

@@ -35,7 +35,7 @@ pub fn image_height(img: &PathImage) -> u32 {
     (TOP_MARGIN + MARGIN + DIST_BETWEEN_MEASURES * img.rows.len() as i32) as u32
 }
 
-fn fonts() -> &'static Mutex<(FontSystem, SwashCache)> {
+pub(crate) fn fonts() -> &'static Mutex<(FontSystem, SwashCache)> {
     static FONTS: OnceLock<Mutex<(FontSystem, SwashCache)>> = OnceLock::new();
     FONTS.get_or_init(|| Mutex::new((FontSystem::new(), SwashCache::new())))
 }

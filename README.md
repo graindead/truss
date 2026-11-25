@@ -48,6 +48,10 @@ changing the pitch.
 RhythmVerse charts. The Library tab shows your own best score on every chart, and can list the
 ones you nearly full-combo'd and unplayed charts at your level.
 
+**Player Stats.** Tools > Player Stats shows your Clone Hero player card, with averages, hardest
+FCs, near-FCs, accuracy by Fretwork tier and strong suits. Type any username to see theirs, or
+compare two players side by side, including who's ahead on the charts you've both played.
+
 **Difficulty.** [Fretwork](https://github.com/Staycation44/fretwork) tiers on every chart. For
 charts in your library, the Library tab also graphs how hard each part of the song is.
 
@@ -191,4 +195,6 @@ it with `truss.exe.sha256`, using the CHANGELOG section as the release notes.
 - `src/issues.rs`: chart issue checks (ported from scan-chart), currently hidden in the app
 - `src/extras.rs`: extra chart details (library badge, detected issues, version picker, Google Drive link)
 - `src/rich.rs`: Clone Hero's colour, bold and italic tags in names
+- `src/players/`, `data/fretwork-ratings.bin.gz`: Tools > Player Stats (ported from Truss Stats),
+  and the Fretwork ratings it matches scores to
 - `src/vlist.rs`: a virtualized list, so tables of 30,000+ charts stay smooth

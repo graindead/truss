@@ -46,6 +46,7 @@ mod backdrop;
 mod icon_paint;
 mod fretwork;
 mod fretwork_filter;
+mod players;
 mod similar;
 mod tools_ui;
 mod path_ui;
@@ -1142,7 +1143,7 @@ impl App {
     }
 
     fn tools_ctx(&self) -> tools_ui::Ctx<'_> {
-        tools_ui::Ctx { settings: &self.settings, catalog: &self.catalog, theme: &self.theme, glass_window: self.backdrop != backdrop::Backdrop::Off }
+        tools_ui::Ctx { settings: &self.settings, catalog: &self.catalog, theme: &self.theme, glass_window: self.backdrop != backdrop::Backdrop::Off, account: self.score_account() }
     }
 
     /// Re-filters the Library list after the catalog or lyrics data changed.
@@ -4753,6 +4754,7 @@ fn credits_section() -> Element<'static, Message> {
         entry("scan-chart", "https://github.com/Geomitron/scan-chart", "by Geomitron (MIT). Chart reading, the issue checks, and the track hashes leaderboards use."),
         entry("chart-preview", "https://github.com/Geomitron/chart-preview", "by Geomitron (MIT). The note highway preview."),
         entry("Fretwork", "https://github.com/Staycation44/fretwork", "by Staycation (MIT). The Fretwork difficulty tiers."),
+        entry("Clone Hero leaderboards", "https://leaderboards.clonehero.net", "Scores, leaderboards and Player Stats, read by open-chl-api, an unofficial client not affiliated with Clone Hero."),
         entry("CHOpt", "https://github.com/GenericMadScientist/CHOpt", "by Raymond Wright (GPL-3.0). The Star Power path optimiser and path images."),
         entry("SngFileFormat", "https://github.com/mdsitton/SngFileFormat", "by mdsitton. The .sng file format."),
         heading("Related"),
