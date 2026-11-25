@@ -46,6 +46,7 @@ mod backdrop;
 mod icon_paint;
 mod fretwork;
 mod fretwork_filter;
+mod similar;
 mod tools_ui;
 mod path_ui;
 mod packs;
@@ -429,6 +430,10 @@ struct App {
     /// how far rating them is.
     library_tiers: Option<Arc<library_fretwork::Tiers>>,
     tiers_for: u64,
+    /// My level was pressed before your level was known: search once it is.
+    level_wanted: bool,
+    /// The chart being read for "More like this" (its md5).
+    like_reading: Option<String>,
     tiers_progress: Option<(usize, usize)>,
     /// Accounts in Clone Hero's current logs, and how often each comes up (most first).
     log_accounts: Vec<(u64, usize)>,
@@ -590,6 +595,12 @@ enum Message {
     ToggleAdvanced,
     /// Search again (and ask RhythmVerse for new uploads), for charts uploaded since.
     RefreshResults,
+    /// Browse: only charts at your level (again: all of them).
+    MyLevel,
+    MoreLikeThis(Arc<Chart>),
+    /// The chart "More like this" was pressed on was read.
+    LikeRead(Arc<Chart>, Result<trackhash::Computed, String>),
+    EndLike,
     Advanced(advanced::Msg),
     SearchDone { generation: u64, append: bool, result: Result<api::SearchResponse, String> },
     /// Every few minutes: look for charts uploaded since the list loaded.
@@ -900,6 +911,8 @@ impl App {
             log_accounts: Vec::new(),
             library_tiers: None,
             tiers_for: 0,
+            level_wanted: false,
+            like_reading: None,
             tiers_progress: None,
             scores_error: None,
             catalog_stale: false,
@@ -1148,6 +1161,70 @@ impl App {
         Task::perform(lyrics::scan(self.catalog.clone()), Message::LyricsScanned)
     }
 
+    /// Asks for your scores (at most every ten minutes).
+    fn fetch_scores(&mut self) -> Task<Message> {
+        if self.scores_asked.is_some_and(|t| t.elapsed() <= std::time::Duration::from_secs(600)) {
+            return Task::none();
+        }
+        self.scores_asked = Some(std::time::Instant::now());
+        let accounts = self.remember_accounts();
+        match self.score_account() {
+            Some(id) => Task::batch([accounts, Task::perform(scores::fetch(id), move |r| Message::ScoresFetched(id, r.map(Arc::new)))]),
+            None => {
+                self.scores_error = Some("Load a leaderboard in Clone Hero while signed in, so Truss can find your account".into());
+                accounts
+            }
+        }
+    }
+
+    /// Browse is showing charts at your level.
+    fn at_my_level(&self) -> bool {
+        self.active_advanced.is_some() && self.fw_like().is_none() && self.library_page.level().is_some_and(|l| self.advanced.at_level(l))
+    }
+
+    /// Searches at your level if My level was pressed and it's known by now (or says why not).
+    fn try_level(&mut self) -> Task<Message> {
+        if !self.level_wanted || self.library_scanning || self.tiers_progress.is_some() {
+            return Task::none();
+        }
+        if self.library_tiers.is_none() && !self.catalog.is_empty() {
+            return self.rate_library();
+        }
+        if let Some(l) = self.library_page.level() {
+            self.level_wanted = false;
+            self.advanced.set_level(Some(l));
+            return self.run_advanced(true);
+        }
+        if self.my_scores.is_none() && self.scores_error.is_none() {
+            return Task::none();
+        }
+        self.level_wanted = false;
+        self.advanced_open = true;
+        let why = self.scores_error.clone().filter(|_| self.my_scores.is_none());
+        self.advanced.error = Some(why.unwrap_or_else(|| "Full-combo five Expert guitar charts in your library and Truss can find your level".into()));
+        Task::none()
+    }
+
+    /// Shows charts like `c` in Browse.
+    fn start_like(&mut self, c: &Chart, ratings: &[(String, fretwork::Rating)]) -> Task<Message> {
+        self.like_reading = None;
+        let show = if self.screen != Screen::Browse { self.update(Message::ShowScreen(Screen::Browse)) } else { Task::none() };
+        Task::batch([show, self.fw_start_like(c, ratings)])
+    }
+
+    /// The "More like this" button, for charts whose notes can be read.
+    fn like_button(&self, c: &Arc<Chart>) -> Option<Element<'_, Message>> {
+        self.chart_source(c)?;
+        let reading = self.like_reading.as_deref() == Some(c.md5.as_str());
+        Some(
+            button(text(if reading { "Reading the chart…" } else { "More like this" }).size(13))
+                .padding([6, 12])
+                .style(style::secondary)
+                .on_press_maybe((!reading).then(|| Message::MoreLikeThis(c.clone())))
+                .into(),
+        )
+    }
+
     /// Works out the Fretwork tiers of library charts that don't have one yet.
     fn rate_library(&mut self) -> Task<Message> {
         if self.tiers_progress.is_some() || self.catalog.is_empty() || self.tiers_for == self.catalog_rev {
@@ -1354,6 +1431,7 @@ impl App {
                 self.difficulty_rows(c, 0.0),
                 chart_tags(c),
                 buttons,
+                d.chart.as_ref().and_then(|c| self.like_button(c)),
             ]
             .spacing(10)
             .padding(iced::Padding { right: 12.0, ..Default::default() }),
@@ -1626,6 +1704,7 @@ impl App {
                 }
                 self.advanced.error = None;
                 self.fw.filter = fw;
+                self.fw.like = None;
                 // An empty form means a normal search (which includes RhythmVerse).
                 self.active_advanced = (self.advanced.active_count() > 0).then(|| Arc::new(filters));
                 self.query.clear();
@@ -1672,7 +1751,12 @@ impl App {
             self.difficulty.key.map(String::from),
             self.sort,
         );
-        if self.instrument.key == Some("drums") {
+        // Encore's note rates are for the instrument and difficulty asked for.
+        if let Some(l) = self.fw_like() {
+            common.instrument = Some(l.instrument.to_string());
+            common.difficulty = Some("expert".to_string());
+            common.sort = None;
+        } else if self.instrument.key == Some("drums") {
             common.drum_type = self.drum_type.key.map(String::from);
             common.drums_reviewed = self.drums_reviewed.key.is_some();
         }
@@ -1933,6 +2017,51 @@ impl App {
                 let sync = Task::none();
                 Task::batch([show, self.search(false), sync])
             }
+            Message::MyLevel => {
+                let show = if self.screen != Screen::Browse { self.update(Message::ShowScreen(Screen::Browse)) } else { Task::none() };
+                if self.at_my_level() {
+                    self.advanced.set_level(None);
+                    return Task::batch([show, self.run_advanced(true)]);
+                }
+                self.level_wanted = !self.level_wanted;
+                if !self.level_wanted {
+                    return show;
+                }
+                let scores = self.fetch_scores();
+                Task::batch([show, scores, self.try_level()])
+            }
+            Message::MoreLikeThis(c) => {
+                if let Some(leaderboard::Hashes::Done(Ok(cp))) = self.hashes.get(&c.md5) {
+                    let ratings = cp.ratings.clone();
+                    return self.start_like(&c, &ratings);
+                }
+                let Some(src) = self.chart_source(&c) else { return Task::none() };
+                self.like_reading = Some(c.md5.clone());
+                Task::perform(leaderboard::compute(src), move |r| Message::LikeRead(c.clone(), r))
+            }
+            // Pressed on another chart since, or already searching from another reading.
+            Message::LikeRead(c, _) if self.like_reading.as_deref() != Some(c.md5.as_str()) => Task::none(),
+            Message::LikeRead(c, r) => {
+                self.like_reading = None;
+                match r {
+                    Ok(cp) => {
+                        let ratings = cp.ratings.clone();
+                        self.hashes.insert(c.md5.clone(), leaderboard::Hashes::Done(Ok(cp)));
+                        self.start_like(&c, &ratings)
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        Task::none()
+                    }
+                }
+            }
+            Message::EndLike => {
+                // Back to the Advanced filters (My level, say) if any are set, else every chart.
+                self.active_advanced = None;
+                self.fw.like = None;
+                self.fw.filter = None;
+                if self.advanced.active_count() > 0 { self.run_advanced(true) } else { self.search(false) }
+            }
             Message::ToggleAdvanced => {
                 self.advanced_open = !self.advanced_open;
                 self.screen = Screen::Browse;
@@ -1946,6 +2075,7 @@ impl App {
             // Reset also ends an Advanced search that's showing, back to the normal results.
             Message::Advanced(advanced::Msg::Reset) if self.active_advanced.is_some() => {
                 self.advanced.update(advanced::Msg::Reset);
+                self.fw.like = None;
                 self.active_advanced = None;
                 self.fw.filter = None;
                 self.search(false)
@@ -2609,8 +2739,8 @@ impl App {
                     let packs = std::mem::take(&mut self.pack_dup_check);
                     self.find_pack_duplicates(Some(packs))
                 };
-                let rate = if self.screen == Screen::Library || self.library_tiers.is_some() { self.rate_library() } else { Task::none() };
-                let dup_check = Task::batch([dup_check, rate]);
+                let rate = if self.screen == Screen::Library || self.library_tiers.is_some() || self.level_wanted { self.rate_library() } else { Task::none() };
+                let dup_check = Task::batch([dup_check, rate, self.try_level()]);
                 if matches!(self.screen, Screen::Library | Screen::Tools) || !self.lyrics_map.is_empty() {
                     return Task::batch([dup_check, self.scan_lyrics()]);
                 }
@@ -2638,7 +2768,8 @@ impl App {
                 self.library_tiers = Some(t);
                 self.refresh_pages();
                 // Charts that arrived meanwhile.
-                self.rate_library()
+                let more = self.rate_library();
+                Task::batch([more, self.try_level()])
             }
             Message::PickAccount(c) => {
                 self.settings.ch_account = Some(c.id);
@@ -2659,7 +2790,7 @@ impl App {
                     Err(e) => self.scores_error = Some(e),
                 }
                 self.refresh_pages();
-                Task::none()
+                self.try_level()
             }
             Message::LibraryPage(m) => {
                 let mut page = std::mem::take(&mut self.library_page);
@@ -3005,15 +3136,7 @@ impl App {
                     tasks.push(self.tools_page.shown().map(Message::ToolsPage));
                 }
                 if s == Screen::Library {
-                    // Your scores: asked for again at most every ten minutes.
-                    if self.scores_asked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(600)) {
-                        self.scores_asked = Some(std::time::Instant::now());
-                        tasks.push(self.remember_accounts());
-                        match self.score_account() {
-                            Some(id) => tasks.push(Task::perform(scores::fetch(id), move |r| Message::ScoresFetched(id, r.map(Arc::new)))),
-                            None => self.scores_error = Some("Load a leaderboard in Clone Hero while signed in, so Truss can find your account".into()),
-                        }
-                    }
+                    tasks.push(self.fetch_scores());
                     if !self.library_scanning {
                         tasks.push(self.rate_library());
                     }
@@ -3251,8 +3374,13 @@ impl App {
     }
 
     fn view_topbar(&self) -> Element<'_, Message> {
-        let placeholder = if self.active_advanced.is_some() {
-            "Showing advanced search results — type here to go back to quick search"
+        let like;
+        let placeholder = if let Some(l) = self.fw_like() {
+            let short: String = l.name.chars().take(22).collect();
+            like = format!("Charts like {short}{}", if short.len() < l.name.len() { "…" } else { "" });
+            like.as_str()
+        } else if self.active_advanced.is_some() {
+            "Advanced results: type to search"
         } else {
             "Search songs, artists, albums, charters"
         };
@@ -3301,9 +3429,20 @@ impl App {
         // Searches again for charts uploaded while Truss is open.
         // Always the same (a second press only starts the search again).
         let refresh = button(text("Refresh").size(13)).padding([6, 12]).style(style::quiet_button(false)).on_press(Message::RefreshResults);
+        let level: Element<'_, Message> = if self.fw_like().is_some() {
+            button(text("Similar ×").size(13)).padding([6, 12]).style(style::quiet_button(true)).on_press(Message::EndLike).into()
+        } else {
+            let label = match self.tiers_progress {
+                _ if !self.level_wanted => "My level".to_string(),
+                Some((done, total)) if total > 0 => format!("Finding level… {}%", done * 100 / total),
+                _ => "Finding level…".to_string(),
+            };
+            button(text(label).size(13)).padding([6, 12]).style(style::quiet_button(self.level_wanted || self.at_my_level())).on_press(Message::MyLevel).into()
+        };
         let mut filters = row![
             advanced,
             refresh,
+            level,
             pick(pick_list(self.instrument_opts.as_slice(), Some(&self.instrument), Message::InstrumentPicked)),
             pick(pick_list(self.difficulty_opts.as_slice(), Some(&self.difficulty), Message::DifficultyPicked)),
         ]
@@ -3336,7 +3475,7 @@ impl App {
 
     /// Put the search filters on their own row so the search box keeps its room.
     fn narrow_topbar(&self) -> bool {
-        self.win.width < if self.instrument.key == Some("drums") { 1400.0 } else { 1150.0 }
+        self.win.width < if self.instrument.key == Some("drums") { 1500.0 } else { 1250.0 }
     }
 
     fn view_browse(&self) -> Element<'_, Message> {
@@ -3712,6 +3851,7 @@ impl App {
                 tag_row,
                 self.chart_extras(i, c),
                 dl_button,
+                self.results.get(i).and_then(|c| self.like_button(c)),
                 rule::horizontal(1).style(crate::style::rule),
                 self.leaderboard_section(c),
             ]

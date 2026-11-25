@@ -32,6 +32,13 @@ pub struct Rating {
     pub kicks: Option<f64>,
     /// Drums: the open-ended tier counting double-kick notes too (when the chart has any).
     pub tier_2x: Option<u32>,
+    /// Average notes per second (a chord is one), or none if rated before this was kept.
+    pub nps: Option<f64>,
+    /// Shares (0 to 1) of the notes that are strummed, tapped, and chords (drums: two pads hit
+    /// at once; nothing is strummed or tapped).
+    pub strums: f64,
+    pub taps: f64,
+    pub chords: f64,
 }
 
 /// Per-second rate summaries: peak, average over the song, median and spread of active windows.
@@ -130,6 +137,7 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
     // One entry per chord/note: its time and fret mask (bits 0-4 GRYBO, bit 7 open).
     let mut times = Vec::new();
     let mut masks: Vec<u8> = Vec::new();
+    let (mut strums, mut taps) = (0usize, 0usize);
     for g in &t.note_groups {
         let mut m = 0u8;
         for n in g {
@@ -142,6 +150,8 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
         if m != 0 {
             times.push(g[0].ms);
             masks.push(m);
+            strums += (g[0].flags & nf::STRUM != 0) as usize;
+            taps += (g[0].flags & nf::TAP != 0) as usize;
         }
     }
     let last = *times.last()?;
@@ -165,6 +175,7 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
         "keys" => [3.5, 6.0, 7.8, 9.7, 11.8, 13.6],
         _ => [7.2, 8.6, 10.3, 12.0, 14.0, 17.1],
     };
+    let share = |n: usize| n as f64 / times.len() as f64;
     Some(Rating {
         d,
         remap: remap(d, &bins),
@@ -173,6 +184,10 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
         spread: cv(n),
         kicks: None,
         tier_2x: None,
+        nps: Some(n.a),
+        strums: share(strums),
+        taps: share(taps),
+        chords: share(masks.iter().filter(|m| m.count_ones() > 1).count()),
     })
 }
 
@@ -258,6 +273,10 @@ fn rate_drums(t: &Track) -> Option<Rating> {
         spread: cv(h),
         kicks: Some(single.2),
         tier_2x,
+        nps: Some(h.a),
+        strums: 0.0,
+        taps: 0.0,
+        chords: hand_m.iter().filter(|m| m.count_ones() > 1).count() as f64 / hand_m.len() as f64,
     })
 }
 

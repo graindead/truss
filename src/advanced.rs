@@ -221,6 +221,18 @@ impl AdvancedForm {
         }
     }
 
+    /// Sets (or with none, clears) the Fretwork tier: your level, and a step up.
+    pub fn set_level(&mut self, level: Option<u32>) {
+        self.fw_instrument = 0;
+        self.fw_min = level.map(|l| l.to_string()).unwrap_or_default();
+        self.fw_max = level.map(|l| (l + 1).to_string()).unwrap_or_default();
+    }
+
+    /// Whether the Fretwork tier is set to this level.
+    pub fn at_level(&self, level: u32) -> bool {
+        self.fw_instrument == 0 && self.fw_min == level.to_string() && self.fw_max == (level + 1).to_string()
+    }
+
     /// Number of filters that are set, for the button badge.
     pub fn active_count(&self) -> usize {
         self.texts.iter().filter(|t| !t.value.trim().is_empty()).count()

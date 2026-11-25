@@ -271,6 +271,11 @@ impl Page {
         self.open.as_ref()
     }
 
+    /// Your level, once your scores and the library's tiers are known.
+    pub fn level(&self) -> Option<u32> {
+        self.level
+    }
+
     /// An unplayed guitar chart at your level or a step up.
     fn at_your_level(&self, i: usize) -> bool {
         let Some(level) = self.level else { return false };

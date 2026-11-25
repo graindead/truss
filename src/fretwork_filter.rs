@@ -15,6 +15,8 @@ use std::sync::Arc;
 const PARALLEL: usize = 4;
 /// Result pages fetched per scroll while looking for matches (25 charts each).
 const PAGES_PER_SCROLL: u32 = 20;
+/// The same for "More like this" (most of what Encore sends for it is shown).
+const LIKE_PAGES: u32 = 4;
 
 /// Expert ratings by instrument for a chart, as stored in the cache.
 type Tiers = Vec<(String, crate::fretwork::Rating)>;
@@ -22,6 +24,8 @@ type Tiers = Vec<(String, crate::fretwork::Rating)>;
 #[derive(Default)]
 pub struct FwSearch {
     pub filter: Option<FwFilter>,
+    /// "More like this": matches are also scored by how alike they are, and sorted by it.
+    pub like: Option<crate::similar::Like>,
     /// Results waiting for their rating, in Encore's order.
     queue: VecDeque<Arc<Chart>>,
     started: HashSet<String>,
@@ -47,6 +51,48 @@ impl App {
         self.fw.filter.is_some() && self.active_advanced.is_some()
     }
 
+    /// The "More like this" search showing, if one is.
+    pub fn fw_like(&self) -> Option<&crate::similar::Like> {
+        self.fw.like.as_ref().filter(|_| self.fw_active())
+    }
+
+    /// Searches for charts like `c`, whose ratings are known.
+    pub fn fw_start_like(&mut self, c: &Chart, ratings: &[(String, crate::fretwork::Rating)]) -> Task<Message> {
+        let has = |i: &str| ratings.iter().find(|(k, _)| k == i).map(|(_, r)| *r);
+        let keys = crate::advanced::FW_INSTRUMENTS.iter().map(|(k, _)| *k);
+        // The instrument picked in Browse, else the first one the chart has (guitar first).
+        let picked = keys.clone().filter(|k| self.instrument.key == Some(*k));
+        let Some((instrument, r)) = picked.chain(keys).find_map(|k| Some((k, has(k)?))) else {
+            self.error = Some("this chart has no Expert track to compare".into());
+            return Task::none();
+        };
+        let like = crate::similar::Like::new(c, instrument, r);
+        let (min, max) = like.tiers();
+        self.fw.filter = Some(FwFilter::tier_only(instrument, Some(min), Some(max)));
+        self.active_advanced = Some(Arc::new(like.filters(c)));
+        self.fw.like = Some(like);
+        self.query.clear();
+        self.search(false)
+    }
+
+    /// Puts the charts found in order, most alike first.
+    fn fw_sort_like(&mut self) {
+        let Some(scores) = self.fw_like().map(|l| &l.scores) else { return };
+        let score = |c: &Chart| scores.get(&c.md5).copied().unwrap_or(0.0);
+        let mut order: Vec<usize> = (0..self.results.len()).collect();
+        order.sort_by(|&a, &b| score(&self.results[b]).total_cmp(&score(&self.results[a])));
+        if order.is_sorted() {
+            return;
+        }
+        // What's selected and ticked stays with its chart.
+        let now = |i: usize| order.iter().position(|&o| o == i);
+        self.selected = self.selected.and_then(now);
+        self.anchor = self.anchor.and_then(now);
+        self.checked = self.checked.iter().filter_map(|&i| now(i)).collect();
+        self.results = order.iter().map(|&i| self.results[i].clone()).collect();
+        self.list_rev += 1;
+    }
+
     /// Results still waiting to be rated.
     pub fn fw_pending(&self) -> bool {
         self.fw_active() && !self.fw.queue.is_empty()
@@ -57,7 +103,10 @@ impl App {
         self.fw.queue.clear();
         self.fw.started.clear();
         self.fw.checked = 0;
-        self.fw.budget = PAGES_PER_SCROLL;
+        self.fw_more();
+        if let Some(l) = &mut self.fw.like {
+            l.scores.clear();
+        }
         if !self.fw.loaded {
             self.fw.loaded = true;
             self.fw.ratings = cache_file()
@@ -69,7 +118,7 @@ impl App {
 
     /// The user scrolled to the end: allow another run of pages.
     pub fn fw_more(&mut self) {
-        self.fw.budget = PAGES_PER_SCROLL;
+        self.fw.budget = if self.fw_like().is_some() { LIKE_PAGES } else { PAGES_PER_SCROLL };
     }
 
     /// A page of Encore results arrived: queue it for rating.
@@ -102,10 +151,13 @@ impl App {
     /// while there are too few matches.
     fn fw_pump(&mut self) -> Task<Message> {
         let Some(filter) = self.fw.filter.clone() else { return Task::none() };
+        let like = self.fw_like().is_some();
+        // (Ratings kept by earlier versions don't say how a chart plays.)
+        let known = |r: &Option<Tiers>| !like || r.as_ref().is_none_or(|t| t.iter().all(|(_, r)| r.nps.is_some()));
         // Rated charts at the front of the queue are shown (if they match) or dropped.
         let mut shown = Vec::new();
         while let Some(c) = self.fw.queue.front() {
-            let Some(rating) = self.fw.ratings.get(&c.md5) else { break };
+            let Some(rating) = self.fw.ratings.get(&c.md5).filter(|r| known(r)) else { break };
             if !self.fw.started.contains(&c.md5) {
                 // Rated in an earlier search: count it now.
                 self.fw.checked += 1;
@@ -113,7 +165,7 @@ impl App {
             let r = rating.as_ref().and_then(|t| t.iter().find(|(i, _)| i == filter.instrument).map(|(_, r)| *r));
             let listed = c.diff_for(filter.instrument);
             let c = self.fw.queue.pop_front().unwrap();
-            if r.is_some_and(|r| filter.accepts(&r, listed)) {
+            if r.is_some_and(|r| filter.accepts(&r, listed) && (!like || self.fw.like.as_mut().is_some_and(|l| l.takes(&c, &r)))) {
                 shown.push(c);
             }
         }
@@ -128,7 +180,7 @@ impl App {
             if self.fw.inflight >= PARALLEL {
                 break;
             }
-            if self.fw.ratings.contains_key(&c.md5) || !self.fw.started.insert(c.md5.clone()) {
+            if self.fw.ratings.get(&c.md5).is_some_and(known) || !self.fw.started.insert(c.md5.clone()) {
                 continue;
             }
             let Some(src) = self.chart_source(c) else {
@@ -141,10 +193,11 @@ impl App {
             tasks.push(Task::perform(leaderboard::compute(src), move |r| Message::FwRated(generation, md5.clone(), r)));
         }
         // Charts marked unreadable just now: show progress past them.
-        if tasks.is_empty() && self.fw.queue.front().is_some_and(|c| self.fw.ratings.contains_key(&c.md5)) {
+        if tasks.is_empty() && self.fw.queue.front().is_some_and(|c| self.fw.ratings.get(&c.md5).is_some_and(known)) {
             return self.fw_pump();
         }
         if self.fw.queue.is_empty() {
+            self.fw_sort_like();
             if self.fw.unsaved > 0 {
                 self.fw_save();
             }
@@ -172,6 +225,15 @@ impl App {
         let label = crate::advanced::FW_INSTRUMENTS.iter().find(|(k, _)| *k == f.instrument).map(|(_, l)| *l).unwrap_or("");
         let n = self.results.len();
         let working = !self.fw.queue.is_empty() || self.loading;
+        if let Some(l) = self.fw_like() {
+            return Some(format!(
+                "{n} chart{} like {} ({label}), from {} checked{}",
+                if n == 1 { "" } else { "s" },
+                l.name,
+                self.fw.checked,
+                if working { " — checking more…" } else if self.encore_seen < self.found { ". Scroll for more." } else { "" }
+            ));
+        }
         Some(format!(
             "{n} chart{} match the Fretwork filter ({label}), from {} checked{}",
             if n == 1 { "" } else { "s" },
