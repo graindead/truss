@@ -10,6 +10,9 @@ use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Every preview starts this quiet (0..=1), however loud the last one was set: charts vary a lot.
+const START_VOLUME: f32 = 0.05;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub key: &'static str,
@@ -139,7 +142,6 @@ impl Panel {
         chart: Arc<Chart>,
         pref_instrument: Option<String>,
         pref_difficulty: Option<String>,
-        volume: f32,
         keep_video: bool,
         local: Option<std::path::PathBuf>,
     ) -> (Self, Task<Msg>) {
@@ -161,7 +163,7 @@ impl Panel {
             difficulty: "expert",
             track: None,
             textures: crate::textures::cached(guess),
-            volume,
+            volume: START_VOLUME,
             muted: false,
             expanded: false,
             scrub: None,
@@ -172,10 +174,6 @@ impl Panel {
             looping: None,
         };
         (panel, Task::batch([load_task, tex]))
-    }
-
-    pub fn volume(&self) -> f32 {
-        self.volume
     }
 
     fn player(&self) -> Option<&Player> {
@@ -313,8 +311,8 @@ impl Panel {
                     Key::Named(Named::Space) => return self.update(Msg::TogglePlay),
                     Key::Named(Named::ArrowLeft) => self.seek_relative(-5000.0),
                     Key::Named(Named::ArrowRight) => self.seek_relative(5000.0),
-                    Key::Named(Named::ArrowUp) => return self.update(Msg::Volume((self.volume + 0.1).min(1.0))),
-                    Key::Named(Named::ArrowDown) => return self.update(Msg::Volume((self.volume - 0.1).max(0.0))),
+                    Key::Named(Named::ArrowUp) => return self.update(Msg::Volume((self.volume + 0.05).min(1.0))),
+                    Key::Named(Named::ArrowDown) => return self.update(Msg::Volume((self.volume - 0.05).max(0.0))),
                     Key::Named(Named::Escape) => return (Task::none(), true),
                     Key::Character("m") => {
                         self.muted = !self.muted;

@@ -1975,16 +1975,11 @@ impl App {
         }
     }
 
-    /// Closes the preview (stopping audio) and remembers its volume.
+    /// Closes the preview (stopping audio).
     fn close_preview(&mut self) -> Task<Message> {
         ch_sprites::release_chart_textures();
         textures::release();
-        if let Some(p) = self.preview.take() {
-            if (p.volume() - self.settings.preview_volume).abs() > f32::EPSILON {
-                self.settings.preview_volume = p.volume();
-                return self.save_settings();
-            }
-        }
+        self.preview = None;
         Task::none()
     }
 
@@ -2533,7 +2528,6 @@ impl App {
                     chart,
                     self.instrument.key.map(String::from),
                     self.difficulty.key.map(String::from),
-                    self.settings.preview_volume,
                     self.settings.download_videos,
                     local,
                 );
@@ -2860,7 +2854,6 @@ impl App {
                     chart,
                     self.instrument.key.map(String::from),
                     self.difficulty.key.map(String::from),
-                    self.settings.preview_volume,
                     self.settings.download_videos,
                     local,
                 );

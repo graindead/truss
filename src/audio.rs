@@ -227,6 +227,12 @@ pub struct Player {
     end_ms: f64,
 }
 
+/// A sample kept to full scale, so audio that goes over it (or several stems adding up to more)
+/// is never louder than the volume allows. Broken samples are silent.
+fn limit(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
+}
+
 impl Drop for Player {
     fn drop(&mut self) {
         let _ = self.cmd.send(Cmd::Quit);
@@ -354,7 +360,7 @@ fn audio_thread(
         frames: AtomicU64::new(0),
         generation: AtomicU32::new(0),
         acked: AtomicU32::new(0),
-        volume: AtomicU32::new(0.25f32.to_bits()),
+        volume: AtomicU32::new(0f32.to_bits()),
         latency_us: AtomicU64::new(0),
         source_done: AtomicBool::new(false),
         ended: AtomicBool::new(false),
@@ -621,8 +627,8 @@ fn build_stream(
             let (a, b) = chunk.as_slices();
             let mut it = a.iter().chain(b.iter());
             for frame in data.chunks_exact_mut(out_channels).take(avail) {
-                let l = *it.next().unwrap_or(&0.0) * vol;
-                let r = *it.next().unwrap_or(&0.0) * vol;
+                let l = limit(*it.next().unwrap_or(&0.0)) * vol;
+                let r = limit(*it.next().unwrap_or(&0.0)) * vol;
                 for (c, s) in frame.iter_mut().enumerate() {
                     *s = T::from_sample(match c {
                         0 => l,

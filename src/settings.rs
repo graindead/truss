@@ -36,8 +36,6 @@ pub struct Settings {
     pub theme: String,
     /// Themes made in Tools > Themes (or imported).
     pub custom_themes: Vec<crate::theme_maker::CustomTheme>,
-    /// Chart preview volume, 0..=1.
-    pub preview_volume: f32,
     /// Browse layout: "list", "grid", "compact" or "hero".
     pub layout: String,
     /// Chart preview frame-rate cap; 0 = match the display's refresh rate.
@@ -97,7 +95,6 @@ impl Default for Settings {
             instrument: None,
             difficulty: None,
             theme: "Rust".into(),
-            preview_volume: 0.5,
             layout: "list".into(),
             preview_fps: 60,
             preview_note_speed: None,
