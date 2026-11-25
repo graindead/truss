@@ -3,6 +3,19 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.29
+
+- **My level:** a button in Browse that shows Encore charts at your level (the Fretwork tier of
+  most of your Expert guitar full combos) and one tier above. Press it again for every chart.
+- **More like this:** on any chart's details, finds Encore charts that play like it (strums, taps,
+  chords, speed and difficulty), most alike first.
+- **Library:** Near FC now goes by missed notes (5 or fewer, or set your own limit), and Your level
+  by Fretwork tiers instead of the difficulty charters gave.
+- **Drums:** RhythmVerse charts are left out when Quality Reviewed or a drum type is picked, since
+  they can't be filtered by either (they used to show unfiltered).
+- **Top bar:** picking drums no longer moves every filter to a second row, and the spacing around
+  the search box is even.
+
 ## v0.1.28
 
 - **Refresh:** a Refresh button next to Advanced searches again, picking up charts uploaded while
