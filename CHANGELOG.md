@@ -3,6 +3,13 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.30
+
+- **Preview volume:** every preview now starts at 5% volume instead of the last volume used, so a
+  loud chart can't catch you out. Turn it up with the slider or the up and down keys (5% a press).
+- **Loud charts:** preview audio that goes over full scale is limited, so it's never louder than
+  the volume allows.
+
 ## v0.1.29
 
 - **My level:** a button in Browse that shows Encore charts at your level (the Fretwork tier of
