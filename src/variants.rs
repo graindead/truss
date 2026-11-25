@@ -75,7 +75,7 @@ impl App {
     /// Why RhythmVerse charts are missing from the current Advanced search, if they are.
     fn rv_hidden_banner(&self) -> Option<Element<'_, Message>> {
         #[cfg(feature = "rhythmverse")]
-        if let Some(note) = self.rv.hidden_note.as_ref().filter(|_| self.active_advanced.is_some()) {
+        if let Some(note) = &self.rv.hidden_note {
             return Some(
                 container(text(format!("RhythmVerse charts aren't included: {note}.")).size(12).style(|t: &Theme| text::Style {
                     color: Some(crate::style::muted(t)),

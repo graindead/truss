@@ -3380,9 +3380,9 @@ impl App {
             like = format!("Charts like {short}{}", if short.len() < l.name.len() { "…" } else { "" });
             like.as_str()
         } else if self.active_advanced.is_some() {
-            "Advanced results: type to search"
+            "Advanced: type to search"
         } else {
-            "Search songs, artists, albums, charters"
+            "Search songs, artists, charters"
         };
         let search = text_input(placeholder, &self.query)
             .id(SEARCH_ID)
@@ -3420,7 +3420,6 @@ impl App {
             nav("Library", Screen::Library),
             nav("Tools", Screen::Tools),
             nav("Settings", Screen::Settings),
-            space().width(14),
             search,
         ]
         .push(self.update_button())
@@ -3448,15 +3447,25 @@ impl App {
         ]
         .spacing(14)
         .align_y(Alignment::Center);
+        // Drums' own two: on the end of the filters, or in a row of their own when that would
+        // squeeze the search box (the rest of the bar stays put).
+        let mut drums_row = None;
         if self.instrument.key == Some("drums") {
-            filters = filters
-                .push(pick(pick_list(self.drum_type_opts.as_slice(), Some(&self.drum_type), Message::DrumTypePicked)))
-                .push(pick(pick_list(self.reviewed_opts.as_slice(), Some(&self.drums_reviewed), Message::DrumsReviewedPicked)));
+            let own = row![
+                pick(pick_list(self.drum_type_opts.as_slice(), Some(&self.drum_type), Message::DrumTypePicked)),
+                pick(pick_list(self.reviewed_opts.as_slice(), Some(&self.drums_reviewed), Message::DrumsReviewedPicked)),
+            ]
+            .spacing(14);
+            if self.narrow_topbar() || self.win.width >= 1430.0 {
+                filters = filters.push(own);
+            } else {
+                drums_row = Some(container(own).align_right(Length::Fill));
+            }
         }
         let bar: Element<'_, Message> = if self.narrow_topbar() {
             column![bar, filters].spacing(8).into()
         } else {
-            bar.push(filters).into()
+            column![bar.push(filters)].push(drums_row).spacing(8).into()
         };
         column![container(bar).padding([8, 18]).width(Length::Fill), style::divider(false)].into()
     }
@@ -3475,7 +3484,7 @@ impl App {
 
     /// Put the search filters on their own row so the search box keeps its room.
     fn narrow_topbar(&self) -> bool {
-        self.win.width < if self.instrument.key == Some("drums") { 1500.0 } else { 1250.0 }
+        self.win.width < 1180.0
     }
 
     fn view_browse(&self) -> Element<'_, Message> {

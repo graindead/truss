@@ -54,12 +54,27 @@ impl App {
         self.settings.source_rhythmverse
     }
 
+    /// Why RhythmVerse's charts can't follow the drums pickers, when one is set: its list says
+    /// neither a chart's drum type nor whether it was reviewed (that's Encore's mark).
+    fn rv_drum_filter(&self) -> Option<&'static str> {
+        if self.instrument.key != Some("drums") {
+            None
+        } else if self.drums_reviewed.key.is_some() {
+            Some("only Encore marks charts as quality reviewed")
+        } else if self.drum_type.key.is_some() {
+            Some("their drum type isn't listed")
+        } else {
+            None
+        }
+    }
+
     /// Starts the RhythmVerse part of a search (or the next page of it).
     pub fn rv_search(&mut self, append: bool) -> Task<Message> {
         // Advanced search: RhythmVerse's chart list only has names, length, difficulties and
         // dates, so it joins in only when every filter set is one it can answer.
         let skip = match &self.active_advanced {
             _ if !self.rv_enabled() => Some(None),
+            _ if self.rv_drum_filter().is_some() => self.rv_drum_filter().map(|f| Some(f.to_string())),
             None => None,
             Some(_) if self.fw.filter.is_some() => Some(Some("the Fretwork filter only works on Encore charts".to_string())),
             Some(a) => match a.rv_unsupported() {
@@ -130,6 +145,7 @@ impl App {
     /// relevance order, with RhythmVerse's results after.
     pub fn merging(&self) -> bool {
         self.rv_enabled()
+            && self.rv_drum_filter().is_none()
             && self.settings.source_encore
             && self.sort.is_none()
             && self.query.trim().is_empty()
