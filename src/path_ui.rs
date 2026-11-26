@@ -318,7 +318,7 @@ impl PathTool {
 
     pub fn view<'a>(&'a self, catalog: &'a [Arc<LocalChart>]) -> Element<'a, Msg> {
         let mut left = column![
-            text("Star Power paths").size(15).font(crate::BOLD),
+            text("Pathing").size(15).font(crate::BOLD),
             text("Finds the highest-scoring Star Power path for a chart in your library, using a port of CHOpt by GenericMadScientist. Charts are only read.")
                 .size(12),
         ]

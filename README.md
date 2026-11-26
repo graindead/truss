@@ -59,14 +59,17 @@ compare two players side by side, including who's ahead on the charts you've bot
 **Difficulty.** [Fretwork](https://github.com/Staycation44/fretwork) tiers on every chart. For
 charts in your library, the Library tab also graphs how hard each part of the song is.
 
-**Star Power paths.** CHOpt is built in (Tools tab). Pick a chart and Truss draws the best Star
+**Star Power paths.** CHOpt is built in (Tools > Pathing). Pick a chart and Truss draws the best Star
 Power path, matching CHOpt 1.19.
 
 **Library.** Shows which charts are missing album art, backgrounds, video or lyrics, finds
 duplicates and exact copies, and moves charts you don't want to the Recycle Bin.
 
-**Note colors and themes.** Edit Clone Hero colour profiles with a live preview of the game's own
-notes, and pick or make a theme for Truss itself.
+**Color Profiles and themes.** Edit Clone Hero colour profiles with a live preview of the game's
+own notes, and pick or make a theme for Truss itself.
+
+**Profile Editor.** Edit your Clone Hero profile: colour your name (one colour or a gradient, bold
+or italic), and change its colour profile, note speed and other settings. A backup is kept.
 
 **Scene Switcher.** For OBS streamers: switches scenes when a song starts and ends, and works
 with Ouvert song requests. Shares its settings with
@@ -201,4 +204,5 @@ it with `truss.exe.sha256`, using the CHANGELOG section as the release notes.
 - `src/rich.rs`: Clone Hero's colour, bold and italic tags in names
 - `src/players/`, `data/fretwork-ratings.bin.gz`: Tools > Player Stats (ported from Truss Stats),
   and the Fretwork ratings it matches scores to
+- `src/profile_editor.rs`: Tools > Profile Editor (Clone Hero's profiles.ini)
 - `src/vlist.rs`: a virtualized list, so tables of 30,000+ charts stay smooth

@@ -519,14 +519,19 @@ pub fn player_color_profile() -> Option<String> {
     player_setting("color_profile_name")
 }
 
-/// A setting from the first profile in Clone Hero's profiles.ini (the player's own).
-fn player_setting(key: &str) -> Option<String> {
+/// Clone Hero's profiles.ini, where it keeps each player's name and settings.
+pub fn profiles_file() -> Option<std::path::PathBuf> {
     let install = find_install()?;
     let mut tries = vec![install.join("PlayerData").join("profiles.ini")];
     if let Some(c) = crate::color_profile::folder() {
         tries.extend(c.ancestors().skip(2).take(2).map(|d| d.join("profiles.ini")));
     }
-    let text = tries.iter().find_map(|p| std::fs::read_to_string(p).ok())?;
+    tries.into_iter().find(|p| p.is_file())
+}
+
+/// A setting from the first profile in Clone Hero's profiles.ini (the player's own).
+fn player_setting(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(profiles_file()?).ok()?;
     text.lines()
         .take_while(|l| !l.trim_start().starts_with("[profile1]"))
         .find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()))
@@ -542,6 +547,21 @@ pub fn player_lefty() -> bool {
 /// The highway the player has chosen in Clone Hero ("Default" if none).
 pub fn player_highway() -> String {
     player_setting("highway_name").unwrap_or_else(|| "Default".into())
+}
+
+/// The pictures in the player's Custom\Highways folder, by name as Clone Hero saves the choice
+/// (without the extension: "GH2_graywood"), sorted.
+pub fn custom_highways() -> Vec<String> {
+    let Some(dir) = find_install().map(|i| i.join("PlayerData").join("Custom").join("Highways")) else { return Vec::new() };
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| ["png", "jpg", "jpeg"].iter().any(|k| x.eq_ignore_ascii_case(k))))
+        .filter_map(|e| Some(e.path().file_stem()?.to_string_lossy().into_owned()))
+        .collect();
+    v.sort_by_key(|s| s.to_lowercase());
+    v
 }
 
 /// A highway's picture: one of the player's own (an image in Custom\Highways), or one of the

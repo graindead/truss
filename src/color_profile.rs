@@ -74,6 +74,11 @@ impl Profile {
         self.get(section, key).and_then(crate::theme_maker::parse_hex)
     }
 
+    /// The sections, in file order.
+    pub fn sections(&self) -> Vec<String> {
+        self.lines.iter().filter_map(|l| if let Line::Section(s) = l { Some(s.clone()) } else { None }).collect()
+    }
+
     /// The keys of a section, in file order.
     pub fn keys(&self, section: &str) -> Vec<String> {
         self.entries().filter(|(s, ..)| s.is_some_and(|s| s.eq_ignore_ascii_case(section))).map(|(_, _, k, _)| k.to_string()).collect()

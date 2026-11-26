@@ -1,4 +1,4 @@
-//! Tools > Note colors: edits Clone Hero colour profiles (see color_profile.rs). Guitar and
+//! Tools > Color Profiles: edits Clone Hero colour profiles (see color_profile.rs). Guitar and
 //! drums are previewed on the chart preview's highway, playing a made-up chart with notes and
 //! frets built from Clone Hero's sprites in the profile's colours (see ch_sprites.rs); 6-fret
 //! and the other colours have a preview where clicking a part picks its colour, made of the

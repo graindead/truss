@@ -47,6 +47,7 @@ mod icon_paint;
 mod fretwork;
 mod fretwork_filter;
 mod players;
+mod profile_editor;
 mod similar;
 mod tools_ui;
 mod path_ui;
@@ -147,6 +148,8 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .window(iced::window::Settings {
             size: initial_size,
+            // It can't be made smaller than it opens (which is smaller only on small screens).
+            min_size: Some(initial_size),
             position: initial_position,
             icon: app_icon(&theme_by_name(&settings.theme, &settings.custom_themes))
                 .or_else(|| iced::window::icon::from_file_data(include_bytes!("../assets/truss-256.png"), None).ok()),
@@ -157,10 +160,10 @@ fn main() -> iced::Result {
         .run()
 }
 
-/// The window's first size and place: 1280x800 at most, shrunk to fit the screen's usable
-/// area (not under the taskbar) and centred in it.
+/// The window's first size and place: 1284x860 (also its smallest), shrunk to fit the screen's
+/// usable area (not under the taskbar) and centred in it.
 fn initial_window() -> (iced::Size, iced::window::Position) {
-    let want: iced::Size<f32> = iced::Size::new(1280.0, 800.0);
+    let want: iced::Size<f32> = iced::Size::new(1284.0, 860.0);
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::RECT;
@@ -879,7 +882,7 @@ impl App {
             checked: BTreeSet::new(),
             anchor: None,
             modifiers: Default::default(),
-            win: iced::Size::new(1280.0, 800.0),
+            win: iced::Size::new(1284.0, 860.0),
             list_rev: 0,
             show_issues: false,
             show_versions: false,
@@ -3127,7 +3130,7 @@ impl App {
                     tasks.push(self.packs_page.opened().map(Message::PacksPage));
                 }
                 if changed && s == Screen::Tools {
-                    tasks.push(self.tools_page.shown().map(Message::ToolsPage));
+                    tasks.push(self.tools_page.shown(self.score_account()).map(Message::ToolsPage));
                 }
                 if s == Screen::Library {
                     tasks.push(self.fetch_scores());
@@ -4016,7 +4019,7 @@ impl App {
         let ch = item(
             "Clone Hero folder",
             1,
-            "Lets the chart preview and Note colors look just like the game, using its own pictures and your colours.",
+            "Lets the chart preview and Color Profiles look just like the game, using its own pictures and your colours.",
             ch_state.0,
             ch_state.1,
             button(text("Choose…").size(12)).padding([4, 10]).style(style::secondary).on_press(Message::PickChFolder).into(),

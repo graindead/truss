@@ -1,4 +1,5 @@
-//! The Tools page: Star Power paths, the Scene Switcher (and the Issue scanner, hidden for now).
+//! The Tools page: Player Stats, Pathing (Star Power paths), the Profile Editor, Color Profiles,
+//! the Scene Switcher, Themes and Repair bad songs (and the Issue scanner, hidden for now).
 
 use crate::vlist::VList;
 use futures::{SinkExt, channel::mpsc::Sender};
@@ -14,13 +15,14 @@ pub(crate) const ISSUE_SCANNER_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
-    #[default]
     Paths,
     Scenes,
     Themes,
     Colors,
     Repair,
+    #[default]
     Players,
+    Profile,
     Issues,
 }
 
@@ -375,6 +377,7 @@ pub struct Page {
     colors: crate::color_editor::ColorTool,
     repair: crate::repair::RepairTool,
     players: crate::players::PlayersTool,
+    profile: crate::profile_editor::ProfileEditor,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +390,7 @@ pub enum Msg {
     Colors(crate::color_editor::Msg),
     Repair(crate::repair::Msg),
     Players(crate::players::Msg),
+    Profile(crate::profile_editor::Msg),
 }
 
 impl Page {
@@ -401,6 +405,10 @@ impl Page {
                 let task = match t {
                     Tab::Colors => self.colors.opened().map(Msg::Colors),
                     Tab::Players => self.players.opened(cx.account).map(Msg::Players),
+                    Tab::Profile => {
+                        self.profile.opened();
+                        Task::none()
+                    }
                     _ => Task::none(),
                 };
                 (task, Out::None)
@@ -419,6 +427,7 @@ impl Page {
                 let (t, rescan) = self.repair.update(m, cx.settings);
                 (t.map(Msg::Repair), if rescan { Out::Rescan } else { Out::None })
             }
+            Msg::Profile(m) => (self.profile.update(m).map(Msg::Profile), Out::None),
             Msg::Players(m) => {
                 let (t, page) = self.players.update(m, cx.account);
                 (t.map(Msg::Players), page.map_or(Out::None, |p| Out::Open(p.into())))
@@ -444,8 +453,13 @@ impl Page {
 
     /// The Tools page was opened again: the colour editor, if it's the tab shown, gets its
     /// pictures back.
-    pub fn shown(&mut self) -> Task<Msg> {
-        if self.tab == Tab::Colors { self.colors.opened().map(Msg::Colors) } else { Task::none() }
+    /// (Also when the page is first opened: the tab it starts on loads what it shows.)
+    pub fn shown(&mut self, account: Option<u64>) -> Task<Msg> {
+        match self.tab {
+            Tab::Colors => self.colors.opened().map(Msg::Colors),
+            Tab::Players => self.players.opened(account).map(Msg::Players),
+            _ => Task::none(),
+        }
     }
 
     pub fn subscription(&self, preview_fps: u32) -> Subscription<Msg> {
@@ -458,7 +472,15 @@ impl Page {
 
     pub fn view<'a>(&'a self, cx: &Ctx<'a>) -> Element<'a, Msg> {
         let tab = |label: &'static str, t: Tab| crate::style::tab(label, self.tab == t, 14, Msg::Tab(t));
-        let mut tab_row = row![tab("Star Power paths", Tab::Paths), tab("Scene Switcher", Tab::Scenes), tab("Themes", Tab::Themes), tab("Note colors", Tab::Colors), tab("Repair bad songs", Tab::Repair), tab("Player Stats", Tab::Players)];
+        let mut tab_row = row![
+            tab("Player Stats", Tab::Players),
+            tab("Pathing", Tab::Paths),
+            tab("Profile Editor", Tab::Profile),
+            tab("Color Profiles", Tab::Colors),
+            tab("Scene Switcher", Tab::Scenes),
+            tab("Themes", Tab::Themes),
+            tab("Repair bad songs", Tab::Repair),
+        ];
         if ISSUE_SCANNER_ENABLED {
             tab_row = tab_row.push(tab("Issue scanner", Tab::Issues));
         }
@@ -471,6 +493,7 @@ impl Page {
             Tab::Colors => self.colors.view(cx.settings).map(Msg::Colors),
             Tab::Repair => self.repair.view(cx.settings).map(Msg::Repair),
             Tab::Players => self.players.view(cx.account).map(Msg::Players),
+            Tab::Profile => self.profile.view().map(Msg::Profile),
         };
         column![tabs, rule::horizontal(1).style(crate::style::rule), body].height(Length::Fill).into()
     }
