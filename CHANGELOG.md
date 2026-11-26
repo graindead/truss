@@ -3,6 +3,16 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.32
+
+- **Under the hood:** a large tidy-up that shares code which had been copied between parts of
+  Truss (downloads, caching, chart reading, the colour pickers and more). Track hashes, Fretwork
+  ratings and difficulty graphs are unchanged, checked against hundreds of real charts.
+- **Pathing:** song files saved as UTF-16 big-endian text are now read correctly.
+- **RhythmVerse downloads:** a file name with an unusual `%` sequence can no longer crash the
+  download.
+- **Google Drive folders:** empty subfolders in a Drive download are no longer created.
+
 ## v0.1.31
 
 - **Player Stats (Tools):** your Clone Hero player card and stats, shown as soon as you open
