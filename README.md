@@ -2,6 +2,7 @@
 
 > [!IMPORTANT]
 > **AI disclosure:** Truss is written with an AI model (Anthropic's Claude, through Claude Code).
+> All features are tested before release.
 
 [![Codacy grade](https://app.codacy.com/project/badge/Grade/8c66e309ce354ae0ba42ad67457e692c)](https://app.codacy.com/gh/graindead/truss/dashboard)
 
