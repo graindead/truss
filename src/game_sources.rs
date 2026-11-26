@@ -211,6 +211,28 @@ mod build {
         pure: bool,
     }
 
+    impl Cand {
+        /// A chart from `from` ("encore" or "rv"), with no links or pack yet.
+        fn new(c: &Chart, from: &str, id: String, pure: bool) -> Self {
+            let (artist, name, charter) = (c.artist.as_deref().unwrap_or(""), c.name.as_deref().unwrap_or(""), c.charter.as_deref().unwrap_or(""));
+            Cand {
+                loose_key: format!("{}|{}", loose(artist), loose(name)),
+                pack: String::new(),
+                pure,
+                source: Source {
+                    from: from.into(),
+                    id,
+                    artist: crate::api::strip_tags(artist),
+                    name: crate::api::strip_tags(name),
+                    charter: crate::api::strip_tags(charter),
+                    download_url: None,
+                    external_url: None,
+                    page_url: None,
+                },
+            }
+        }
+    }
+
     fn drive_id(u: &str) -> Option<String> {
         let i = ["/file/d/", "/folders/", "id="].iter().find_map(|m| u.find(m).map(|i| i + m.len()))?;
         Some(u[i..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect())
@@ -262,22 +284,9 @@ mod build {
                     if !official(&charter) || !seen.insert(c.md5.clone()) {
                         continue;
                     }
-                    let (artist, name) = (c.artist.clone().unwrap_or_default(), c.name.clone().unwrap_or_default());
-                    cands.push(Cand {
-                        loose_key: format!("{}|{}", loose(&artist), loose(&name)),
-                        pack: c.pack_name.clone().unwrap_or_default(),
-                        pure: pure(&charter),
-                        source: Source {
-                            from: "encore".into(),
-                            id: c.md5.clone(),
-                            artist: crate::api::strip_tags(&artist),
-                            name: crate::api::strip_tags(&name),
-                            charter: crate::api::strip_tags(&charter),
-                            download_url: None,
-                            external_url: None,
-                            page_url: None,
-                        },
-                    });
+                    let mut cand = Cand::new(c, "encore", c.md5.clone(), pure(&charter));
+                    cand.pack = c.pack_name.clone().unwrap_or_default();
+                    cands.push(cand);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(400));
             }
@@ -291,22 +300,11 @@ mod build {
             if !official(&charter) || (rv.download_url.is_none() && rv.external_url.is_none()) {
                 continue;
             }
-            let (artist, name) = (c.artist.clone().unwrap_or_default(), c.name.clone().unwrap_or_default());
-            cands.push(Cand {
-                loose_key: format!("{}|{}", loose(&artist), loose(&name)),
-                pack: String::new(),
-                pure: pure(&charter),
-                source: Source {
-                    from: "rv".into(),
-                    id: c.md5.trim_start_matches("rv-").to_string(),
-                    artist: crate::api::strip_tags(&artist),
-                    name: crate::api::strip_tags(&name),
-                    charter: crate::api::strip_tags(&charter),
-                    download_url: rv.download_url.clone(),
-                    external_url: rv.external_url.clone(),
-                    page_url: Some(rv.page_url.clone()),
-                },
-            });
+            let mut cand = Cand::new(&c, "rv", c.md5.trim_start_matches("rv-").to_string(), pure(&charter));
+            cand.source.download_url = rv.download_url.clone();
+            cand.source.external_url = rv.external_url.clone();
+            cand.source.page_url = Some(rv.page_url.clone());
+            cands.push(cand);
         }
         println!("{encore_count} official charts on Chorus, {} on RhythmVerse", cands.len() - encore_count);
         let mut by_key: HashMap<&str, Vec<&Cand>> = HashMap::new();

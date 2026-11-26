@@ -864,25 +864,15 @@ fn sort_and_fix_invalid_event_overlaps(events: &mut Vec<TimedSpan>) {
 
 // ---------- .chart parser (chart-file-parser.ts) ----------
 
-/// .chart track sections, by what follows the difficulty ("Expert" + "Single"), and their
-/// instruments.
-const CHART_PARTS: &[(&str, &str)] = &[
-    ("Single", "guitar"),
-    ("DoubleGuitar", "guitarcoop"),
-    ("DoubleRhythm", "rhythm"),
-    ("DoubleBass", "bass"),
-    ("Drums", "drums"),
-    ("Keyboard", "keys"),
-    ("GHLGuitar", "guitarghl"),
-    ("GHLCoop", "guitarcoopghl"),
-    ("GHLRhythm", "rhythmghl"),
-    ("GHLBass", "bassghl"),
-];
+/// .chart track sections, by what follows the difficulty ("Expert" + "Single"), one for each
+/// of `INSTRUMENTS`.
+const CHART_PARTS: [&str; 10] =
+    ["Single", "DoubleGuitar", "DoubleRhythm", "DoubleBass", "Drums", "Keyboard", "GHLGuitar", "GHLCoop", "GHLRhythm", "GHLBass"];
 const CHART_DIFFICULTIES: [(&str, &str); 4] = [("Expert", "expert"), ("Hard", "hard"), ("Medium", "medium"), ("Easy", "easy")];
 
 /// Every .chart track section: (name, instrument, difficulty), in scan-chart's order.
 fn chart_tracks() -> impl Iterator<Item = (String, &'static str, &'static str)> {
-    CHART_PARTS.iter().flat_map(|&(part, instrument)| CHART_DIFFICULTIES.iter().map(move |&(d, difficulty)| (format!("{d}{part}"), instrument, difficulty)))
+    CHART_PARTS.iter().zip(INSTRUMENTS).flat_map(|(part, instrument)| CHART_DIFFICULTIES.iter().map(move |&(d, difficulty)| (format!("{d}{part}"), instrument, difficulty)))
 }
 
 fn decode_text(data: &[u8]) -> String {
@@ -1227,19 +1217,27 @@ impl RawTrack {
 
 // ---------- .mid parser (midi-file-parser.ts) ----------
 
-const MIDI_TRACKS: &[(&str, &str)] = &[
-    ("T1 GEMS", "guitar"),
-    ("PART GUITAR", "guitar"),
-    ("PART GUITAR COOP", "guitarcoop"),
-    ("PART RHYTHM", "rhythm"),
-    ("PART BASS", "bass"),
-    ("PART DRUMS", "drums"),
-    ("PART KEYS", "keys"),
-    ("PART GUITAR GHL", "guitarghl"),
-    ("PART GUITAR COOP GHL", "guitarcoopghl"),
-    ("PART RHYTHM GHL", "rhythmghl"),
-    ("PART BASS GHL", "bassghl"),
+/// .mid track names, one for each of `INSTRUMENTS`.
+const MIDI_PARTS: [&str; 10] = [
+    "PART GUITAR",
+    "PART GUITAR COOP",
+    "PART RHYTHM",
+    "PART BASS",
+    "PART DRUMS",
+    "PART KEYS",
+    "PART GUITAR GHL",
+    "PART GUITAR COOP GHL",
+    "PART RHYTHM GHL",
+    "PART BASS GHL",
 ];
+
+/// The instrument a .mid track is for, by its name ("T1 GEMS" is an old name for guitar).
+fn midi_instrument(name: &str) -> Option<&'static str> {
+    if name == "T1 GEMS" {
+        return Some("guitar");
+    }
+    MIDI_PARTS.iter().position(|p| *p == name).map(|i| INSTRUMENTS[i])
+}
 const OTHER_KNOWN_TRACKS: &[&str] =
     &["PART VOCALS", "HARM1", "HARM2", "HARM3", "PART HARM1", "PART HARM2", "PART HARM3", "EVENTS"];
 
@@ -1317,7 +1315,7 @@ fn parse_midi(data: &[u8], mods: &Modifiers) -> Result<RawChart, String> {
             }
             if let TrackEventKind::Meta(MetaMessage::TrackName(n)) = e.kind {
                 let n = String::from_utf8_lossy(n);
-                if MIDI_TRACKS.iter().any(|(t, _)| *t == n) || OTHER_KNOWN_TRACKS.contains(&n.as_ref()) {
+                if midi_instrument(&n).is_some() || OTHER_KNOWN_TRACKS.contains(&n.as_ref()) {
                     return Some(n.into_owned());
                 }
             }
@@ -1377,7 +1375,7 @@ fn parse_midi(data: &[u8], mods: &Modifiers) -> Result<RawChart, String> {
     let mut tracks = Vec::new();
     for track in &smf.tracks {
         let Some(instrument) =
-            track_name(track).and_then(|n| MIDI_TRACKS.iter().find(|(t, _)| *t == n).map(|(_, i)| *i))
+            track_name(track).and_then(|n| midi_instrument(&n))
         else {
             continue;
         };

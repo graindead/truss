@@ -450,20 +450,22 @@ pub fn scan_chart(src: &ChartSource) -> Vec<IssueRow> {
         find_chart_issues(p, &mut issues);
         if ini.meta.is_some() {
             let instruments: Vec<&str> = p.tracks.iter().map(|t| t.instrument).collect();
-            const DIFFS: &[(&str, &str)] = &[
-                ("guitar", "diff_guitar"),
-                ("guitarcoop", "diff_guitar_coop"),
-                ("rhythm", "diff_rhythm"),
-                ("bass", "diff_bass"),
-                ("drums", "diff_drums"),
-                ("keys", "diff_keys"),
-                ("guitarghl", "diff_guitarghl"),
-                ("guitarcoopghl", "diff_guitar_coop_ghl"),
-                ("rhythmghl", "diff_rhythm_ghl"),
-                ("bassghl", "diff_bassghl"),
+            // song.ini's difficulty key for each of the chart's instruments.
+            const DIFF_KEYS: [&str; 10] = [
+                "diff_guitar",
+                "diff_guitar_coop",
+                "diff_rhythm",
+                "diff_bass",
+                "diff_drums",
+                "diff_keys",
+                "diff_guitarghl",
+                "diff_guitar_coop_ghl",
+                "diff_rhythm_ghl",
+                "diff_bassghl",
             ];
+            let diffs = || crate::chart::INSTRUMENTS.iter().zip(DIFF_KEYS);
             let set = |k: &str| ini.diff_set.iter().any(|d| d == k);
-            for (inst, key) in DIFFS {
+            for (inst, key) in diffs() {
                 if instruments.contains(inst) && !set(key) {
                     issues.metadata.push(("missingValue", format!("Metadata is missing a \"{key}\" value.")));
                 }
@@ -471,7 +473,7 @@ pub fn scan_chart(src: &ChartSource) -> Vec<IssueRow> {
             if p.has_vocals && !set("diff_vocals") {
                 issues.metadata.push(("missingValue", "Metadata is missing a \"diff_vocals\" value.".into()));
             }
-            for (inst, key) in DIFFS {
+            for (inst, key) in diffs() {
                 if set(key) && !instruments.contains(inst) {
                     issues.metadata.push((
                         "extraValue",
