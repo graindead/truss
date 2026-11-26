@@ -3,6 +3,20 @@
 Each release's notes on GitHub are taken from its section here (see
 `.github/workflows/release.yml`), so add a `## vX.Y.Z` section before tagging a release.
 
+## v0.1.31
+
+- **Player Stats (Tools):** your Clone Hero player card and stats, shown as soon as you open
+  Tools: averages, hardest FCs, near-FCs, accuracy by Fretwork tier, strong suits and weak
+  spots, and how your form has changed. Look up any player by name, or compare two side by
+  side, including who's ahead on the charts you've both played. Save a card as a PNG to share.
+- **Profile Editor (Tools):** edit your Clone Hero profile. Colour your name (one colour or a
+  gradient, bold or italic), and change its colour profile, highway, note speed and other
+  settings. Close Clone Hero first; a backup of the old file is kept.
+- **Tools tabs:** renamed and reordered: Player Stats, Pathing, Profile Editor, Color
+  Profiles (was Note colors), Scene Switcher, Themes, Repair bad songs.
+- **Window size:** the window can't be made smaller than its normal size any more, where the
+  layout used to break (smaller screens still get a window that fits).
+
 ## v0.1.30
 
 - **Preview volume:** every preview now starts at 5% volume instead of the last volume used, so a
