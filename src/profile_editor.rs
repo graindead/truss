@@ -4,7 +4,7 @@
 //! writes the file itself when it closes, so saving waits until the game isn't running.
 
 use crate::color_profile::{Profile, ch_hex};
-use crate::theme_maker::{Picker, parse_hex, to_hsv};
+use crate::theme_maker::{Picker, PickerInput, parse_hex, to_hsv};
 use iced::widget::{button, canvas, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Task, Theme};
 use std::path::PathBuf;
@@ -96,8 +96,7 @@ pub enum Msg {
     Bold(bool),
     Italic(bool),
     Which(Which),
-    Hex(String),
-    Hsv(f32, f32, f32),
+    Colour(PickerInput),
     ColorProfile(String),
     Highway(String),
     Switch(&'static str, bool),
@@ -378,14 +377,10 @@ impl ProfileEditor {
                 self.which = Some(w);
                 self.load_colour();
             }
-            Msg::Hex(h) => {
-                if let Some(c) = crate::theme_maker::typed_hex(&mut self.hsv, &mut self.hex, h) {
+            Msg::Colour(input) => {
+                if let Some(c) = crate::theme_maker::pick(&mut self.hsv, &mut self.hex, input) {
                     self.set_colour(c);
                 }
-            }
-            Msg::Hsv(h, s, v) => {
-                let c = crate::theme_maker::moved_hsv(&mut self.hsv, &mut self.hex, (h, s, v));
-                self.set_colour(c);
             }
             Msg::ColorProfile(n) => self.set("color_profile_name", &n),
             Msg::Highway(n) => self.set("highway_name", &n),
@@ -547,11 +542,11 @@ impl ProfileEditor {
             }
             let (h, s, v) = self.hsv;
             name = name.push(
-                row![swatches, space().width(Length::Fill), text_input("#RRGGBB", &self.hex).on_input(Msg::Hex).size(13).width(100)]
+                row![swatches, space().width(Length::Fill), text_input("#RRGGBB", &self.hex).on_input(|v| Msg::Colour(PickerInput::Hex(v))).size(13).width(100)]
                     .spacing(8)
                     .align_y(Alignment::Center),
             );
-            name = name.push(canvas(Picker { h, s, v, on: Msg::Hsv }).width(Length::Fill).height(150));
+            name = name.push(canvas(Picker { h, s, v, on: |h, s, v| Msg::Colour(PickerInput::Hsv(h, s, v)) }).width(Length::Fill).height(150));
         }
 
         // Settings with their own controls.
@@ -690,7 +685,7 @@ mod tests {
         (e.saved, e.edited) = (Some(p.clone()), Some(p));
         e.load_name();
         let _ = e.update(Msg::Style(Style::One));
-        let _ = e.update(Msg::Hex("#00ff00".into()));
+        let _ = e.update(Msg::Colour(PickerInput::Hex("#00ff00".into())));
         let _ = e.update(Msg::Number("note_speed", "15x".into()));
         let _ = e.update(Msg::Save);
         assert!(e.status.as_ref().is_some_and(|s| s.0), "{:?}", e.status);

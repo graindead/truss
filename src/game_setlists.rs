@@ -258,12 +258,7 @@ pub async fn probe(url: &str) -> Probe {
         let body = r.text().await.unwrap_or_default();
         return if is_quota_page(&body) { Probe::OverLimit } else { Probe::Unknown };
     }
-    r.headers()
-        .get("content-range")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.rsplit('/').next())
-        .and_then(|n| n.parse().ok())
-        .map_or(Probe::Unknown, Probe::Size)
+    crate::download::range_total(&r).map_or(Probe::Unknown, Probe::Size)
 }
 
 /// Google Drive's page for a file that's been downloaded too much lately.
@@ -272,7 +267,7 @@ pub fn is_quota_page(body: &str) -> bool {
 }
 
 /// A Drive file link's id (not a folder's).
-fn drive_file_id(url: &str) -> Option<String> {
+pub(crate) fn drive_file_id(url: &str) -> Option<String> {
     if !url.contains("drive.google.com") || url.contains("/folders/") {
         return None;
     }

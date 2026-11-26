@@ -34,12 +34,7 @@ async fn range(url: &str, spec: &str) -> Result<Option<(Vec<u8>, Option<u64>)>, 
     if resp.status().as_u16() != 206 {
         return Ok(None); // dropping the response cancels the transfer
     }
-    let total = resp
-        .headers()
-        .get("content-range")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.rsplit('/').next())
-        .and_then(|v| v.parse().ok());
+    let total = crate::download::range_total(&resp);
     let bytes = resp.bytes().await.map_err(|e| format!("Connection lost: {e}"))?;
     Ok(Some((bytes.to_vec(), total)))
 }

@@ -104,22 +104,32 @@ pub fn hex(c: Color) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// A hex code typed into a colour picker: the colour, if it reads as one (the sliders follow it).
-pub fn typed_hex(hsv: &mut (f32, f32, f32), hex: &mut String, typed: String) -> Option<Color> {
-    let c = parse_hex(&typed);
-    if let Some(c) = c {
-        *hsv = to_hsv(c);
-    }
-    *hex = typed;
-    c
+/// What a colour picker's hex box or sliders sent.
+#[derive(Debug, Clone)]
+pub enum PickerInput {
+    Hex(String),
+    Hsv(f32, f32, f32),
 }
 
-/// A colour picker's sliders moved: the new colour (the hex code follows it).
-pub fn moved_hsv(hsv: &mut (f32, f32, f32), hex: &mut String, (h, s, v): (f32, f32, f32)) -> Color {
-    *hsv = (h, s, v);
-    let c = from_hsv(h, s, v);
-    *hex = crate::color_profile::ch_hex(c);
-    c
+/// Keeps a colour picker's sliders (`hsv`) and hex box in step with what it was sent; the
+/// colour it now shows, unless a typed hex code doesn't read as one yet.
+pub fn pick(hsv: &mut (f32, f32, f32), hex: &mut String, input: PickerInput) -> Option<Color> {
+    match input {
+        PickerInput::Hex(typed) => {
+            let c = parse_hex(&typed);
+            if let Some(c) = c {
+                *hsv = to_hsv(c);
+            }
+            *hex = typed;
+            c
+        }
+        PickerInput::Hsv(h, s, v) => {
+            *hsv = (h, s, v);
+            let c = from_hsv(h, s, v);
+            *hex = crate::color_profile::ch_hex(c);
+            Some(c)
+        }
+    }
 }
 
 pub fn parse_hex(s: &str) -> Option<Color> {

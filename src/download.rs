@@ -40,6 +40,11 @@ pub(crate) async fn read_body(
     Ok(read)
 }
 
+/// A ranged download's full file size, from its `Content-Range: bytes 0-99/12345` header.
+pub fn range_total(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers().get("content-range")?.to_str().ok()?.rsplit('/').next()?.parse().ok()
+}
+
 /// Recycles the copies a download replaces.
 async fn remove_old(replace: &[PathBuf], tx: &mut Sender<Progress>) -> Result<(), String> {
     if !replace.is_empty() {

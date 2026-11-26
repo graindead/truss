@@ -181,12 +181,7 @@ mod build {
                     if status != 206 {
                         return Err(format!("the host returned {status}"));
                     }
-                    let total = r
-                        .headers()
-                        .get("content-range")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.rsplit('/').next())
-                        .and_then(|n| n.parse().ok());
+                    let total = crate::download::range_total(&r);
                     Ok((r.bytes().await.map_err(|e| e.to_string())?.to_vec(), total))
                 });
                 match r {
@@ -517,12 +512,6 @@ mod build {
 
     // ----- One download -----
 
-    fn drive_file_id(url: &str) -> Option<String> {
-        let i = url.find("/file/d/").map(|i| i + 8).or_else(|| url.find("id=").map(|i| i + 3))?;
-        let id: String = url[i..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-        (!id.is_empty()).then_some(id)
-    }
-
     fn index_link(url: &str, rt: &Arc<tokio::runtime::Runtime>, fetched: &Arc<AtomicU64>) -> Result<Found, String> {
         let mut out = Found::default();
         if url.contains("drive.google.com") && url.contains("/folders/") {
@@ -555,7 +544,7 @@ mod build {
             read_archive(&f.url.clone(), Some(f), rt, fetched, &mut out)?;
             return Ok(out);
         }
-        let direct = match drive_file_id(url).filter(|_| url.contains("drive.google.com")) {
+        let direct = match crate::game_setlists::drive_file_id(url) {
             Some(id) => format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t"),
             None => url.replace(' ', "%20"),
         };

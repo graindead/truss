@@ -5,7 +5,7 @@
 //! game's own pictures when they're read from the install (otherwise drawn shapes).
 
 use crate::color_profile::{self as cp, Profile};
-use crate::theme_maker::{Picker, parse_hex, swatch, to_hsv};
+use crate::theme_maker::{Picker, PickerInput, parse_hex, swatch, to_hsv};
 use iced::widget::canvas::{self, Frame, Path, Stroke};
 use iced::widget::{button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Task, Theme, mouse};
@@ -129,8 +129,7 @@ pub enum Msg {
     New,
     Section(usize),
     Select(String),
-    Hex(String),
-    Hsv(f32, f32, f32),
+    Colour(PickerInput),
     Default,
     SaveAsName(String),
     Save,
@@ -311,14 +310,10 @@ impl ColorTool {
                     self.select(k);
                 }
             }
-            Msg::Hex(v) => {
-                if let Some(c) = crate::theme_maker::typed_hex(&mut self.hsv, &mut self.hex, v) {
+            Msg::Colour(input) => {
+                if let Some(c) = crate::theme_maker::pick(&mut self.hsv, &mut self.hex, input) {
                     self.set_selected(c);
                 }
-            }
-            Msg::Hsv(h, s, v) => {
-                let c = crate::theme_maker::moved_hsv(&mut self.hsv, &mut self.hex, (h, s, v));
-                self.set_selected(c);
             }
             Msg::Default => {
                 let sec = self.section();
@@ -535,7 +530,7 @@ impl ColorTool {
                 column![
                     row![
                         column![text(cp::label(k)).size(13), text(k.clone()).size(11).style(muted)].spacing(1).width(Length::Fill),
-                        text_input("#RRGGBB", &self.hex).on_input(Msg::Hex).size(13).width(100).style(move |t: &Theme, st| {
+                        text_input("#RRGGBB", &self.hex).on_input(|v| Msg::Colour(PickerInput::Hex(v))).size(13).width(100).style(move |t: &Theme, st| {
                             let mut style = text_input::default(t, st);
                             if !ok {
                                 style.border.color = t.palette().danger;
@@ -546,7 +541,7 @@ impl ColorTool {
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
-                    canvas_widget(Picker { h, s, v, on: Msg::Hsv }).width(Length::Fill).height(150),
+                    canvas_widget(Picker { h, s, v, on: |h, s, v| Msg::Colour(PickerInput::Hsv(h, s, v)) }).width(Length::Fill).height(150),
                 ]
                 .spacing(8)
                 .into()
