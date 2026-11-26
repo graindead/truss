@@ -509,18 +509,27 @@ mod tests {
         std::fs::write(path, &b).unwrap();
     }
 
-    /// A damaged database is replaced by the backup, keeping its data.
-    #[test]
-    fn restores_from_backup() {
-        let dir = crate::test_dir().join(format!("truss-rvbak-{}", std::process::id()));
+    /// A test database holding `x` in table `t` (and a backup of it, if `backup`), then torn;
+    /// its folder and file.
+    fn damaged_db(name: &str, x: i64, backup: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = crate::test_dir().join(format!("{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rhythmverse.sqlite");
         {
             let c = Connection::open(&path).unwrap();
-            c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(42);").unwrap();
-            c.execute("VACUUM INTO ?1", [backup_path(&path).to_string_lossy()]).unwrap();
+            c.execute_batch(&format!("CREATE TABLE t(x); INSERT INTO t VALUES({x});")).unwrap();
+            if backup {
+                c.execute("VACUUM INTO ?1", [backup_path(&path).to_string_lossy()]).unwrap();
+            }
         }
         scribble(&path);
+        (dir, path)
+    }
+
+    /// A damaged database is replaced by the backup, keeping its data.
+    #[test]
+    fn restores_from_backup() {
+        let (dir, path) = damaged_db("truss-rvbak", 42, true);
         let c = open(&path).unwrap();
         let x: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(x, 42);
@@ -531,14 +540,7 @@ mod tests {
     /// A damaged database file is replaced with an empty, working one.
     #[test]
     fn replaces_damaged_database() {
-        let dir = crate::test_dir().join(format!("truss-rvdb-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("rhythmverse.sqlite");
-        {
-            let c = Connection::open(&path).unwrap();
-            c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);").unwrap();
-        }
-        scribble(&path);
+        let (dir, path) = damaged_db("truss-rvdb", 1, false);
         let c = open(&path).unwrap();
         let ok: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0)).unwrap();
         assert_eq!(ok, "ok");

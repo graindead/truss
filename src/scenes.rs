@@ -686,12 +686,17 @@ pub async fn twitch_poll(device_code: String) -> Result<Option<Tokens>, String> 
     Ok(Some(t))
 }
 
-async fn twitch_user(access: &str) -> Option<(String, String)> {
-    let r = HTTP.get(format!("{TW_API}/helix/users")).bearer_auth(access).header("Client-Id", CLIENT_ID).send().await.ok()?;
+/// Sends a request; its JSON reply, if it worked.
+async fn json_reply(req: reqwest::RequestBuilder) -> Option<Value> {
+    let r = req.send().await.ok()?;
     if !r.status().is_success() {
         return None;
     }
-    let v: Value = r.json().await.ok()?;
+    r.json().await.ok()
+}
+
+async fn twitch_user(access: &str) -> Option<(String, String)> {
+    let v = json_reply(HTTP.get(format!("{TW_API}/helix/users")).bearer_auth(access).header("Client-Id", CLIENT_ID)).await?;
     let u = &v["data"][0];
     Some((u["id"].as_str()?.into(), u["login"].as_str()?.into()))
 }
@@ -707,16 +712,12 @@ async fn twitch_refresh(refresh: &str) -> Option<(String, String)> {
     if refresh.is_empty() {
         return None;
     }
-    let r = HTTP
-        .post(format!("{TW_ID}/oauth2/token"))
-        .form(&[("grant_type", "refresh_token"), ("refresh_token", refresh), ("client_id", CLIENT_ID)])
-        .send()
-        .await
-        .ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    let v: Value = r.json().await.ok()?;
+    let v = json_reply(HTTP.post(format!("{TW_ID}/oauth2/token")).form(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh),
+        ("client_id", CLIENT_ID),
+    ]))
+    .await?;
     Some((v["access_token"].as_str()?.into(), v["refresh_token"].as_str().unwrap_or(refresh).into()))
 }
 
