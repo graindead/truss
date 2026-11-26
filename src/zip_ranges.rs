@@ -6,7 +6,7 @@
 //! encryption…), so the caller can fall back to downloading the whole file.
 
 use crate::api::CLIENT;
-use futures::{SinkExt, StreamExt, channel::mpsc::Sender};
+use futures::{SinkExt, channel::mpsc::Sender};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -214,6 +214,7 @@ fn write_file(out: &Path, e: &Entry, data: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use std::io::Write;
 
     /// Network test: TRUSS_TEST_ZIP_URL + TRUSS_TEST_ZIP_DIR fetch a real zip without its video.

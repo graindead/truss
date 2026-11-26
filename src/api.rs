@@ -6,7 +6,42 @@ use std::sync::{Arc, LazyLock};
 pub const API_URL: &str = "https://api.enchor.us";
 /// GETs a URL's whole body (an error status counts as an error).
 pub async fn get_bytes(url: &str) -> Result<bytes::Bytes, reqwest::Error> {
-    CLIENT.get(url).send().await.and_then(|r| r.error_for_status())?.bytes().await
+    send_ok(CLIENT.get(url)).await?.bytes().await
+}
+
+/// Sends a request; an error status counts as an error.
+pub async fn send_ok(req: reqwest::RequestBuilder) -> Result<reqwest::Response, reqwest::Error> {
+    req.send().await.and_then(|r| r.error_for_status())
+}
+
+/// GETs a URL, giving up after `timeout_s` seconds; the response whatever its status.
+pub async fn get(url: &str, timeout_s: u64) -> Result<reqwest::Response, String> {
+    CLIENT.get(url).timeout(std::time::Duration::from_secs(timeout_s)).send().await.map_err(|e| e.to_string())
+}
+
+/// Runs a network test against Encore, only when TRUSS_TEST_ENCORE is set.
+#[cfg(test)]
+pub(crate) fn encore_test(test: impl std::future::Future<Output = ()>) {
+    if std::env::var_os("TRUSS_TEST_ENCORE").is_some() {
+        tokio::runtime::Runtime::new().unwrap().block_on(test);
+    }
+}
+
+/// For network tests against Encore: up to `per` charts found by each (search, instrument),
+/// with their .sng files (without video). Charts whose file can't be fetched are left out.
+#[cfg(test)]
+pub(crate) async fn encore_sample(queries: &[(&str, Option<&str>)], per: usize) -> Vec<(Arc<Chart>, bytes::Bytes)> {
+    let mut out = Vec::new();
+    for &(query, instrument) in queries {
+        let r = search(query.to_string(), Common::new(1, instrument.map(String::from), None, None)).await.unwrap();
+        for c in r.data.into_iter().take(per) {
+            let url = format!("{FILES_URL}/{}{}.sng", c.md5, if c.has_video_background { "_novideo" } else { "" });
+            if let Ok(b) = get_bytes(&url).await {
+                out.push((c, b));
+            }
+        }
+    }
+    out
 }
 
 /// A file kept in the disk cache at `path`, downloaded from `url` when it isn't there yet.
@@ -583,12 +618,7 @@ pub const ART_MISSING: &str = "no album art";
 pub async fn fetch_album_art(md5: String, thumb_px: u32) -> Result<(DecodedImage, bytes::Bytes), String> {
     // RhythmVerse results carry their album art's full address instead of an Encore hash.
     let url = if md5.starts_with("https://") { md5.clone() } else { format!("{FILES_URL}/{md5}.jpg") };
-    let resp = CLIENT
-        .get(url)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = get(&url, 20).await?;
     if matches!(resp.status().as_u16(), 404 | 410) {
         let _ = tokio::task::spawn_blocking(move || crate::art_cache::write_missing(&md5, thumb_px)).await;
         return Err(ART_MISSING.into());

@@ -1015,32 +1015,19 @@ mod tests {
     /// the same files). Network test: TRUSS_TEST_ENCORE=1.
     #[test]
     fn issues_match_encore() {
-        if std::env::var("TRUSS_TEST_ENCORE").is_err() {
-            return;
-        }
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut charts = Vec::new();
-            for (query, instrument) in [
+        crate::api::encore_test(async {
+            let queries = [
                 ("through the fire and flames", None),
                 ("metallica", Some("drums")),
                 ("slipknot", Some("guitarghl")),
                 ("queen", Some("bass")),
                 ("*", Some("keys")),
                 ("rush", None),
-            ] {
-                let common = crate::api::Common::new(1, instrument.map(String::from), None, None);
-                let r = crate::api::search(query.to_string(), common).await.unwrap();
-                charts.extend(r.data.into_iter().take(8));
-            }
+            ];
             let dir = crate::test_dir().join("truss-issue-test");
             let _ = std::fs::create_dir_all(&dir);
             let (mut same, mut diff) = (0, 0);
-            for c in charts {
-                let novideo = if c.has_video_background { "_novideo" } else { "" };
-                let url = format!("{}/{}{novideo}.sng", crate::api::FILES_URL, c.md5);
-                let Ok(resp) = crate::api::CLIENT.get(&url).send().await else { continue };
-                let Ok(bytes) = resp.bytes().await else { continue };
+            for (c, bytes) in crate::api::encore_sample(&queries, 8).await {
                 let path = dir.join(format!("{}.sng", c.md5));
                 std::fs::write(&path, &bytes).unwrap();
                 let rows = scan_chart(&ChartSource { path: dir.clone(), sng: Some(path.clone()) });

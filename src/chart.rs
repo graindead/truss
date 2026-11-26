@@ -1819,13 +1819,8 @@ mod tests {
     /// the one Encore computed with scan-chart. Run with TRUSS_TEST_ENCORE=1.
     #[test]
     fn track_hashes_match_encore() {
-        if std::env::var("TRUSS_TEST_ENCORE").is_err() {
-            return;
-        }
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut charts = Vec::new();
-            for (query, instrument) in [
+        crate::api::encore_test(async {
+            let queries = [
                 ("dragonforce", None),
                 ("metallica", Some("drums")),
                 ("rush", Some("drums")),
@@ -1834,17 +1829,10 @@ mod tests {
                 ("tool", Some("drums")),
                 ("*", Some("keys")),
                 ("polyphia", None),
-            ] {
-                let common = crate::api::Common::new(1, instrument.map(String::from), None, None);
-                let r = crate::api::search(query.to_string(), common).await.unwrap();
-                charts.extend(r.data.into_iter().take(6));
-            }
+            ];
             let (mut ok, mut bad, mut skipped) = (0, 0, 0);
             let mut versions: std::collections::HashMap<(u32, bool), u32> = Default::default();
-            for c in charts {
-                let url = format!("{}/{}{}.sng", crate::api::FILES_URL, c.md5, if c.has_video_background { "_novideo" } else { "" });
-                let Ok(resp) = crate::api::CLIENT.get(&url).send().await else { continue };
-                let Ok(bytes) = resp.bytes().await else { continue };
+            for (c, bytes) in crate::api::encore_sample(&queries, 6).await {
                 let Ok(sng) = crate::sng::read_sng(&bytes, |n| {
                     let n = n.to_ascii_lowercase();
                     n == "notes.chart" || n == "notes.mid"

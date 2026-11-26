@@ -5,7 +5,7 @@
 //! game's own pictures when they're read from the install (otherwise drawn shapes).
 
 use crate::color_profile::{self as cp, Profile};
-use crate::theme_maker::{Picker, from_hsv, parse_hex, swatch, to_hsv};
+use crate::theme_maker::{Picker, parse_hex, swatch, to_hsv};
 use iced::widget::canvas::{self, Frame, Path, Stroke};
 use iced::widget::{button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input};
 use iced::{Alignment, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Task, Theme, mouse};
@@ -312,16 +312,12 @@ impl ColorTool {
                 }
             }
             Msg::Hex(v) => {
-                if let Some(c) = parse_hex(&v) {
-                    self.hsv = to_hsv(c);
+                if let Some(c) = crate::theme_maker::typed_hex(&mut self.hsv, &mut self.hex, v) {
                     self.set_selected(c);
                 }
-                self.hex = v;
             }
             Msg::Hsv(h, s, v) => {
-                self.hsv = (h, s, v);
-                let c = from_hsv(h, s, v);
-                self.hex = cp::ch_hex(c);
+                let c = crate::theme_maker::moved_hsv(&mut self.hsv, &mut self.hex, (h, s, v));
                 self.set_selected(c);
             }
             Msg::Default => {

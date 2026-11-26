@@ -79,7 +79,7 @@ fn no_download_links(url: &str) -> bool {
 use crate::api::CLIENT;
 
 async fn get_text(url: &str) -> Result<Option<String>, String> {
-    let r = CLIENT.get(url).timeout(std::time::Duration::from_secs(20)).send().await.map_err(|e| e.to_string())?;
+    let r = crate::api::get(url, 20).await?;
     if r.status().as_u16() == 404 {
         return Ok(None);
     }

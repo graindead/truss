@@ -104,6 +104,24 @@ pub fn hex(c: Color) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
+/// A hex code typed into a colour picker: the colour, if it reads as one (the sliders follow it).
+pub fn typed_hex(hsv: &mut (f32, f32, f32), hex: &mut String, typed: String) -> Option<Color> {
+    let c = parse_hex(&typed);
+    if let Some(c) = c {
+        *hsv = to_hsv(c);
+    }
+    *hex = typed;
+    c
+}
+
+/// A colour picker's sliders moved: the new colour (the hex code follows it).
+pub fn moved_hsv(hsv: &mut (f32, f32, f32), hex: &mut String, (h, s, v): (f32, f32, f32)) -> Color {
+    *hsv = (h, s, v);
+    let c = from_hsv(h, s, v);
+    *hex = crate::color_profile::ch_hex(c);
+    c
+}
+
 pub fn parse_hex(s: &str) -> Option<Color> {
     let s = s.trim().trim_start_matches('#');
     let s = match s.len() {

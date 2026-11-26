@@ -130,12 +130,8 @@ async fn install_inner(rel: &Release, tx: &mut Sender<InstallEvent>) -> Result<(
     // Next to the exe, so the swap is a rename on the same drive.
     let new = exe.with_extension("exe.new");
 
-    let want = HTTP
-        .get(&rel.sha_url)
-        .timeout(Duration::from_secs(30))
-        .send()
+    let want = crate::api::send_ok(HTTP.get(&rel.sha_url).timeout(Duration::from_secs(30)))
         .await
-        .and_then(|r| r.error_for_status())
         .map_err(|e| format!("Couldn't get the checksum: {e}"))?
         .text()
         .await
@@ -145,12 +141,8 @@ async fn install_inner(rel: &Release, tx: &mut Sender<InstallEvent>) -> Result<(
         return Err("The release's checksum file is malformed.".into());
     }
 
-    let resp = HTTP
-        .get(&rel.exe_url)
-        .timeout(Duration::from_secs(30 * 60))
-        .send()
+    let resp = crate::api::send_ok(HTTP.get(&rel.exe_url).timeout(Duration::from_secs(30 * 60)))
         .await
-        .and_then(|r| r.error_for_status())
         .map_err(|e| format!("Download failed: {e}"))?;
     let total = resp.content_length().unwrap_or(rel.size).max(1);
     let mut hasher = Sha256::new();

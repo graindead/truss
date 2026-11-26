@@ -310,12 +310,7 @@ fn load_sng(path: &std::path::Path, temp: Option<Arc<crate::sng::TempFile>>, fal
 
 async fn load_inner(chart: &Chart, tx: &mut Sender<LoadEvent>) -> Result<Loaded, String> {
     let url = format!("{FILES_URL}/{}{}.sng", chart.md5, if chart.has_video_background { "_novideo" } else { "" });
-    let resp = CLIENT
-        .get(url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Download failed: {e}"))?;
+    let resp = crate::api::send_ok(CLIENT.get(url)).await.map_err(|e| format!("Download failed: {e}"))?;
     let total = resp.content_length();
 
     // Stream to a temp file instead of RAM: charts can be hours long. The guard deletes the

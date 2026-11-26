@@ -4,7 +4,7 @@
 //! writes the file itself when it closes, so saving waits until the game isn't running.
 
 use crate::color_profile::{Profile, ch_hex};
-use crate::theme_maker::{Picker, from_hsv, parse_hex, to_hsv};
+use crate::theme_maker::{Picker, parse_hex, to_hsv};
 use iced::widget::{button, canvas, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Task, Theme};
 use std::path::PathBuf;
@@ -379,16 +379,12 @@ impl ProfileEditor {
                 self.load_colour();
             }
             Msg::Hex(h) => {
-                if let Some(c) = parse_hex(&h) {
-                    self.hsv = to_hsv(c);
+                if let Some(c) = crate::theme_maker::typed_hex(&mut self.hsv, &mut self.hex, h) {
                     self.set_colour(c);
                 }
-                self.hex = h;
             }
             Msg::Hsv(h, s, v) => {
-                self.hsv = (h, s, v);
-                let c = from_hsv(h, s, v);
-                self.hex = ch_hex(c);
+                let c = crate::theme_maker::moved_hsv(&mut self.hsv, &mut self.hex, (h, s, v));
                 self.set_colour(c);
             }
             Msg::ColorProfile(n) => self.set("color_profile_name", &n),
