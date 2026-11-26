@@ -16,6 +16,39 @@ pub enum Progress {
     Finished(Result<PathBuf, String>),
 }
 
+/// Reads a download's body chunk by chunk into `sink`, reporting `Progress::Bytes` (counting
+/// from `start`) at most ~30 times a second. Returns how many bytes were read.
+pub(crate) async fn read_body(
+    resp: reqwest::Response,
+    start: u64,
+    total: Option<u64>,
+    tx: &mut Sender<Progress>,
+    mut sink: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<u64, String> {
+    let mut stream = resp.bytes_stream();
+    let mut read = 0u64;
+    let mut last_report = Instant::now() - Duration::from_secs(1);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Connection lost: {e}"))?;
+        sink(&chunk)?;
+        read += chunk.len() as u64;
+        if last_report.elapsed() >= Duration::from_millis(33) {
+            last_report = Instant::now();
+            let _ = tx.try_send(Progress::Bytes { done: start + read, total });
+        }
+    }
+    Ok(read)
+}
+
+/// Recycles the copies a download replaces.
+async fn remove_old(replace: &[PathBuf], tx: &mut Sender<Progress>) -> Result<(), String> {
+    if !replace.is_empty() {
+        let _ = tx.send(Progress::Status("Removing old copy...".into())).await;
+        crate::library::recycle(replace.to_vec()).await?;
+    }
+    Ok(())
+}
+
 /// Deletes the temporary download location if the download is cancelled
 /// (task dropped) or fails.
 pub struct TempGuard(pub Option<PathBuf>);
@@ -83,10 +116,7 @@ async fn run(
             }
             None => crate::rhythmverse::download(rv, &staged, &library, &tag, settings.download_videos, tx).await?,
         }
-        if !replace.is_empty() {
-            let _ = tx.send(Progress::Status("Removing old copy...".into())).await;
-            crate::library::recycle(replace.to_vec()).await?;
-        }
+        remove_old(replace, tx).await?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create folder: {e}"))?;
         }
@@ -130,22 +160,11 @@ async fn run(
         Sink::Extract(SngExtractor::new(&tmp))
     };
 
-    let mut stream = resp.bytes_stream();
-    let mut done: u64 = 0;
-    let mut last_report = Instant::now() - Duration::from_secs(1);
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Connection lost: {e}"))?;
-        done += chunk.len() as u64;
-        match &mut sink {
-            Sink::Raw(w) => w.write_all(&chunk).map_err(|e| format!("Write failed: {e}"))?,
-            Sink::Extract(x) => x.feed(&chunk)?,
-        }
-        // Throttle UI updates to ~30/s.
-        if last_report.elapsed() >= Duration::from_millis(33) {
-            last_report = Instant::now();
-            let _ = tx.try_send(Progress::Bytes { done, total });
-        }
-    }
+    let done = read_body(resp, 0, total, tx, |chunk| match &mut sink {
+        Sink::Raw(w) => w.write_all(chunk).map_err(|e| format!("Write failed: {e}")),
+        Sink::Extract(x) => x.feed(chunk),
+    })
+    .await?;
     let _ = tx.send(Progress::Bytes { done, total }).await;
 
     match sink {
@@ -157,10 +176,7 @@ async fn run(
         }
     }
 
-    if !replace.is_empty() {
-        let _ = tx.send(Progress::Status("Removing old copy...".into())).await;
-        crate::library::recycle(replace.to_vec()).await?;
-    }
+    remove_old(replace, tx).await?;
     let _ = tx.send(Progress::Status("Moving into library...".into())).await;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create folder: {e}"))?;

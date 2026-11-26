@@ -661,7 +661,7 @@ fn default_path(settings: &crate::settings::Settings) -> String {
 impl RepairTool {
     /// The repairs made so far, each with an Undo button.
     fn view_history<'a>(&'a self) -> Element<'a, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
         let open = self.show_history;
         let live = self.history.iter().filter(|r| !r.undone).count();
         let head = button(
@@ -861,7 +861,7 @@ impl RepairTool {
     }
 
     pub fn view<'a>(&'a self, settings: &crate::settings::Settings) -> Element<'a, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
         let placeholder = default_path(settings);
         let read_label = if self.items.is_empty() { "Read badsongs.txt" } else { "Read again" };
         let top = column![

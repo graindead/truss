@@ -500,6 +500,15 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Scribbles over the middle of a file, like a torn write.
+    fn scribble(path: &std::path::Path) {
+        let mut b = std::fs::read(path).unwrap();
+        for v in b.iter_mut().skip(100).take(3000) {
+            *v = 0xAB;
+        }
+        std::fs::write(path, &b).unwrap();
+    }
+
     /// A damaged database is replaced by the backup, keeping its data.
     #[test]
     fn restores_from_backup() {
@@ -511,11 +520,7 @@ mod tests {
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(42);").unwrap();
             c.execute("VACUUM INTO ?1", [backup_path(&path).to_string_lossy()]).unwrap();
         }
-        let mut b = std::fs::read(&path).unwrap();
-        for v in b.iter_mut().skip(100).take(3000) {
-            *v = 0xAB;
-        }
-        std::fs::write(&path, &b).unwrap();
+        scribble(&path);
         let c = open(&path).unwrap();
         let x: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(x, 42);
@@ -533,12 +538,7 @@ mod tests {
             let c = Connection::open(&path).unwrap();
             c.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);").unwrap();
         }
-        // Scribble over the middle of the file, like a torn write.
-        let mut b = std::fs::read(&path).unwrap();
-        for v in b.iter_mut().skip(100).take(3000) {
-            *v = 0xAB;
-        }
-        std::fs::write(&path, &b).unwrap();
+        scribble(&path);
         let c = open(&path).unwrap();
         let ok: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0)).unwrap();
         assert_eq!(ok, "ok");

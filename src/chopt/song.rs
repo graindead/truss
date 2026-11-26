@@ -45,12 +45,6 @@ impl Difficulty {
     }
 }
 
-impl std::fmt::Display for Difficulty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Instrument {
     Guitar,
@@ -72,11 +66,17 @@ impl Instrument {
     }
 }
 
-impl std::fmt::Display for Instrument {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
-    }
+/// `Display` as the type's `label()`.
+macro_rules! display_as_label {
+    ($($t:ty),*) => {$(
+        impl std::fmt::Display for $t {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.label())
+            }
+        }
+    )*};
 }
+display_as_label!(Difficulty, Instrument);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Note {
@@ -315,19 +315,9 @@ impl HopoThreshold {
     }
 }
 
-/// Text that may be UTF-8 (with or without a BOM), UTF-16LE with a BOM, or Latin-1.
+/// Text that may be UTF-8 (with or without a BOM), UTF-16 with a BOM, or Latin-1.
 pub fn to_utf8(b: &[u8]) -> String {
-    if let Some(rest) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(rest).into_owned();
-    }
-    if let Some(rest) = b.strip_prefix(&[0xFF, 0xFE]) {
-        let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        return String::from_utf16_lossy(&units);
-    }
-    match std::str::from_utf8(b) {
-        Ok(s) => s.to_string(),
-        Err(_) => b.iter().map(|&c| c as char).collect(),
-    }
+    crate::library::decode(b)
 }
 
 /// SightRead's whitespace set.

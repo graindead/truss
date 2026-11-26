@@ -133,11 +133,17 @@ pub fn rate(instrument: &str, expert: &Track) -> Option<Rating> {
     }
 }
 
-fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
-    // One entry per chord/note: its time and fret mask (bits 0-4 GRYBO, bit 7 open).
-    let mut times = Vec::new();
-    let mut masks: Vec<u8> = Vec::new();
-    let (mut strums, mut taps) = (0usize, 0usize);
+/// A 5-fret track, one entry per chord/note: its time and fret mask (bits 0-4 GRYBO, bit 7
+/// open), plus how many are strummed and tapped.
+pub(crate) struct Frets {
+    pub times: Vec<f64>,
+    pub masks: Vec<u8>,
+    pub strums: usize,
+    pub taps: usize,
+}
+
+pub(crate) fn frets(t: &Track) -> Frets {
+    let mut f = Frets { times: Vec::new(), masks: Vec::new(), strums: 0, taps: 0 };
     for g in &t.note_groups {
         let mut m = 0u8;
         for n in g {
@@ -148,20 +154,32 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
             };
         }
         if m != 0 {
-            times.push(g[0].ms);
-            masks.push(m);
-            strums += (g[0].flags & nf::STRUM != 0) as usize;
-            taps += (g[0].flags & nf::TAP != 0) as usize;
+            f.times.push(g[0].ms);
+            f.masks.push(m);
+            f.strums += (g[0].flags & nf::STRUM != 0) as usize;
+            f.taps += (g[0].flags & nf::TAP != 0) as usize;
         }
     }
-    let last = *times.last()?;
-    // Fret changes: the larger of frets lifted and frets added (the first note adds all).
-    let mut changes = Vec::with_capacity(masks.len());
+    f
+}
+
+/// Fret changes: the larger of frets lifted and frets added (the first note adds all).
+pub(crate) fn fret_changes(masks: &[u8]) -> Vec<f64> {
     let mut prev = 0u8;
-    for &m in &masks {
-        changes.push((prev & !m).count_ones().max((m & !prev).count_ones()) as f64);
-        prev = m;
-    }
+    masks
+        .iter()
+        .map(|&m| {
+            let c = (prev & !m).count_ones().max((m & !prev).count_ones()) as f64;
+            prev = m;
+            c
+        })
+        .collect()
+}
+
+fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
+    let Frets { times, masks, strums, taps } = frets(t);
+    let last = *times.last()?;
+    let changes = fret_changes(&masks);
     let dur_s = last / 1000.0;
     let nps = windowed(&times, &vec![1.0; times.len()], last);
     let vps = windowed(&times, &changes, last);
@@ -191,11 +209,34 @@ fn rate_frets(instrument: &str, t: &Track) -> Option<Rating> {
     })
 }
 
-fn rate_drums(t: &Track) -> Option<Rating> {
-    // Hands: lane mask per hit (red, yellow, blue, green). Kicks: single-pedal hits only, since
-    // Fretwork anchors its tiers to the 1x reading.
-    // Double-kick notes (2x pedal) are kept apart for the 2x reading.
-    let (mut hand_t, mut hand_m, mut kick_t, mut kick2_t) = (Vec::new(), Vec::<u8>::new(), Vec::new(), Vec::new());
+/// A drum track. Hands: time and lane mask per hit (red, yellow, blue, green). Kicks:
+/// single-pedal hits only, since Fretwork anchors its tiers to the 1x reading; `kick2_t` adds
+/// the double-kick notes (2x pedal) for the 2x reading.
+pub(crate) struct Drums {
+    pub hand_t: Vec<f64>,
+    pub hand_m: Vec<u8>,
+    pub kick_t: Vec<f64>,
+    pub kick2_t: Vec<f64>,
+}
+
+impl Drums {
+    pub fn has_2x(&self) -> bool {
+        self.kick2_t.len() > self.kick_t.len()
+    }
+}
+
+/// Each hand hit split three ways. Roll lanes: hits inside count at a capped rate and add no
+/// travel.
+pub(crate) struct Hands {
+    pub rolls: Vec<(f64, f64)>,
+    pub normal: Vec<f64>,
+    pub rolled: Vec<f64>,
+    /// Newly struck pads.
+    pub travel: Vec<f64>,
+}
+
+pub(crate) fn drums(t: &Track) -> Drums {
+    let mut d = Drums { hand_t: Vec::new(), hand_m: Vec::new(), kick_t: Vec::new(), kick2_t: Vec::new() };
     for g in &t.note_groups {
         let mut m = 0u8;
         let (mut kick, mut kick2) = (false, false);
@@ -208,30 +249,29 @@ fn rate_drums(t: &Track) -> Option<Rating> {
             }
         }
         if m != 0 {
-            hand_t.push(g[0].ms);
-            hand_m.push(m);
+            d.hand_t.push(g[0].ms);
+            d.hand_m.push(m);
         }
         if kick {
-            kick_t.push(g[0].ms);
+            d.kick_t.push(g[0].ms);
         }
         if kick || kick2 {
-            kick2_t.push(g[0].ms);
+            d.kick2_t.push(g[0].ms);
         }
     }
-    let has_2x = kick2_t.len() > kick_t.len();
-    let last = *hand_t.last()?;
-    let dur_s = last.max(kick_t.last().copied().unwrap_or(0.0)) / 1000.0;
+    d
+}
 
-    // Roll lanes: hits inside count at a capped rate and add no travel.
+pub(crate) fn hands(t: &Track, d: &Drums) -> Hands {
     let rolls: Vec<(f64, f64)> = t.flex.iter().map(|(s, _)| (s.ms, s.ms + s.ms_length)).collect();
     let in_roll = |x: f64| rolls.iter().any(|&(a, b)| x >= a && x < b);
     let (mut normal, mut rolled, mut travel) = (Vec::new(), Vec::new(), Vec::new());
     let mut prev = 0u8;
-    for (i, &m) in hand_m.iter().enumerate() {
+    for (&at, &m) in d.hand_t.iter().zip(&d.hand_m) {
         let hits = m.count_ones() as f64;
         let added = (m & !prev).count_ones() as f64;
         prev = m;
-        if in_roll(hand_t[i]) {
+        if in_roll(at) {
             normal.push(0.0);
             rolled.push(hits);
             travel.push(0.0);
@@ -241,10 +281,26 @@ fn rate_drums(t: &Track) -> Option<Rating> {
             travel.push(added);
         }
     }
-    let hn = windowed(&hand_t, &normal, last);
-    let hr = windowed(&hand_t, &rolled, last);
-    let hps: Vec<f64> = hn.iter().zip(&hr).map(|(a, b)| a + b.min(ROLL_CAP_HPS)).collect();
-    let tps = windowed(&hand_t, &travel, last);
+    Hands { rolls, normal, rolled, travel }
+}
+
+/// Per-window hand hits (rolls capped) and travel.
+pub(crate) fn hand_rates(d: &Drums, h: &Hands, last: f64) -> (Vec<f64>, Vec<f64>) {
+    let hn = windowed(&d.hand_t, &h.normal, last);
+    let hr = windowed(&d.hand_t, &h.rolled, last);
+    let hps = hn.iter().zip(&hr).map(|(a, b)| a + b.min(ROLL_CAP_HPS)).collect();
+    (hps, windowed(&d.hand_t, &h.travel, last))
+}
+
+fn rate_drums(t: &Track) -> Option<Rating> {
+    let drums = drums(t);
+    let has_2x = drums.has_2x();
+    let Drums { hand_t, hand_m, kick_t, kick2_t } = &drums;
+    let last = *hand_t.last()?;
+    let dur_s = last.max(kick_t.last().copied().unwrap_or(0.0)) / 1000.0;
+    let hands = hands(t, &drums);
+    let Hands { rolls, normal, rolled, travel } = &hands;
+    let (hps, tps) = hand_rates(&drums, &hands, last);
     let roll_cap_total = ROLL_CAP_HPS * rolls.iter().map(|(a, b)| (b - a) / 1000.0).sum::<f64>();
     let total_hits = normal.iter().sum::<f64>() + rolled.iter().sum::<f64>().min(roll_cap_total);
     let active: Vec<bool> = hps.iter().map(|v| *v > 0.0).collect();
@@ -262,9 +318,9 @@ fn rate_drums(t: &Track) -> Option<Rating> {
         None => (0.0, 0.0, 0.0),
     };
     let score = |(k, cvk, _): (f64, f64, f64)| (combo(h) + combo(tr) + k) * (1.0 + 2.0 * (cv(h) * cvk).sqrt()) * stam(dur_s);
-    let single = kick_reading(&kick_t);
+    let single = kick_reading(kick_t);
     let d = score(single);
-    let tier_2x = has_2x.then(|| calc_tier(score(kick_reading(&kick2_t)), 10.115, 0.1516));
+    let tier_2x = has_2x.then(|| calc_tier(score(kick_reading(kick2_t)), 10.115, 0.1516));
     Some(Rating {
         d,
         remap: remap(d, &[9.8, 12.1, 13.6, 15.6, 18.5, 21.8]),
@@ -289,16 +345,7 @@ mod tests {
     fn rate_real_folders() {
         let Ok(dirs) = std::env::var("TRUSS_TEST_FRETWORK_DIRS") else { return };
         for dir in dirs.split('|') {
-            let files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    let n = e.file_name().to_string_lossy().to_ascii_lowercase();
-                    n.ends_with(".mid") || n.ends_with(".chart") || n.ends_with(".ini")
-                })
-                .map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap()))
-                .collect();
-            let cp = crate::trackhash::hash_files(&files, None).unwrap();
+            let cp = crate::trackhash::hash_files(&crate::trackhash::chart_files(std::path::Path::new(dir)), None).unwrap();
             let name = std::path::Path::new(dir).file_name().unwrap().to_string_lossy().to_string();
             for (i, r) in cp.ratings {
                 println!("{name} | {i}: D {:.2} remap {} tier {}", r.d, r.remap, r.tier);
@@ -336,16 +383,7 @@ mod tests {
         walk(std::path::Path::new(&root), &mut dirs);
         let mut by: std::collections::BTreeMap<String, Vec<Rating>> = Default::default();
         for d in dirs.iter().take(400) {
-            let files: Vec<(String, Vec<u8>)> = std::fs::read_dir(d)
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    let n = e.file_name().to_string_lossy().to_ascii_lowercase();
-                    n.ends_with(".mid") || n.ends_with(".chart") || n.ends_with(".ini")
-                })
-                .filter_map(|e| Some((e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).ok()?)))
-                .collect();
-            if let Ok(cp) = crate::trackhash::hash_files(&files, None) {
+            if let Ok(cp) = crate::trackhash::hash_files(&crate::trackhash::chart_files(d), None) {
                 for (i, r) in cp.ratings {
                     by.entry(i).or_default().push(r);
                 }

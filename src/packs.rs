@@ -375,7 +375,8 @@ pub(crate) async fn follow_short(href: String) -> String {
     url
 }
 
-fn percent_decode(s: &str) -> String {
+/// `%20` style escapes (as in URLs); anything that isn't one is kept as it is.
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -537,7 +538,7 @@ fn clean_text(s: &str) -> String {
 }
 
 /// `&#8217;` and `&#x2019;` style entities.
-fn decode_numeric(s: &str) -> String {
+pub(crate) fn decode_numeric(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(i) = rest.find("&#") {
@@ -1367,6 +1368,25 @@ fn list_pad() -> iced::Padding {
 mod tests {
     use super::*;
 
+    /// Runs a pack download, handing its progress to `report` on another thread.
+    fn run_reporting(
+        rt: &tokio::runtime::Runtime,
+        job: &Job,
+        settings: &crate::settings::Settings,
+        mut report: impl FnMut(crate::download::Progress) + Send + 'static,
+    ) -> Result<std::path::PathBuf, String> {
+        let (mut tx, mut rx) = futures::channel::mpsc::channel(64);
+        let printer = std::thread::spawn(move || {
+            while let Some(p) = futures::executor::block_on(futures::StreamExt::next(&mut rx)) {
+                report(p);
+            }
+        });
+        let r = rt.block_on(run(job, settings, &mut tx));
+        drop(tx);
+        let _ = printer.join();
+        r
+    }
+
     const CARD: &str = r#"<article class="m-article-card  post tag-song-packs tag-hash-import-2026">
     <div class="m-article-card__picture">
       <a href="/guitar-zero-encore-2/" class="m-article-card__picture-link" aria-hidden="true" tabindex="-1"></a>
@@ -1521,22 +1541,16 @@ mod tests {
         let settings = crate::settings::Settings { library_path: Some(lib.clone()), ..Default::default() };
         let job = Job { url, folder: "Test Pack".into(), page: String::new() };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut tx, mut rx) = futures::channel::mpsc::channel(64);
-        let printer = std::thread::spawn(move || {
-            let mut last = String::new();
-            while let Some(p) = futures::executor::block_on(futures::StreamExt::next(&mut rx)) {
-                if let crate::download::Progress::Status(s) = p
-                    && s != last
-                {
-                    println!("  status: {s}");
-                    last = s;
-                }
+        let mut last = String::new();
+        let t = std::time::Instant::now();
+        let r = run_reporting(&rt, &job, &settings, move |p| {
+            if let crate::download::Progress::Status(s) = p
+                && s != last
+            {
+                println!("  status: {s}");
+                last = s;
             }
         });
-        let t = std::time::Instant::now();
-        let r = rt.block_on(run(&job, &settings, &mut tx));
-        drop(tx);
-        let _ = printer.join();
         println!("result after {:?}: {r:?}", t.elapsed());
         let dest = r.unwrap();
         let mut charts = 0;
@@ -1604,25 +1618,17 @@ mod tests {
             }
             if !dest.join(&name).exists() {
                 let job = Job { url: url.clone(), folder: name.clone(), page: page.clone() };
-                let (mut tx, mut rx) = futures::channel::mpsc::channel(64);
                 let label = name.clone();
-                let printer = std::thread::spawn(move || {
-                    let mut last = std::time::Instant::now();
-                    while let Some(p) = futures::executor::block_on(futures::StreamExt::next(&mut rx)) {
-                        match p {
-                            crate::download::Progress::Bytes { done, total } if last.elapsed().as_secs() >= 30 => {
-                                last = std::time::Instant::now();
-                                println!("  {label}: {:.0} of {} MB", done as f64 / 1e6, total.map_or("?".into(), |t| format!("{:.0}", t as f64 / 1e6)));
-                            }
-                            crate::download::Progress::Status(s) => println!("  {label}: {s}"),
-                            _ => {}
-                        }
-                    }
-                });
+                let mut last = std::time::Instant::now();
                 let t = std::time::Instant::now();
-                let r = rt.block_on(run(&job, &settings, &mut tx));
-                drop(tx);
-                let _ = printer.join();
+                let r = run_reporting(&rt, &job, &settings, move |p| match p {
+                    crate::download::Progress::Bytes { done, total } if last.elapsed().as_secs() >= 30 => {
+                        last = std::time::Instant::now();
+                        println!("  {label}: {:.0} of {} MB", done as f64 / 1e6, total.map_or("?".into(), |t| format!("{:.0}", t as f64 / 1e6)));
+                    }
+                    crate::download::Progress::Status(s) => println!("  {label}: {s}"),
+                    _ => {}
+                });
                 match r {
                     Ok(_) => println!("OK  {name} in {:.0?}", t.elapsed()),
                     Err(e) => {

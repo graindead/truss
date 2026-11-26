@@ -96,20 +96,7 @@ pub fn is_hidden(s: &str) -> bool {
 }
 
 /// Colour tags and other markup removed (`<color=#F00>Name</color>`).
-pub fn strip_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(i) = rest.find('<') {
-        out.push_str(&rest[..i]);
-        rest = &rest[i..];
-        match rest.find('>') {
-            Some(j) => rest = &rest[j + 1..],
-            None => break,
-        }
-    }
-    out.push_str(rest);
-    out.trim().to_string()
-}
+pub use crate::api::strip_tags;
 
 /// Lower case, accents and punctuation dropped; names made only of punctuation are kept as is.
 pub fn normalise(s: &str) -> String {

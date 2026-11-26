@@ -167,16 +167,11 @@ pub async fn fetch_selected(
             return Ok(false);
         }
         let mut buf = Vec::with_capacity((end - start) as usize);
-        let mut stream = resp.bytes_stream();
-        let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Connection lost: {e}"))?;
-            buf.extend_from_slice(&chunk);
-            if last.elapsed() >= std::time::Duration::from_millis(33) {
-                last = std::time::Instant::now();
-                let _ = tx.try_send(Progress::Bytes { done: done + buf.len() as u64, total: Some(to_fetch) });
-            }
-        }
+        crate::download::read_body(resp, done, Some(to_fetch), tx, |chunk| {
+            buf.extend_from_slice(chunk);
+            Ok(())
+        })
+        .await?;
         if (buf.len() as u64) < end - start {
             return Err("The download was cut off by the server. Try again.".into());
         }

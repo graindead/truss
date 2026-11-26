@@ -106,26 +106,9 @@ fn cache_dir() -> Option<PathBuf> {
 
 async fn fetch(name: String) -> Result<(String, Vec<u8>), String> {
     let path = cache_dir().map(|d| d.join(format!("{name}.png")));
-    if let Some(p) = &path
-        && let Ok(b) = tokio::fs::read(p).await
-    {
-        return Ok((name, b));
-    }
-    let bytes = crate::api::CLIENT
-        .get(format!("{BASE_URL}/{name}.png"))
-        .send()
+    let bytes = crate::api::cached_get(&format!("{BASE_URL}/{name}.png"), path)
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Couldn't download the note sprites ({name}): {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(p) = path {
-        if let Some(parent) = p.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let _ = tokio::fs::write(p, &bytes).await;
-    }
+        .map_err(|e| format!("Couldn't download the note sprites ({name}): {e}"))?;
     Ok((name, bytes.to_vec()))
 }
 
@@ -521,12 +504,16 @@ pub fn player_color_profile() -> Option<String> {
 
 /// Clone Hero's profiles.ini, where it keeps each player's name and settings.
 pub fn profiles_file() -> Option<std::path::PathBuf> {
-    let install = find_install()?;
+    profiles_places(&find_install()?).into_iter().find(|p| p.is_file())
+}
+
+/// Where profiles.ini may be: under PlayerData, or next to the colour profiles' folder.
+fn profiles_places(install: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut tries = vec![install.join("PlayerData").join("profiles.ini")];
     if let Some(c) = crate::color_profile::folder() {
         tries.extend(c.ancestors().skip(2).take(2).map(|d| d.join("profiles.ini")));
     }
-    tries.into_iter().find(|p| p.is_file())
+    tries
 }
 
 /// A setting from the first profile in Clone Hero's profiles.ini (the player's own).
@@ -757,11 +744,7 @@ fn sustain_shapes(kit: &Kit) -> Option<(RgbaImage, RgbaImage, RgbaImage)> {
 /// The note speed and highway length (percent) of the first profile in Clone Hero's
 /// profiles.ini, if it has them.
 pub fn profile_settings(install: &std::path::Path) -> (Option<f32>, Option<f32>) {
-    let mut tries = vec![install.join("PlayerData").join("profiles.ini")];
-    if let Some(c) = crate::color_profile::folder() {
-        tries.extend(c.ancestors().skip(2).take(2).map(|d| d.join("profiles.ini")));
-    }
-    let Some(text) = tries.iter().find_map(|p| std::fs::read_to_string(p).ok()) else { return (None, None) };
+    let Some(text) = profiles_places(install).iter().find_map(|p| std::fs::read_to_string(p).ok()) else { return (None, None) };
     let get = |key: &str| {
         text.lines()
             .take_while(|l| !l.trim_start().starts_with("[profile1]"))
@@ -1016,6 +999,25 @@ impl Colors<'_> {
     }
 }
 
+/// A striker as the game layers it: underlay and head, then the ring and its lower half over
+/// the head (both in the ring's colour, so it shows all the way round), the head's colour, and
+/// its glow when lit. `art` and `key` name the other layers and the colours, with `{}` for the
+/// part.
+fn striker(kit: &Kit, c: &Colors, [underlay, head]: [&str; 2], art: &str, key: &str, light: Option<Color>) -> RgbaImage {
+    let art = |part: &str| art.replace("{}", part);
+    let colour = |part: &str| Some(c.get(&key.replace("{}", part)));
+    let mut s = Stack::new(kit, 128, 64)
+        .layer(underlay, None, 0)
+        .layer(head, colour("base"), 0)
+        .layer(&art("Ring"), colour("cover"), 0)
+        .layer(&art("RingCover"), colour("cover"), 0)
+        .layer(&art("HeadColor"), colour("head_cover"), 0);
+    if let Some(l) = light {
+        s = s.layer(&art("HeadGlow"), Some(l), 0);
+    }
+    s.done()
+}
+
 const GUITAR_LANES: [(u8, &str); 5] = [(nt::GREEN, "green"), (nt::RED, "red"), (nt::YELLOW, "yellow"), (nt::BLUE, "blue"), (nt::ORANGE, "orange")];
 const DRUM_LANES: [(u8, &str); 4] = [(nt::RED_DRUM, "red"), (nt::YELLOW_DRUM, "yellow"), (nt::BLUE_DRUM, "blue"), (nt::GREEN_DRUM, "green")];
 
@@ -1087,20 +1089,7 @@ fn guitar_images(kit: &Kit, p: &Profile, d: &Profile, sp_active: bool) -> Built 
             // The art for where it is on screen (the lanes run the other way for lefty), in
             // the lane's own colours.
             let n = if kit.game.is_some() && player_lefty() { GUITAR_LANES.len() - i } else { i + 1 };
-            // As the game layers them: the ring and its lower half over the head, both in the
-            // ring's colour, so it shows all the way round.
-            let fret = |light: Option<Color>| {
-                let mut s = Stack::new(kit, 128, 64)
-                    .layer(&format!("guitar/striker_GuitarUnderlay{n}"), None, 0)
-                    .layer(&format!("guitar/striker_GuitarHead{n}"), Some(c.get(&format!("striker_base_{lane}"))), 0)
-                    .layer(&format!("guitar/striker_Ring{n}"), Some(c.get(&format!("striker_cover_{lane}"))), 0)
-                    .layer(&format!("guitar/striker_RingCover{n}"), Some(c.get(&format!("striker_cover_{lane}"))), 0)
-                    .layer(&format!("guitar/striker_HeadColor{n}"), Some(c.get(&format!("striker_head_cover_{lane}"))), 0);
-                if let Some(l) = light {
-                    s = s.layer(&format!("guitar/striker_HeadGlow{n}"), Some(l), 0);
-                }
-                s.done()
-            };
+            let fret = |light| striker(kit, &c, [&format!("guitar/striker_GuitarUnderlay{n}"), &format!("guitar/striker_GuitarHead{n}")], &format!("guitar/striker_{{}}{n}"), &format!("striker_{{}}_{lane}"), light);
             let width = if kit.game.is_some() { 0.197 } else { 0.19 };
             (*ty, [fret(None), fret(Some(c.get(&format!("striker_head_light_{lane}")))), fret(Some(c.get("striker_head_light_open")))], width)
         })
@@ -1176,18 +1165,7 @@ fn drum_images(kit: &Kit, p: &Profile, d: &Profile, sp_active: bool) -> Built {
         .iter()
         .zip(shapes)
         .map(|((ty, lane), (ring, head))| {
-            let pad = |light: Option<Color>| {
-                let mut s = Stack::new(kit, 128, 64)
-                    .layer(&format!("drums/drumStriker_Underlay{head}"), None, 0)
-                    .layer(&format!("drums/drumStriker_Head{head}"), Some(c.get(&format!("drums_striker_base_{lane}"))), 0)
-                    .layer(&format!("drums/striker_Ring{ring}"), Some(c.get(&format!("drums_striker_cover_{lane}"))), 0)
-                    .layer(&format!("drums/striker_RingCover{ring}"), Some(c.get(&format!("drums_striker_cover_{lane}"))), 0)
-                    .layer(&format!("drums/striker_HeadColor{ring}"), Some(c.get(&format!("drums_striker_head_cover_{lane}"))), 0);
-                if let Some(l) = light {
-                    s = s.layer(&format!("drums/striker_HeadGlow{ring}"), Some(l), 0);
-                }
-                s.done()
-            };
+            let pad = |light| striker(kit, &c, [&format!("drums/drumStriker_Underlay{head}"), &format!("drums/drumStriker_Head{head}")], &format!("drums/striker_{{}}{ring}"), &format!("drums_striker_{{}}_{lane}"), light);
             let width = if kit.game.is_some() { 0.197 * 1.22 } else { 0.21 };
             (*ty, [pad(None), pad(Some(c.get(&format!("drums_striker_head_light_{lane}")))), pad(Some(c.get("drums_striker_head_light_kick")))], width)
         })

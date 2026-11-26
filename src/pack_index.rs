@@ -575,17 +575,7 @@ mod build {
     /// A small file from Drive, whole.
     fn plain_get(id: &str, rt: &Arc<tokio::runtime::Runtime>, fetched: &Arc<AtomicU64>) -> Result<(Vec<u8>, Option<u64>), String> {
         let url = format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t");
-        let b = rt.block_on(async move {
-            crate::api::CLIENT
-                .get(&url)
-                .send()
-                .await
-                .and_then(|r| r.error_for_status())
-                .map_err(|e| e.to_string())?
-                .bytes()
-                .await
-                .map_err(|e| e.to_string())
-        })?;
+        let b = rt.block_on(crate::api::get_bytes(&url)).map_err(|e| e.to_string())?;
         fetched.fetch_add(b.len() as u64, Ordering::Relaxed);
         Ok((b.to_vec(), None))
     }
@@ -636,6 +626,8 @@ mod build {
         ));
         // Every download link, from each pack's page.
         let mut todo: Vec<(String, String, String)> = Vec::new();
+        // Links not yet indexed (or that failed last time) that can be downloaded.
+        let wanted = |url: &str| !index.lock().unwrap().links.get(url).is_some_and(|e| e.error.is_none()) && crate::packs::can_download(url);
         // TRUSS_PACK_INDEX_GAMES = a series ("Guitar Hero"): index those game setlists instead.
         if let Ok(series) = std::env::var("TRUSS_PACK_INDEX_GAMES") {
             for g in rt.block_on(crate::game_setlists::load()).into_iter().filter(|g| g.series.eq_ignore_ascii_case(&series)) {
@@ -643,8 +635,7 @@ mod build {
                     continue;
                 }
                 for l in &g.links {
-                    let done = index.lock().unwrap().links.get(&l.url).is_some_and(|e| e.error.is_none());
-                    if !done && crate::packs::can_download(&l.url) {
+                    if wanted(&l.url) {
                         todo.push((g.key(), format!("{} - {}", g.title, l.label), l.url.clone()));
                     }
                 }
@@ -663,8 +654,7 @@ mod build {
             match rt.block_on(crate::packs::fetch_details(p.url.clone())) {
                 Ok(d) => {
                     for l in d.links {
-                        let done = index.lock().unwrap().links.get(&l.url).is_some_and(|e| e.error.is_none());
-                        if !done && crate::packs::can_download(&l.url) {
+                        if wanted(&l.url) {
                             todo.push((p.url.clone(), p.title.clone(), l.url));
                         }
                     }

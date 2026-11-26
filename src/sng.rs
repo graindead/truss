@@ -119,6 +119,11 @@ impl SngExtractor {
 }
 
 /// Contents of a .sng file read fully into memory (used by the chart preview).
+/// A metadata value, by key in any case.
+fn meta<'a>(metadata: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+}
+
 pub struct SngContents {
     pub metadata: Vec<(String, String)>,
     pub files: Vec<(String, Vec<u8>)>,
@@ -126,7 +131,7 @@ pub struct SngContents {
 
 impl SngContents {
     pub fn meta(&self, key: &str) -> Option<&str> {
-        self.metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+        meta(&self.metadata, key)
     }
 }
 
@@ -233,7 +238,7 @@ pub struct SngIndex {
 
 impl SngIndex {
     pub fn meta(&self, key: &str) -> Option<&str> {
-        self.metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+        meta(&self.metadata, key)
     }
 }
 

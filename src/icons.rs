@@ -1,7 +1,7 @@
 //! Charter / pack icons shown in the corner of album art (same source and matching rules as the
 //! original Bridge: https://clonehero.gitlab.io/sources/icons.json).
 
-use crate::api::{CLIENT, Chart, strip_tags};
+use crate::api::{Chart, strip_tags};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,25 +21,11 @@ fn cache_dir() -> Option<PathBuf> {
 /// Downloads the icon list, falling back to the last saved copy when offline.
 pub async fn fetch_list() -> Result<Arc<Vec<IconEntry>>, String> {
     let cached = cache_dir().map(|d| d.join("icons.json"));
-    let fresh = async {
-        CLIENT
-            .get(format!("{BASE}/icons.json"))
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| e.to_string())?
-            .bytes()
-            .await
-            .map_err(|e| e.to_string())
-    }
-    .await;
+    let fresh = crate::api::get_bytes(&format!("{BASE}/icons.json")).await.map_err(|e| e.to_string());
     let bytes = match fresh {
         Ok(b) => {
             if let Some(p) = &cached {
-                if let Some(parent) = p.parent() {
-                    let _ = tokio::fs::create_dir_all(parent).await;
-                }
-                let _ = tokio::fs::write(p, &b).await;
+                crate::api::save_quietly(p, &b).await;
             }
             b
         }
@@ -81,25 +67,5 @@ pub fn tooltip(chart: &Chart) -> String {
 pub async fn fetch_icon(entry: IconEntry) -> Result<bytes::Bytes, String> {
     let ext = entry.name.rsplit('.').next().unwrap_or("png").to_ascii_lowercase();
     let path = cache_dir().map(|d| d.join(format!("{}.{ext}", entry.sha1)));
-    if let Some(p) = &path
-        && let Ok(b) = tokio::fs::read(p).await
-    {
-        return Ok(b.into());
-    }
-    let bytes = CLIENT
-        .get(format!("{BASE}/icons/{}", entry.name))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(p) = path {
-        if let Some(parent) = p.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let _ = tokio::fs::write(p, &bytes).await;
-    }
-    Ok(bytes)
+    crate::api::cached_get(&format!("{BASE}/icons/{}", entry.name), path).await.map_err(|e| e.to_string())
 }

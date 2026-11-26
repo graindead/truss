@@ -473,7 +473,7 @@ impl ProfileEditor {
     }
 
     pub fn view(&self) -> Element<'_, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
         let heading = |s: &'static str| text(s).size(15).font(crate::BOLD);
         let note = |s: String| text(s).size(12).style(muted);
         let Some(_) = &self.edited else {

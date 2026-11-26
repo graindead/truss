@@ -182,19 +182,10 @@ impl App {
                 color: Some(t.extended_palette().background.base.text.scale_alpha(0.6)),
             }));
         }
-        links = links
-            .push(
-                button(text("Copy link").size(12).wrapping(text::Wrapping::None))
-                    .padding([4, 10])
-                    .style(crate::style::secondary)
-                    .on_press(Message::CopyText(format!("https://enchor.us/chart/{}", c.md5))),
-            )
-            .push(
-                button(text("Copy hash").size(12).wrapping(text::Wrapping::None))
-                    .padding([4, 10])
-                    .style(crate::style::secondary)
-                    .on_press(Message::CopyText(c.md5.clone())),
-            );
+        let copy = |label: &'static str, what: String| {
+            button(text(label).size(12).wrapping(text::Wrapping::None)).padding([4, 10]).style(crate::style::secondary).on_press(Message::CopyText(what))
+        };
+        links = links.push(copy("Copy link", format!("https://enchor.us/chart/{}", c.md5))).push(copy("Copy hash", c.md5.clone()));
         col.push(links.wrap().vertical_spacing(6)).into()
     }
 }

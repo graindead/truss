@@ -6,11 +6,10 @@
 //! peaks don't lag. The D line is the sum of the curves, without the song-level stamina and
 //! variation factors, as in Fretwork.
 //!
-//! The note extraction repeats `fretwork::rate_frets` / `rate_drums` on purpose, so the ratings
-//! code stays exactly as ported.
+//! Notes are read the same way as for the ratings (`fretwork::frets` / `drums`).
 
-use crate::chart::{Track, nf, nt};
-use crate::fretwork::{ROLL_CAP_HPS, STEP_MS, WINDOW_MS, windowed};
+use crate::chart::Track;
+use crate::fretwork::{STEP_MS, WINDOW_MS, fret_changes, windowed};
 
 const TAU_MS: f64 = 2000.0;
 
@@ -65,29 +64,10 @@ pub fn curves(instrument: &str, expert: &Track) -> Option<Curves> {
 }
 
 fn fret_curves(t: &Track) -> Option<Curves> {
-    let mut times = Vec::new();
-    let mut masks: Vec<u8> = Vec::new();
-    for g in &t.note_groups {
-        let mut m = 0u8;
-        for n in g {
-            m |= match n.ty {
-                nt::OPEN => 1 << 7,
-                ty @ nt::GREEN..=nt::ORANGE => 1 << (ty - nt::GREEN),
-                _ => 0,
-            };
-        }
-        if m != 0 {
-            times.push(g[0].ms);
-            masks.push(m);
-        }
-    }
+    let f = crate::fretwork::frets(t);
+    let times = f.times;
     let last = *times.last()?;
-    let mut changes = Vec::with_capacity(masks.len());
-    let mut prev = 0u8;
-    for &m in &masks {
-        changes.push((prev & !m).count_ones().max((m & !prev).count_ones()) as f64);
-        prev = m;
-    }
+    let changes = fret_changes(&f.masks);
     let nps = smooth(&per_second(windowed(&times, &vec![1.0; times.len()], last)));
     let vps = smooth(&per_second(windowed(&times, &changes, last)));
     let d = sum(&nps, &vps);
@@ -95,60 +75,16 @@ fn fret_curves(t: &Track) -> Option<Curves> {
 }
 
 fn drum_curves(t: &Track) -> Option<Curves> {
-    let (mut hand_t, mut hand_m, mut kick_t, mut kick2_t) = (Vec::new(), Vec::<u8>::new(), Vec::new(), Vec::new());
-    for g in &t.note_groups {
-        let mut m = 0u8;
-        let (mut kick, mut kick2) = (false, false);
-        for n in g {
-            match n.ty {
-                nt::KICK if n.flags & nf::DOUBLE_KICK == 0 => kick = true,
-                nt::KICK => kick2 = true,
-                ty @ nt::RED_DRUM..=nt::GREEN_DRUM => m |= 1 << (ty - nt::RED_DRUM),
-                _ => {}
-            }
-        }
-        if m != 0 {
-            hand_t.push(g[0].ms);
-            hand_m.push(m);
-        }
-        if kick {
-            kick_t.push(g[0].ms);
-        }
-        if kick || kick2 {
-            kick2_t.push(g[0].ms);
-        }
-    }
-    let has_2x = kick2_t.len() > kick_t.len();
-    let last = *hand_t.last()?;
-
-    let rolls: Vec<(f64, f64)> = t.flex.iter().map(|(s, _)| (s.ms, s.ms + s.ms_length)).collect();
-    let in_roll = |x: f64| rolls.iter().any(|&(a, b)| x >= a && x < b);
-    let (mut normal, mut rolled, mut travel) = (Vec::new(), Vec::new(), Vec::new());
-    let mut prev = 0u8;
-    for (i, &m) in hand_m.iter().enumerate() {
-        let hits = m.count_ones() as f64;
-        let added = (m & !prev).count_ones() as f64;
-        prev = m;
-        if in_roll(hand_t[i]) {
-            normal.push(0.0);
-            rolled.push(hits);
-            travel.push(0.0);
-        } else {
-            normal.push(hits);
-            rolled.push(0.0);
-            travel.push(added);
-        }
-    }
-    let hn = windowed(&hand_t, &normal, last);
-    let hr = windowed(&hand_t, &rolled, last);
-    let hps: Vec<f64> = hn.iter().zip(&hr).map(|(a, b)| a + b.min(ROLL_CAP_HPS)).collect();
-    let tps = windowed(&hand_t, &travel, last);
+    let d = crate::fretwork::drums(t);
+    let has_2x = d.has_2x();
+    let last = *d.hand_t.last()?;
+    let (hps, tps) = crate::fretwork::hand_rates(&d, &crate::fretwork::hands(t, &d), last);
     let kicks = |times: &[f64]| match times.last() {
         Some(&kl) => windowed(times, &vec![1.0; times.len()], kl),
         None => Vec::new(),
     };
-    let k1 = kicks(&kick_t);
-    let k2 = if has_2x { kicks(&kick2_t) } else { Vec::new() };
+    let k1 = kicks(&d.kick_t);
+    let k2 = if has_2x { kicks(&d.kick2_t) } else { Vec::new() };
     // Hand and kick streams end at different times; pad them all to the longest.
     let n = hps.len().max(k1.len()).max(k2.len());
     let hps = smooth(&per_second(pad(hps, n)));

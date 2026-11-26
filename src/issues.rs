@@ -688,15 +688,17 @@ fn same_notes(a: &Track, b: &Track) -> bool {
         && a.star_power.len() == b.star_power.len()
 }
 
+/// An issue's description, after the time it happens at (if it's at one place).
+fn issue_text(kind: &str, ms: Option<f64>) -> String {
+    let d = describe(kind);
+    match ms {
+        Some(ms) => format!("[{}]: {d}", ms_to_exact_time(ms)),
+        None => d.to_string(),
+    }
+}
+
 fn find_chart_issues(p: &ParsedChart, issues: &mut Issues) {
-    let mut global = |kind: &'static str, ms: Option<f64>| {
-        let d = describe(kind);
-        let desc = match ms {
-            Some(ms) => format!("[{}]: {d}", ms_to_exact_time(ms)),
-            None => d.to_string(),
-        };
-        issues.chart.push((None, None, kind, desc));
-    };
+    let mut global = |kind: &'static str, ms: Option<f64>| issues.chart.push((None, None, kind, issue_text(kind, ms)));
     for kind in &p.parse_issues {
         global(kind, None);
     }
@@ -781,12 +783,7 @@ fn find_chart_issues(p: &ParsedChart, issues: &mut Issues) {
 
 fn track_issues(track: &Track, issues: &mut Issues) {
     let mut add = |kind: &'static str, ms: Option<f64>| {
-        let d = describe(kind);
-        let desc = match ms {
-            Some(ms) => format!("[{}]: {d}", ms_to_exact_time(ms)),
-            None => d.to_string(),
-        };
-        issues.chart.push((Some(track.instrument.into()), Some(track.difficulty.into()), kind, desc));
+        issues.chart.push((Some(track.instrument.into()), Some(track.difficulty.into()), kind, issue_text(kind, ms)));
     };
     let groups = &track.note_groups;
     let span_ms = || match (groups.first(), groups.last()) {

@@ -27,15 +27,7 @@ const CHIP_TEXT: Color = Color::from_rgb8(0x13, 0x19, 0x24);
 // ---------- Numbers and words ----------
 
 pub(super) fn thousands(n: f64) -> String {
-    let s = format!("{:.0}", n.abs());
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    if n < 0.0 && out != "0" { format!("-{out}") } else { out }
+    crate::leaderboard_ui::thousands(n.round() as i64)
 }
 
 /// 1.23B, 4.5M, or in full.
@@ -49,11 +41,11 @@ pub(super) fn big(n: f64) -> String {
     }
 }
 
-fn num(v: &Value, path: &str) -> Option<f64> {
+pub(super) fn num(v: &Value, path: &str) -> Option<f64> {
     v.pointer(path).and_then(Value::as_f64)
 }
 
-fn word<'a>(v: &'a Value, path: &str) -> &'a str {
+pub(super) fn word<'a>(v: &'a Value, path: &str) -> &'a str {
     v.pointer(path).and_then(Value::as_str).unwrap_or("")
 }
 
@@ -143,11 +135,11 @@ fn note<'a>(s: impl Into<String>) -> El<'a> {
 }
 
 fn panel<'a>(c: impl Into<El<'a>>) -> El<'a> {
-    container(c)
-        .padding(14)
-        .width(Length::Fill)
-        .style(|t: &Theme| container::Style { background: Some(style::raised(t).into()), ..style::panel(t) })
-        .into()
+    container(c).padding(14).width(Length::Fill).style(raised).into()
+}
+
+fn raised(t: &Theme) -> container::Style {
+    container::Style { background: Some(style::raised(t).into()), ..style::panel(t) }
 }
 
 fn section<'a>(title: &'a str, about: impl Into<String>, body: impl Into<El<'a>>) -> El<'a> {
@@ -164,7 +156,7 @@ fn tile<'a>(value: String, label: String) -> El<'a> {
         .padding([10, 12])
         .width(Length::Fill)
         .clip(true)
-        .style(|t: &Theme| container::Style { background: Some(style::raised(t).into()), ..style::panel(t) })
+        .style(raised)
         .into()
 }
 

@@ -194,16 +194,25 @@ pub fn ini_pairs(data: &[u8]) -> Vec<(String, String)> {
 }
 
 fn decode(data: &[u8]) -> String {
-    if data.len() >= 2 && (data[..2] == [0xff, 0xfe] || data[..2] == [0xfe, 0xff]) {
-        let le = data[0] == 0xff;
-        let units: Vec<u16> = data[2..]
-            .chunks_exact(2)
-            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
-            .collect();
-        return String::from_utf16_lossy(&units);
+    if let Some(s) = crate::library::utf16(data) {
+        return s;
     }
     let s = String::from_utf8_lossy(data);
     s.strip_prefix('\u{feff}').unwrap_or(&s).to_string()
+}
+
+/// A chart folder's notes.mid / notes.chart and song.ini (name, bytes), for tests on real charts.
+#[cfg(test)]
+pub(crate) fn chart_files(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+            n.ends_with(".mid") || n.ends_with(".chart") || n.ends_with(".ini")
+        })
+        .filter_map(|e| Some((e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).ok()?)))
+        .collect()
 }
 
 /// A chart's leaderboard hashes, worked out from its files.
@@ -223,23 +232,12 @@ pub struct Computed {
 /// scan-chart does.
 pub fn hash_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<Computed, String> {
     let parsed = parse_files(files, ini)?;
+    let expert = || parsed.tracks.iter().filter(|t| t.difficulty == "expert");
     Ok(Computed {
-        tracks: parsed
-            .tracks
-            .iter()
-            .map(|t| (t.instrument.to_string(), t.difficulty.to_string(), track_hash(&parsed, t, CURRENT)))
-            .collect(),
+        tracks: hashes(&parsed),
         pro_drums: parsed.drum_type == Some(crate::chart::DrumType::FourLanePro),
-        ratings: parsed
-            .tracks
-            .iter()
-            .filter(|t| t.difficulty == "expert")
-            .filter_map(|t| Some((t.instrument.to_string(), crate::fretwork::rate(t.instrument, t)?)))
-            .collect(),
-        curves: parsed
-            .tracks
-            .iter()
-            .filter(|t| t.difficulty == "expert")
+        ratings: expert().filter_map(|t| Some((t.instrument.to_string(), crate::fretwork::rate(t.instrument, t)?))).collect(),
+        curves: expert()
             .filter_map(|t| Some((t.instrument.to_string(), std::sync::Arc::new(crate::curves::curves(t.instrument, t)?))))
             .collect(),
     })
@@ -254,12 +252,12 @@ pub fn guitar_tier(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>
 
 /// Just the track hashes (instrument, difficulty, hash) of `hash_files`.
 pub fn hash_tracks(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<Vec<(String, String, String)>, String> {
-    let parsed = parse_files(files, ini)?;
-    Ok(parsed
-        .tracks
-        .iter()
-        .map(|t| (t.instrument.to_string(), t.difficulty.to_string(), track_hash(&parsed, t, CURRENT)))
-        .collect())
+    Ok(hashes(&parse_files(files, ini)?))
+}
+
+/// (instrument, difficulty, hash) of every track.
+fn hashes(parsed: &crate::chart::ParsedChart) -> Vec<(String, String, String)> {
+    parsed.tracks.iter().map(|t| (t.instrument.to_string(), t.difficulty.to_string(), track_hash(parsed, t, CURRENT))).collect()
 }
 
 fn parse_files(files: &[(String, Vec<u8>)], ini: Option<&[(String, String)]>) -> Result<crate::chart::ParsedChart, String> {
@@ -313,12 +311,7 @@ mod tests {
     #[test]
     fn hash_real_folder() {
         let Ok(dir) = std::env::var("TRUSS_TEST_CHART_DIR") else { return };
-        let files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
-            .unwrap()
-            .flatten()
-            .map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap()))
-            .collect();
-        let cp = hash_files(&files, None).unwrap();
+        let cp = hash_files(&chart_files(std::path::Path::new(&dir)), None).unwrap();
         for (i, d, h) in cp.tracks {
             println!("{i} {d}: {h}");
         }

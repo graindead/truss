@@ -864,48 +864,26 @@ fn sort_and_fix_invalid_event_overlaps(events: &mut Vec<TimedSpan>) {
 
 // ---------- .chart parser (chart-file-parser.ts) ----------
 
-const CHART_TRACKS: &[(&str, &str, &str)] = &[
-    ("ExpertSingle", "guitar", "expert"),
-    ("HardSingle", "guitar", "hard"),
-    ("MediumSingle", "guitar", "medium"),
-    ("EasySingle", "guitar", "easy"),
-    ("ExpertDoubleGuitar", "guitarcoop", "expert"),
-    ("HardDoubleGuitar", "guitarcoop", "hard"),
-    ("MediumDoubleGuitar", "guitarcoop", "medium"),
-    ("EasyDoubleGuitar", "guitarcoop", "easy"),
-    ("ExpertDoubleRhythm", "rhythm", "expert"),
-    ("HardDoubleRhythm", "rhythm", "hard"),
-    ("MediumDoubleRhythm", "rhythm", "medium"),
-    ("EasyDoubleRhythm", "rhythm", "easy"),
-    ("ExpertDoubleBass", "bass", "expert"),
-    ("HardDoubleBass", "bass", "hard"),
-    ("MediumDoubleBass", "bass", "medium"),
-    ("EasyDoubleBass", "bass", "easy"),
-    ("ExpertDrums", "drums", "expert"),
-    ("HardDrums", "drums", "hard"),
-    ("MediumDrums", "drums", "medium"),
-    ("EasyDrums", "drums", "easy"),
-    ("ExpertKeyboard", "keys", "expert"),
-    ("HardKeyboard", "keys", "hard"),
-    ("MediumKeyboard", "keys", "medium"),
-    ("EasyKeyboard", "keys", "easy"),
-    ("ExpertGHLGuitar", "guitarghl", "expert"),
-    ("HardGHLGuitar", "guitarghl", "hard"),
-    ("MediumGHLGuitar", "guitarghl", "medium"),
-    ("EasyGHLGuitar", "guitarghl", "easy"),
-    ("ExpertGHLCoop", "guitarcoopghl", "expert"),
-    ("HardGHLCoop", "guitarcoopghl", "hard"),
-    ("MediumGHLCoop", "guitarcoopghl", "medium"),
-    ("EasyGHLCoop", "guitarcoopghl", "easy"),
-    ("ExpertGHLRhythm", "rhythmghl", "expert"),
-    ("HardGHLRhythm", "rhythmghl", "hard"),
-    ("MediumGHLRhythm", "rhythmghl", "medium"),
-    ("EasyGHLRhythm", "rhythmghl", "easy"),
-    ("ExpertGHLBass", "bassghl", "expert"),
-    ("HardGHLBass", "bassghl", "hard"),
-    ("MediumGHLBass", "bassghl", "medium"),
-    ("EasyGHLBass", "bassghl", "easy"),
+/// .chart track sections, by what follows the difficulty ("Expert" + "Single"), and their
+/// instruments.
+const CHART_PARTS: &[(&str, &str)] = &[
+    ("Single", "guitar"),
+    ("DoubleGuitar", "guitarcoop"),
+    ("DoubleRhythm", "rhythm"),
+    ("DoubleBass", "bass"),
+    ("Drums", "drums"),
+    ("Keyboard", "keys"),
+    ("GHLGuitar", "guitarghl"),
+    ("GHLCoop", "guitarcoopghl"),
+    ("GHLRhythm", "rhythmghl"),
+    ("GHLBass", "bassghl"),
 ];
+const CHART_DIFFICULTIES: [(&str, &str); 4] = [("Expert", "expert"), ("Hard", "hard"), ("Medium", "medium"), ("Easy", "easy")];
+
+/// Every .chart track section: (name, instrument, difficulty), in scan-chart's order.
+fn chart_tracks() -> impl Iterator<Item = (String, &'static str, &'static str)> {
+    CHART_PARTS.iter().flat_map(|&(part, instrument)| CHART_DIFFICULTIES.iter().map(move |&(d, difficulty)| (format!("{d}{part}"), instrument, difficulty)))
+}
 
 fn decode_text(data: &[u8]) -> String {
     if data.len() >= 2 && data[0] == 0xff && data[1] == 0xfe {
@@ -980,10 +958,7 @@ fn split_tick(line: &str) -> Option<(i64, &str)> {
 
 /// `^\s*\[?mix[ _]([0-3])[ _]drums([0-5])(d|dnoflip|easy|easynokick|)\]?\s*$`
 fn parse_disco(text: &str) -> Option<(usize, &str)> {
-    let s = text.trim();
-    let s = s.strip_prefix('[').unwrap_or(s);
-    let s = s.strip_suffix(']').unwrap_or(s);
-    let s = s.strip_prefix("mix")?;
+    let s = unbracket(text).strip_prefix("mix")?;
     let b = s.as_bytes();
     if b.len() < 9 || !(b[0] == b' ' || b[0] == b'_') || !(b'0'..=b'3').contains(&b[1]) || !(b[2] == b' ' || b[2] == b'_') {
         return None;
@@ -1039,9 +1014,6 @@ fn parse_dot_chart(data: &[u8]) -> Result<RawChart, String> {
             tempos.push((tick, milli_bpm as f64 / 1000.0));
         }
     }
-    if tempos.first().is_none_or(|t| t.0 != 0) {
-        tempos.insert(0, (0, 120.0));
-    }
 
     let mut time_sigs = Vec::new();
     for line in sections.get("SyncTrack").into_iter().flatten() {
@@ -1061,9 +1033,7 @@ fn parse_dot_chart(data: &[u8]) -> Result<RawChart, String> {
             time_sigs.push((tick, num, 2u32.saturating_pow(den)));
         }
     }
-    if time_sigs.first().is_none_or(|t| t.0 != 0) {
-        time_sigs.insert(0, (0, 4, 4));
-    }
+    start_at_zero(&mut tempos, &mut time_sigs);
 
     let mut global = GlobalEvents::default();
     for line in sections.get("Events").into_iter().flatten() {
@@ -1080,8 +1050,8 @@ fn parse_dot_chart(data: &[u8]) -> Result<RawChart, String> {
     });
 
     let mut tracks = Vec::new();
-    for &(name, instrument, difficulty) in CHART_TRACKS {
-        let Some(lines) = sections.get(name) else { continue };
+    for (name, instrument, difficulty) in chart_tracks() {
+        let Some(lines) = sections.get(name.as_str()) else { continue };
         let drums = instrument == "drums";
         let ghl = instrument_type(instrument) == InstrumentType::SixFret;
         let mut events: Vec<TrackEvent> = Vec::new();
@@ -1202,10 +1172,24 @@ fn merge_solo_events(events: &mut Vec<TrackEvent>) {
 
 /// `^\s*\[?coda\]?\s*$`
 fn is_coda(text: &str) -> bool {
+    unbracket(text) == "coda"
+}
+
+/// An event's text without surrounding space or [brackets] (`^\s*\[?(.*?)\]?\s*$`).
+fn unbracket(text: &str) -> &str {
     let s = text.trim();
     let s = s.strip_prefix('[').unwrap_or(s);
-    let s = s.strip_suffix(']').unwrap_or(s);
-    s == "coda"
+    s.strip_suffix(']').unwrap_or(s)
+}
+
+/// Charts without a tempo or time signature at the very start get 120 BPM and 4/4 there.
+fn start_at_zero(tempos: &mut Vec<(i64, f64)>, time_sigs: &mut Vec<(i64, u32, u32)>) {
+    if tempos.first().is_none_or(|t| t.0 != 0) {
+        tempos.insert(0, (0, 120.0));
+    }
+    if time_sigs.first().is_none_or(|t| t.0 != 0) {
+        time_sigs.insert(0, (0, 4, 4));
+    }
 }
 
 impl RawTrack {
@@ -1313,9 +1297,6 @@ fn parse_midi(data: &[u8], mods: &Modifiers) -> Result<RawChart, String> {
             tempos.push((tick, 60_000_000.0 / us as f64));
         }
     }
-    if tempos.first().is_none_or(|t| t.0 != 0) {
-        tempos.insert(0, (0, 120.0));
-    }
     let mut time_sigs = Vec::new();
     let mut tick = 0i64;
     for e in &smf.tracks[0] {
@@ -1327,9 +1308,7 @@ fn parse_midi(data: &[u8], mods: &Modifiers) -> Result<RawChart, String> {
             time_sigs.push((tick, num as u32, 2u32.saturating_pow(den_pow as u32)));
         }
     }
-    if time_sigs.first().is_none_or(|t| t.0 != 0) {
-        time_sigs.insert(0, (0, 4, 4));
-    }
+    start_at_zero(&mut tempos, &mut time_sigs);
 
     let track_name = |track: &[midly::TrackEvent<'_>]| -> Option<String> {
         for e in track.iter() {

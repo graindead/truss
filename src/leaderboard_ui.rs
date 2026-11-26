@@ -21,7 +21,7 @@ impl std::fmt::Display for Opt {
 }
 
 /// 1234567 → "1,234,567"
-fn thousands(n: i64) -> String {
+pub(crate) fn thousands(n: i64) -> String {
     let s = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {

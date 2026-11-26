@@ -68,18 +68,15 @@ fn simplest_song_with_multiple_acts() {
     check_act(&p, 1, 5, 5, 54.0, 70.0);
 }
 
+/// Simplest songs with an act containing more than one note (576), and with an act that must
+/// go as long as possible (3360).
 #[test]
-fn simplest_song_with_an_act_containing_more_than_one_note() {
-    let p = optimise(vec![note(0), note(192), note(384), note(576)], vec![sp(0, 50), sp(192, 50)]);
-    assert_eq!(p.score_boost, 100);
-    check_act(&p, 0, 2, 3, 2.0, 18.0);
-}
-
-#[test]
-fn simplest_song_with_an_act_that_must_go_as_long_as_possible() {
-    let p = optimise(vec![note(0), note(192), note(384), note(3360)], vec![sp(0, 50), sp(192, 50)]);
-    assert_eq!(p.score_boost, 100);
-    check_act(&p, 0, 2, 3, 2.0, 18.0);
+fn simplest_song_with_an_act_over_two_notes() {
+    for last in [576, 3360] {
+        let p = optimise(vec![note(0), note(192), note(384), note(last)], vec![sp(0, 50), sp(192, 50)]);
+        assert_eq!(p.score_boost, 100);
+        check_act(&p, 0, 2, 3, 2.0, 18.0);
+    }
 }
 
 #[test]
@@ -283,12 +280,33 @@ fn real_library_paths() {
     println!("{ok} ok, {failed} failed in {:?}; slowest {:.2}s: {}", total.elapsed(), slowest.0, slowest.1);
 }
 
+/// A chart folder's notes.mid (or notes.chart) and song.ini.
+fn load_dir(dir: &std::path::Path) -> Song {
+    let (f, midi) = if dir.join("notes.mid").exists() { ("notes.mid", true) } else { ("notes.chart", false) };
+    super::load(&std::fs::read(dir.join(f)).unwrap(), midi, &std::fs::read(dir.join("song.ini")).unwrap_or_default()).unwrap()
+}
+
+/// About `n` loose (not .sng) charts spread evenly over the library at `lib`.
+fn library_sample(lib: std::ffi::OsString, n: usize) -> Vec<std::sync::Arc<crate::library::LocalChart>> {
+    let lib = crate::library::scan_blocking(&[std::path::PathBuf::from(lib)]);
+    let charts: Vec<_> = lib.catalog.into_iter().filter(|c| !c.is_sng() && c.chart_file.is_some()).collect();
+    let step = (charts.len() / n).max(1);
+    charts.into_iter().step_by(step).take(n).collect()
+}
+
+/// A library chart's file, and the chart loaded from it.
+fn load_library_chart(c: &crate::library::LocalChart) -> (std::path::PathBuf, Result<Song, String>) {
+    let f = c.chart_file.as_ref().unwrap();
+    let file = c.path.join(f);
+    let ini = std::fs::read(c.path.join("song.ini")).unwrap_or_default();
+    let song = super::load(&std::fs::read(&file).unwrap(), f.to_lowercase().ends_with(".mid"), &ini);
+    (file, song)
+}
+
 #[test]
 fn profile_one_chart() {
     let Some(dir) = std::env::var_os("CHOPT_PROFILE") else { return };
-    let dir = std::path::PathBuf::from(dir);
-    let (f, midi) = if dir.join("notes.mid").exists() { ("notes.mid", true) } else { ("notes.chart", false) };
-    let song = super::load(&std::fs::read(dir.join(f)).unwrap(), midi, &std::fs::read(dir.join("song.ini")).unwrap_or_default()).unwrap();
+    let song = load_dir(std::path::Path::new(&dir));
     let t = std::time::Instant::now();
     let out = super::run(song, &super::Options::default(), &AtomicBool::new(false)).unwrap();
     eprintln!("total {:?}\n{}", t.elapsed(), out.summary.lines().take(4).collect::<Vec<_>>().join("\n"));
@@ -297,9 +315,7 @@ fn profile_one_chart() {
 #[test]
 fn render_one_chart() {
     let (Some(dir), Some(out)) = (std::env::var_os("CHOPT_RENDER"), std::env::var_os("CHOPT_OUT")) else { return };
-    let dir = std::path::PathBuf::from(dir);
-    let (f, midi) = if dir.join("notes.mid").exists() { ("notes.mid", true) } else { ("notes.chart", false) };
-    let song = super::load(&std::fs::read(dir.join(f)).unwrap(), midi, &std::fs::read(dir.join("song.ini")).unwrap_or_default()).unwrap();
+    let song = load_dir(std::path::Path::new(&dir));
     let mut opts = super::Options::default();
     if std::env::var_os("CHOPT_MEDIUM").is_some() {
         opts.difficulty = Difficulty::Medium;
@@ -317,15 +333,9 @@ fn render_one_chart() {
 fn dump_for_comparison() {
     let (Some(lib), Some(out)) = (std::env::var_os("TRUSS_TEST_LIBRARY"), std::env::var_os("CHOPT_DUMP")) else { return };
     let out = std::path::PathBuf::from(out);
-    let lib = crate::library::scan_blocking(&[std::path::PathBuf::from(lib)]);
-    let charts: Vec<_> = lib.catalog.iter().filter(|c| !c.is_sng() && c.chart_file.is_some()).collect();
-    let step = (charts.len() / 100).max(1);
     let (mut list, mut ours) = (String::new(), String::new());
-    for c in charts.iter().step_by(step).take(100) {
-        let f = c.chart_file.as_ref().unwrap();
-        let file = c.path.join(f);
-        let ini = std::fs::read(c.path.join("song.ini")).unwrap_or_default();
-        let Ok(song) = super::load(&std::fs::read(&file).unwrap(), f.to_lowercase().ends_with(".mid"), &ini) else { continue };
+    for c in library_sample(lib, 100) {
+        let (file, Ok(song)) = load_library_chart(&c) else { continue };
         if !song.tracks.contains_key(&(Instrument::Guitar, Difficulty::Expert)) {
             continue;
         }
@@ -350,9 +360,6 @@ fn dump_all_parts() {
     let (Some(lib), Some(out)) = (std::env::var_os("TRUSS_TEST_LIBRARY"), std::env::var_os("CHOPT_DUMP_ALL")) else { return };
     let n: usize = std::env::var("CHOPT_N").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
     let out = std::path::PathBuf::from(out);
-    let lib = crate::library::scan_blocking(&[std::path::PathBuf::from(lib)]);
-    let charts: Vec<_> = lib.catalog.iter().filter(|c| !c.is_sng() && c.chart_file.is_some()).collect();
-    let step = (charts.len() / n).max(1);
     let flag = |i: Instrument| match i {
         Instrument::Guitar => "guitar",
         Instrument::GuitarCoop => "coop",
@@ -361,11 +368,9 @@ fn dump_all_parts() {
         Instrument::Keys => "keys",
     };
     let (mut list, mut ours, mut loads) = (String::new(), String::new(), String::new());
-    for c in charts.iter().step_by(step).take(n) {
-        let f = c.chart_file.as_ref().unwrap();
-        let file = c.path.join(f);
-        let ini = std::fs::read(c.path.join("song.ini")).unwrap_or_default();
-        let song = match super::load(&std::fs::read(&file).unwrap(), f.to_lowercase().ends_with(".mid"), &ini) {
+    for c in library_sample(lib, n) {
+        let (file, song) = load_library_chart(&c);
+        let song = match song {
             Ok(s) => s,
             Err(e) => {
                 loads += &format!("{}|{e}\n", file.display());

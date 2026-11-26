@@ -221,6 +221,19 @@ enum Cmd {
     Quit,
 }
 
+/// Carries out a seek or speed change; `false` once told to quit.
+fn obey(cmd: Cmd, speed: &mut f64, pending_seek: &mut Option<f64>) -> bool {
+    match cmd {
+        Cmd::Seek(ms) => *pending_seek = Some(ms),
+        Cmd::Speed(s, ms) => {
+            *speed = s;
+            *pending_seek = Some(ms);
+        }
+        Cmd::Quit => return false,
+    }
+    true
+}
+
 pub struct Player {
     shared: Arc<Shared>,
     cmd: mpsc::Sender<Cmd>,
@@ -400,17 +413,14 @@ fn audio_thread(
     loop {
         // Commands
         loop {
-            match cmd_rx.try_recv() {
-                Ok(Cmd::Seek(ms)) => pending_seek = Some(ms),
-                Ok(Cmd::Speed(s, ms)) => {
-                    speed = s;
-                    pending_seek = Some(ms);
-                }
-                Ok(Cmd::Quit) | Err(mpsc::TryRecvError::Disconnected) => {
-                    drop(stream);
-                    return;
-                }
+            let go_on = match cmd_rx.try_recv() {
+                Ok(cmd) => obey(cmd, &mut speed, &mut pending_seek),
+                Err(mpsc::TryRecvError::Disconnected) => false,
                 Err(mpsc::TryRecvError::Empty) => break,
+            };
+            if !go_on {
+                drop(stream);
+                return;
             }
         }
 
@@ -529,14 +539,13 @@ fn audio_thread(
             shared.source_done.store(true, Relaxed);
         }
         if !wrote {
-            match cmd_rx.recv_timeout(Duration::from_millis(5)) {
-                Ok(Cmd::Seek(ms)) => pending_seek = Some(ms),
-                Ok(Cmd::Speed(s, ms)) => {
-                    speed = s;
-                    pending_seek = Some(ms);
-                }
-                Ok(Cmd::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            let go_on = match cmd_rx.recv_timeout(Duration::from_millis(5)) {
+                Ok(cmd) => obey(cmd, &mut speed, &mut pending_seek),
+                Err(mpsc::RecvTimeoutError::Disconnected) => false,
+                Err(mpsc::RecvTimeoutError::Timeout) => true,
+            };
+            if !go_on {
+                return;
             }
         }
     }

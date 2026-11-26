@@ -95,6 +95,17 @@ fn colour(shape: Shape, lane: usize, pixel: u8) -> Rgba {
     }
 }
 
+/// Calls `f(x, y, value)` for each non-zero pixel of a picture.
+fn each_pixel<R: AsRef<[u8]>>(rows: &[R], f: &mut impl FnMut(i32, i32, u8)) {
+    for (i, row) in rows.iter().enumerate() {
+        for (j, &p) in row.as_ref().iter().enumerate() {
+            if p != 0 {
+                f(j as i32, i as i32, p);
+            }
+        }
+    }
+}
+
 /// The sprite for a note with lanes `index` (bit 0 green ... bit 4 orange, bit 5 open).
 pub fn make(shape: Shape, index: u32, lefty: bool) -> Sprite {
     let star = matches!(shape, Shape::Star | Shape::StarHopo | Shape::StarTap);
@@ -120,23 +131,8 @@ pub fn make(shape: Shape, index: u32, lefty: bool) -> Sprite {
             continue;
         }
         let yo = 15 * if lefty { 4 - lane as i32 } else { lane as i32 };
-        if star {
-            for (i, row) in STAR.iter().enumerate() {
-                for (j, &p) in row.iter().enumerate() {
-                    if p != 0 {
-                        put(j as i32, yo + i as i32, colour(shape, lane, p));
-                    }
-                }
-            }
-        } else {
-            for (i, row) in CIRCLE.iter().enumerate() {
-                for (j, &p) in row.iter().enumerate() {
-                    if p != 0 {
-                        put(j as i32, yo + i as i32, colour(shape, lane, p));
-                    }
-                }
-            }
-        }
+        let mut dot = |x: i32, y: i32, p: u8| put(x, yo + y, colour(shape, lane, p));
+        if star { each_pixel(&STAR, &mut dot) } else { each_pixel(&CIRCLE, &mut dot) }
     }
     Sprite { w, h, rgba }
 }

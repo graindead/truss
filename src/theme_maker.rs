@@ -412,7 +412,7 @@ impl ThemeMaker {
     /// `glass_window`: whether this window was opened see-through (frosted glass can only be
     /// turned on or off with a restart).
     pub fn view<'a>(&'a self, saved: &'a [CustomTheme], current: &Theme, glass_window: bool) -> Element<'a, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
 
         // Left: your themes.
         let mut list = column![text("Your themes").size(15).font(crate::BOLD)].spacing(6);
@@ -462,18 +462,11 @@ impl ThemeMaker {
             Some((d, old)) => self.editor(d, old.is_some(), glass_window),
         };
 
-        let mut body = column![row![left, crate::style::divider(true), right].spacing(16).height(Length::Fill)].spacing(10);
-        if let Some((ok, s)) = &self.status {
-            let ok = *ok;
-            body = body.push(text(s.clone()).size(12).style(move |t: &Theme| text::Style {
-                color: Some(if ok { t.palette().success } else { t.palette().danger }),
-            }));
-        }
-        container(body).padding(16).width(Length::Fill).height(Length::Fill).into()
+        crate::style::list_and_editor(left.into(), right, &self.status)
     }
 
     fn editor<'a>(&'a self, d: &'a CustomTheme, saved_before: bool, glass_window: bool) -> Element<'a, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
         let mut colours = column![].spacing(4);
         for k in Slot::ALL {
             let value = d.get(k);
@@ -705,9 +698,13 @@ impl<M> canvas::Program<M> for Picker<M> {
 
 /// A name no other theme has: `base`, or `base 2`, `base 3`…
 fn unique_name(base: &str, saved: &[CustomTheme], taken: &[String], keep: Option<&str>) -> String {
-    let free = |n: &str| {
+    first_free(base, |n| {
         Some(n) == keep || (!taken.iter().any(|t| t.eq_ignore_ascii_case(n)) && !saved.iter().any(|t| t.name.eq_ignore_ascii_case(n)))
-    };
+    })
+}
+
+/// `base` if `free` says it's free, else the first free one of `base 2`, `base 3`…
+pub(crate) fn first_free(base: &str, free: impl Fn(&str) -> bool) -> String {
     if free(base) {
         return base.to_string();
     }

@@ -5,7 +5,7 @@
 //! encrypted with AES-128 in CTR mode, and is decrypted here with the link's key as it arrives.
 
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use futures::{SinkExt, StreamExt, channel::mpsc::Sender};
+use futures::{SinkExt, channel::mpsc::Sender};
 use std::path::{Path, PathBuf};
 
 type Cipher = ctr::Ctr128BE<aes::Aes128>;
@@ -146,19 +146,12 @@ pub async fn download_to(link: &str, dir: &Path, tx: &mut Sender<crate::download
     let path = dir.join("pack.mega");
     let mut out = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&path).map_err(|e| format!("Cannot write to library: {e}"))?);
     let mut cipher = Cipher::new(&f.key.into(), &f.iv.into());
-    let mut stream = resp.bytes_stream();
-    let mut done = 0u64;
-    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    while let Some(chunk) = stream.next().await {
-        let mut chunk = chunk.map_err(|e| format!("Connection lost: {e}"))?.to_vec();
+    let done = crate::download::read_body(resp, 0, total, tx, |chunk| {
+        let mut chunk = chunk.to_vec();
         cipher.apply_keystream(&mut chunk);
-        out.write_all(&chunk).map_err(|e| format!("Write failed: {e}"))?;
-        done += chunk.len() as u64;
-        if last.elapsed() >= std::time::Duration::from_millis(33) {
-            last = std::time::Instant::now();
-            let _ = tx.try_send(Progress::Bytes { done, total });
-        }
-    }
+        out.write_all(&chunk).map_err(|e| format!("Write failed: {e}"))
+    })
+    .await?;
     let _ = tx.send(Progress::Bytes { done, total }).await;
     out.flush().map_err(|e| format!("Write failed: {e}"))?;
     if f.size > 0 && done != f.size {

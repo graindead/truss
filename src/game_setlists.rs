@@ -4,6 +4,7 @@
 //! public HTML view, no sign-in), falling back to the last copy read and then to the copy built
 //! into Truss. Only its Guitar Hero and Rock Band sections are used.
 
+use crate::packs::percent_decode;
 use serde::{Deserialize, Serialize};
 
 /// The spreadsheet, as people open it.
@@ -232,52 +233,7 @@ fn strip_tags(s: &str) -> String {
 fn unescape(s: &str) -> String {
     let s = s.replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ");
     // Numeric references (&#8217;), then &amp; last so "&amp;lt;" stays literal.
-    let mut out = String::new();
-    let mut rest = s.as_str();
-    while let Some(i) = rest.find("&#") {
-        out.push_str(&rest[..i]);
-        let after = &rest[i + 2..];
-        let end = after.find(';').filter(|&e| e <= 8);
-        let ch = end.and_then(|e| {
-            let n = &after[..e];
-            let v = match n.strip_prefix('x').or_else(|| n.strip_prefix('X')) {
-                Some(h) => u32::from_str_radix(h, 16).ok(),
-                None => n.parse().ok(),
-            };
-            v.and_then(char::from_u32)
-        });
-        match (ch, end) {
-            (Some(c), Some(e)) => {
-                out.push(c);
-                rest = &after[e + 1..];
-            }
-            _ => {
-                out.push_str("&#");
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out.replace("&amp;", "&")
-}
-
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && i + 2 < b.len()
-            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    crate::packs::decode_numeric(&s).replace("&amp;", "&")
 }
 
 // ---------- A game's downloads ----------

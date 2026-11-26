@@ -2,7 +2,7 @@
 //! colour kept for what you act on. Colours come from the current theme, so it works with every
 //! theme.
 
-use iced::widget::{button, container, pick_list, text_input};
+use iced::widget::{button, column, container, pick_list, row, text, text_input};
 use iced::{Background, Border, Color, Theme};
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -48,6 +48,24 @@ pub fn divider<'a, M: 'a>(vertical: bool) -> iced::Element<'a, M> {
         ..Default::default()
     });
     if vertical { c.width(1).height(iced::Length::Fill).into() } else { c.height(1).width(iced::Length::Fill).into() }
+}
+
+/// Muted text.
+pub fn muted_text(t: &Theme) -> text::Style {
+    text::Style { color: Some(muted(t)) }
+}
+
+/// A tool page: a list on the left, the open item on the right, and under both the last
+/// action's result (green if it worked, red if not).
+pub fn list_and_editor<'a, M: 'a>(left: iced::Element<'a, M>, right: iced::Element<'a, M>, status: &Option<(bool, String)>) -> iced::Element<'a, M> {
+    let mut body = column![row![left, divider(true), right].spacing(16).height(iced::Length::Fill)].spacing(10);
+    if let Some((ok, s)) = status {
+        let ok = *ok;
+        body = body.push(text(s.clone()).size(12).style(move |t: &Theme| text::Style {
+            color: Some(if ok { t.palette().success } else { t.palette().danger }),
+        }));
+    }
+    container(body).padding(16).width(iced::Length::Fill).height(iced::Length::Fill).into()
 }
 
 /// Top navigation: muted text, the current page in full colour.

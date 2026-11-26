@@ -281,26 +281,7 @@ fn cache_dir() -> Option<PathBuf> {
 
 async fn fetch(file: String) -> Result<(String, bytes::Bytes), String> {
     let path = cache_dir().map(|d| d.join(&file));
-    if let Some(p) = &path
-        && let Ok(b) = tokio::fs::read(p).await
-    {
-        return Ok((file, b.into()));
-    }
-    let bytes = crate::api::CLIENT
-        .get(format!("{BASE_URL}/{file}"))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Failed to download {file}: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(p) = path {
-        if let Some(parent) = p.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let _ = tokio::fs::write(p, &bytes).await;
-    }
+    let bytes = crate::api::cached_get(&format!("{BASE_URL}/{file}"), path).await.map_err(|e| format!("Failed to download {file}: {e}"))?;
     Ok((file, bytes))
 }
 

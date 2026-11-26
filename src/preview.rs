@@ -522,6 +522,16 @@ fn stage_inset(sy: f32, height: f32) -> f32 {
     1.0 + r - (r * r - d * d).max(0.0).sqrt()
 }
 
+/// The scale that fits a highway `2 * half_u` wide and `v_span` tall (in projected units) into
+/// `size` with a margin all round; and the margin under it.
+fn fit(size: Size, half_u: f32, v_span: f32) -> (f32, f32) {
+    let pad_x = (size.width * 0.035).max(8.0);
+    let (pad_top, pad_bottom) = (6.0, (size.height * 0.03).max(8.0));
+    let fit_w = (size.width - 2.0 * pad_x) / (2.0 * half_u);
+    let fit_h = (size.height - pad_top - pad_bottom) / v_span;
+    (fit_w.min(fit_h).max(1.0), pad_bottom)
+}
+
 impl Camera {
     /// `half_width`: how far left/right of centre (world units, at the strikeline) must fit.
     /// `below`: how far below the strikeline centre the strikeline sprite reaches.
@@ -531,11 +541,8 @@ impl Camera {
         let (u, v_line, depth) = cam.plane(half_width, -1.0);
         let v_bottom = v_line - below / depth;
         let v_top = cam.plane(0.0, 0.9).1;
-        let pad_x = (size.width * 0.035).max(8.0);
-        let (pad_top, pad_bottom) = (6.0, (size.height * 0.03).max(8.0));
-        let fit_w = (size.width - 2.0 * pad_x) / (2.0 * u);
-        let fit_h = (size.height - pad_top - pad_bottom) / (v_top - v_bottom);
-        cam.f = fit_w.min(fit_h).max(1.0);
+        let (f, pad_bottom) = fit(size, u, v_top - v_bottom);
+        cam.f = f;
         cam.oy = size.height - pad_bottom + cam.f * v_bottom;
         cam
     }
@@ -598,11 +605,8 @@ impl GameCam {
         // note at the far end.
         let (u_near, v_near, _) = c.view(half_width, -0.05, strike);
         let (_, v_far, _) = c.view(0.0, 0.12, z_far);
-        let pad_x = (size.width * 0.035).max(8.0);
-        let (pad_top, pad_bottom) = (6.0, (size.height * 0.03).max(8.0));
-        let fit_w = (size.width - 2.0 * pad_x) / (2.0 * u_near);
-        let fit_h = (size.height - pad_top - pad_bottom) / (v_far - v_near).max(1e-4);
-        c.f = fit_w.min(fit_h).max(1.0);
+        let (f, pad_bottom) = fit(size, u_near, (v_far - v_near).max(1e-4));
+        c.f = f;
         c.cx = size.width * 0.5;
         c.cy = size.height - pad_bottom + c.f * v_near;
         c
@@ -852,6 +856,8 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
 
         // Visible notes: heads within the highway window, plus sustains still playing.
         let notes = &self.track.notes;
+        // Notes from `from` up to now.
+        let since = |from: f64| &notes[notes.partition_point(|n| n.ms < from)..notes.partition_point(|n| n.ms <= now)];
         let start = notes.partition_point(|n| n.ms < now - self.track.max_len);
         let visible: Vec<&RNote> = notes[start..]
             .iter()
@@ -1003,7 +1009,7 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
         // while a note of their lane is being hit.
         if !self.textures.strikers.is_empty() {
             let hit = |n: &RNote| (n.ms <= now && now - n.ms < 120.0) || (n.ms <= now && now < n.ms + n.ms_len);
-            let recent = &notes[notes.partition_point(|n| n.ms < now - self.track.max_len.max(FLAME_MS))..notes.partition_point(|n| n.ms <= now)];
+            let recent = since(now - self.track.max_len.max(FLAME_MS));
             let open = recent.iter().any(|n| (n.ty == nt::OPEN || n.ty == nt::KICK) && hit(n));
             for s in &self.textures.strikers {
                 let (sx, sy, depth) = cam.project(nx(s.ty), strike);
@@ -1039,8 +1045,8 @@ impl<Message> canvas::Program<Message> for Highway<'_> {
         // Hit flames, over the notes: one on each fret just hit, and one along the strike line
         // for an open note or a kick.
         if let Some(fl) = &self.textures.flames {
-            let recent = &notes[notes.partition_point(|n| n.ms < now - FLAME_MS)..notes.partition_point(|n| n.ms <= now)];
-            let held = &notes[notes.partition_point(|n| n.ms < now - self.track.max_len)..notes.partition_point(|n| n.ms <= now)];
+            let recent = since(now - FLAME_MS);
+            let held = since(now - self.track.max_len);
             for s in &self.textures.strikers {
                 let (sx, sy, depth) = cam.project(nx(s.ty), strike);
                 let k = cam.px_per_unit(depth);

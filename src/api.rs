@@ -4,6 +4,33 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 
 pub const API_URL: &str = "https://api.enchor.us";
+/// GETs a URL's whole body (an error status counts as an error).
+pub async fn get_bytes(url: &str) -> Result<bytes::Bytes, reqwest::Error> {
+    CLIENT.get(url).send().await.and_then(|r| r.error_for_status())?.bytes().await
+}
+
+/// A file kept in the disk cache at `path`, downloaded from `url` when it isn't there yet.
+pub async fn cached_get(url: &str, path: Option<std::path::PathBuf>) -> Result<bytes::Bytes, reqwest::Error> {
+    if let Some(p) = &path
+        && let Ok(b) = tokio::fs::read(p).await
+    {
+        return Ok(b.into());
+    }
+    let bytes = get_bytes(url).await?;
+    if let Some(p) = path {
+        save_quietly(&p, &bytes).await;
+    }
+    Ok(bytes)
+}
+
+/// Writes a cache file, making its folder; a cache that can't be written is just skipped.
+pub async fn save_quietly(path: &std::path::Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let _ = tokio::fs::write(path, bytes).await;
+}
+
 pub const FILES_URL: &str = "https://files.enchor.us";
 pub const PER_PAGE: u32 = 50;
 

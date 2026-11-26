@@ -761,18 +761,27 @@ pub fn details(c: &LocalChart) -> (crate::api::Chart, Option<Vec<u8>>) {
     (chart, art)
 }
 
+/// UTF-16 text, if it starts with a byte order mark (either order).
+pub fn utf16(b: &[u8]) -> Option<String> {
+    let le = match b.get(..2)? {
+        [0xFF, 0xFE] => true,
+        [0xFE, 0xFF] => false,
+        _ => return None,
+    };
+    let units: Vec<u16> = b[2..]
+        .chunks_exact(2)
+        .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+        .collect();
+    Some(String::from_utf16_lossy(&units))
+}
+
 /// song.ini text: UTF-8 (with or without BOM), UTF-16 with BOM, else Latin-1.
 pub fn decode(b: &[u8]) -> String {
     if let Some(rest) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(rest).into_owned();
     }
-    if b.len() >= 2 && (b[..2] == [0xFF, 0xFE] || b[..2] == [0xFE, 0xFF]) {
-        let le = b[0] == 0xFF;
-        let units: Vec<u16> = b[2..]
-            .chunks_exact(2)
-            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
-            .collect();
-        return String::from_utf16_lossy(&units);
+    if let Some(s) = utf16(b) {
+        return s;
     }
     match std::str::from_utf8(b) {
         Ok(s) => s.to_string(),

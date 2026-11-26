@@ -411,7 +411,7 @@ impl ColorTool {
             note_speed: settings.preview_note_speed.unwrap_or(p.note_speed),
             highway_length: settings.preview_highway_length.unwrap_or(p.highway_length),
         });
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
 
         // Left: the profiles in Clone Hero's folder.
         let mut list = column![text("Color profiles").size(15).font(crate::BOLD)].spacing(6);
@@ -447,18 +447,11 @@ impl ColorTool {
             None => container(text("Pick a profile on the left to edit it, or make a new one.").size(13).style(muted)).center(Length::Fill).into(),
             Some(o) => self.editor(o, speed),
         };
-        let mut body = column![row![left, crate::style::divider(true), right].spacing(16).height(Length::Fill)].spacing(10);
-        if let Some((ok, s)) = &self.status {
-            let ok = *ok;
-            body = body.push(text(s.clone()).size(12).style(move |t: &Theme| text::Style {
-                color: Some(if ok { t.palette().success } else { t.palette().danger }),
-            }));
-        }
-        container(body).padding(16).width(Length::Fill).height(Length::Fill).into()
+        crate::style::list_and_editor(left.into(), right, &self.status)
     }
 
     fn editor<'a>(&'a self, o: &'a Open, speed: Option<crate::preview::GameSpeed>) -> Element<'a, Msg> {
-        let muted = |t: &Theme| text::Style { color: Some(crate::style::muted(t)) };
+        let muted = crate::style::muted_text;
         let sec = self.section();
         let defaults = self.defaults.as_ref().expect("loaded when a profile is opened");
         let changed = o.profile != o.saved;
@@ -651,11 +644,7 @@ fn save(path: &std::path::Path, p: &Profile) -> Result<(), String> {
 }
 
 fn unique(files: &[String], base: &str) -> String {
-    let free = |n: &str| !files.iter().any(|f| f.eq_ignore_ascii_case(n));
-    if free(base) {
-        return base.to_string();
-    }
-    (2..).map(|i| format!("{base} {i}")).find(|n| free(n)).unwrap()
+    crate::theme_maker::first_free(base, |n| !files.iter().any(|f| f.eq_ignore_ascii_case(n)))
 }
 
 // ---------- Preview ----------
@@ -758,6 +747,10 @@ impl Scene<'_> {
     }
     fn label(&mut self, at: Point, s: &str) {
         self.items.push(Item { shape: Shape::Label(at, s.to_string()), fill: None, stroke: None, key: None });
+    }
+    /// A row's name at the left edge, level with `y`.
+    fn row_label(&mut self, y: f32, s: &str) {
+        self.label(Point::new(8.0, y - 7.0), s);
     }
     /// A game picture tinted by a key's colour (clicking it picks that colour).
     fn img(&mut self, r: Rectangle, name: &str, key: &str) {
@@ -884,11 +877,11 @@ fn guitar(s: &mut Scene, size: Size) {
         for i in [1, 2] {
             gem(s, Point::new(xs[i], yy), r, &format!("note_{kind}"), &format!("note_anim_{kind}"));
         }
-        s.label(Point::new(8.0, yy - 7.0), label);
+        s.row_label(yy, label);
     }
-    s.label(Point::new(8.0, y[0] - 7.0), "Notes");
-    s.label(Point::new(8.0, y[1] - 7.0), "Open note");
-    s.label(Point::new(8.0, strike - 7.0), "Strikers");
+    s.row_label(y[0], "Notes");
+    s.row_label(y[1], "Open note");
+    s.row_label(strike, "Strikers");
 }
 
 fn diamond(c: Point, r: f32) -> Shape {
@@ -933,12 +926,12 @@ fn drums(s: &mut Scene, size: Size) {
         kick(s, yy + r * 0.9, &format!("note_kick_{kind}"), &format!("note_anim_kick_{kind}"));
         tom(s, xs[0], yy, &format!("tom_{kind}"), &format!("tom_anim_{kind}"));
         cym(s, xs[2], yy, &format!("cym_{kind}"), &format!("cym_anim_{kind}"));
-        s.label(Point::new(8.0, yy - 7.0), label);
+        s.row_label(yy, label);
     }
-    s.label(Point::new(8.0, y[0] - 7.0), "Toms");
-    s.label(Point::new(8.0, y[1] - 7.0), "Cymbals");
-    s.label(Point::new(8.0, y[2] - 7.0), "Kick");
-    s.label(Point::new(8.0, strike - 7.0), "Pads");
+    s.row_label(y[0], "Toms");
+    s.row_label(y[1], "Cymbals");
+    s.row_label(y[2], "Kick");
+    s.row_label(strike, "Pads");
 }
 
 fn sixfret(s: &mut Scene, size: Size) {
@@ -972,13 +965,13 @@ fn sixfret(s: &mut Scene, size: Size) {
         sustain(s, xs[2], yy, yy - 30.0, r * 0.6, &format!("sf_sustain_{kind}"));
         note(s, xs[0], yy, &format!("sf_note_{kind}"));
         note(s, xs[2], yy, &format!("sf_note_{kind}"));
-        s.label(Point::new(8.0, yy - 7.0), label);
+        s.row_label(yy, label);
     }
-    s.label(Point::new(8.0, y[0] - 7.0), "White notes");
-    s.label(Point::new(8.0, y[1] - 7.0), "Black · HOPO");
-    s.label(Point::new(8.0, y[2] - 7.0), "Open note");
-    s.label(Point::new(8.0, y[3] - 7.0), "Taps");
-    s.label(Point::new(8.0, strike - 7.0), "Frets");
+    s.row_label(y[0], "White notes");
+    s.row_label(y[1], "Black · HOPO");
+    s.row_label(y[2], "Open note");
+    s.row_label(y[3], "Taps");
+    s.row_label(strike, "Frets");
 }
 
 /// Lays out a section's pieces: titled groups of tiles, each a picture on a dark tile.
@@ -1297,15 +1290,15 @@ fn sixfret_art(s: &mut Scene, size: Size) {
         sustain(s, xs[2], yy, yy - gap * 0.6, n * 0.3, &format!("sf_sustain_{kind}"));
         note(s, true, xs[0], yy, &format!("sf_note_{kind}"), None, None);
         note(s, false, xs[2], yy, &format!("sf_note_{kind}"), None, None);
-        s.label(Point::new(8.0, yy - 7.0), label);
+        s.row_label(yy, label);
     }
-    s.label(Point::new(8.0, y[0] - 7.0), "White notes");
-    s.label(Point::new(8.0, y[1] - 7.0), "Black · HOPO");
-    s.label(Point::new(8.0, y[2] - 7.0), "Open note");
-    s.label(Point::new(8.0, y[3] - 7.0), "White taps");
-    s.label(Point::new(8.0, y[4] - 7.0), "Black taps");
-    s.label(Point::new(8.0, y[5] - 7.0), "Open tap");
-    s.label(Point::new(8.0, strike - 7.0), "Strikers");
+    s.row_label(y[0], "White notes");
+    s.row_label(y[1], "Black · HOPO");
+    s.row_label(y[2], "Open note");
+    s.row_label(y[3], "White taps");
+    s.row_label(y[4], "Black taps");
+    s.row_label(y[5], "Open tap");
+    s.row_label(strike, "Strikers");
 }
 
 /// The other colours with the game's pictures: the combo meter at each level, the star power

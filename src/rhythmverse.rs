@@ -9,6 +9,7 @@
 //!   only links to (mostly Google Drive) open in your browser instead.
 
 use crate::api::{CLIENT, Chart, Sort, SortDir, SortKey};
+use crate::packs::percent_decode;
 use futures::{SinkExt, StreamExt, channel::mpsc::Sender};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -144,18 +145,25 @@ pub async fn fetch_catalog_page(page: u32) -> Result<(Vec<Chart>, u64), String> 
         ("sort[0][sort_by]".into(), "update_date".into()),
         ("sort[0][sort_order]".into(), "DESC".into()),
     ];
+    post_songs("list", &form, 90, "RhythmVerse").await
+}
+
+/// Posts a song query to RhythmVerse; returns the charts and how many match in all. `what`
+/// starts any error message.
+async fn post_songs(endpoint: &str, form: &[(String, String)], timeout_s: u64, what: &str) -> Result<(Vec<Chart>, u64), String> {
     let resp = CLIENT
-        .post(format!("{BASE}/api/ch/songfiles/list"))
+        .post(format!("{BASE}/api/ch/songfiles/{endpoint}"))
+        // Their endpoint only answers requests marked like this (as their own page sends).
         .header("X-Requested-With", "XMLHttpRequest")
         .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
         .header("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(90))
-        .body(url_encode(&form))
+        .timeout(std::time::Duration::from_secs(timeout_s))
+        .body(url_encode(form))
         .send()
         .await
-        .map_err(|e| format!("RhythmVerse: {e}"))?;
+        .map_err(|e| format!("{what}: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("RhythmVerse returned {}", resp.status()));
+        return Err(format!("{what}: server returned {}", resp.status()));
     }
     let json: Value = resp.json().await.map_err(|_| "RhythmVerse sent an unexpected reply".to_string())?;
     if json["status"] != "success" {
@@ -228,28 +236,8 @@ pub async fn search(
         form.push(("sort[0][sort_by]".into(), "update_date".into()));
         form.push(("sort[0][sort_order]".into(), "DESC".into()));
     }
-    let body = url_encode(&form);
-    let resp = CLIENT
-        .post(format!("{BASE}/api/ch/songfiles/{endpoint}"))
-        // Their endpoint only answers requests marked like this (as their own page sends).
-        .header("X-Requested-With", "XMLHttpRequest")
-        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-        .header("Accept", "application/json")
-        .timeout(std::time::Duration::from_secs(20))
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("RhythmVerse search failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("RhythmVerse search failed: server returned {}", resp.status()));
-    }
-    let json: Value = resp.json().await.map_err(|_| "RhythmVerse sent an unexpected reply".to_string())?;
-    if json["status"] != "success" {
-        return Err("RhythmVerse sent an unexpected reply".into());
-    }
-    let total = int(&json["data"]["records"]["total_filtered"]).unwrap_or(0).max(0) as u64;
-    let charts = json["data"]["songs"].as_array().into_iter().flatten().filter_map(to_chart).map(Arc::new).collect();
-    Ok(RvPage { charts, total })
+    let (charts, total) = post_songs(endpoint, &form, 20, "RhythmVerse search failed").await?;
+    Ok(RvPage { charts: charts.into_iter().map(Arc::new).collect(), total })
 }
 
 fn url_encode(form: &[(String, String)]) -> String {
@@ -648,18 +636,7 @@ async fn fetch_to_dir(url: &str, dir: &Path, fallback: &str, tx: &mut Sender<cra
     let total = resp.content_length();
     let path = dir.join(name);
     let mut out = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&path).map_err(|e| format!("Cannot write to library: {e}"))?);
-    let mut stream = resp.bytes_stream();
-    let mut done = 0u64;
-    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Connection lost: {e}"))?;
-        done += chunk.len() as u64;
-        out.write_all(&chunk).map_err(|e| format!("Write failed: {e}"))?;
-        if last.elapsed() >= std::time::Duration::from_millis(33) {
-            last = std::time::Instant::now();
-            let _ = tx.try_send(Progress::Bytes { done, total });
-        }
-    }
+    let done = crate::download::read_body(resp, 0, total, tx, |chunk| out.write_all(chunk).map_err(|e| format!("Write failed: {e}"))).await?;
     let _ = tx.send(Progress::Bytes { done, total }).await;
     out.flush().map_err(|e| format!("Write failed: {e}"))?;
     if let Some(t) = total
@@ -682,24 +659,6 @@ fn file_name_from_disposition(cd: &str) -> Option<String> {
     }
     let i = cd.find("filename=")?;
     Some(cd[i + 9..].split(';').next()?.trim().trim_matches('"').to_string())
-}
-
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Lists a public Google Drive folder by reading its web page (there's no other way without a
@@ -785,8 +744,15 @@ const GOOGLE_DOCS: &[&str] = &[
 #[cfg_attr(not(test), allow(dead_code))] // used by the pack index builder
 pub(crate) async fn drive_tree(url: &str) -> Result<Vec<(String, String)>, String> {
     let id = drive_id(url).ok_or("Couldn't read the Google Drive link")?;
+    walk_drive(id, 0, |_| {}).await
+}
+
+/// Lists a public Drive folder and its subfolders, down to `DRIVE_MAX_DEPTH` (counting from
+/// `depth`): every file as (file id, path inside the folder). `progress` hears how many folders
+/// have been read so far.
+async fn walk_drive(id: String, depth: u32, mut progress: impl FnMut(usize)) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
-    let mut folders = vec![(id, String::new(), 0u32)];
+    let mut folders = vec![(id, String::new(), depth)];
     let mut listed = 0;
     while let Some((fid, rel, d)) = folders.pop() {
         if d > DRIVE_MAX_DEPTH {
@@ -794,10 +760,12 @@ pub(crate) async fn drive_tree(url: &str) -> Result<Vec<(String, String)>, Strin
         }
         let entries = match list_drive_folder(&fid).await {
             Ok(e) => e,
+            // An empty subfolder is fine; only the folder itself has to have something in it.
             Err(e) if listed > 0 && e.starts_with("The Google Drive folder is empty") => Vec::new(),
             Err(e) => return Err(e),
         };
         listed += 1;
+        progress(listed);
         for (eid, name, is_folder) in entries {
             let path = if rel.is_empty() { name } else { format!("{rel}/{name}") };
             if is_folder {
@@ -836,35 +804,24 @@ fn download_drive_folder<'a>(
     Box::pin(async move {
         use crate::download::Progress;
         use std::sync::atomic::{AtomicU64, Ordering};
+        let listing = walk_drive(id.to_string(), depth, |listed| {
+            if listed > 1 {
+                let _ = tx.try_send(Progress::Status(format!("Reading the Google Drive folder ({listed} folders)...")));
+            }
+        })
+        .await?;
+        std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
         let mut files: Vec<(String, PathBuf)> = Vec::new();
-        let mut folders = vec![(id.to_string(), dest.to_path_buf(), depth)];
-        let mut listed = 0;
-        while let Some((fid, dir, d)) = folders.pop() {
-            if d > DRIVE_MAX_DEPTH {
+        for (eid, rel) in listing {
+            let lower = rel.rsplit('/').next().unwrap_or(&rel).to_ascii_lowercase();
+            if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) || !want(&lower) {
                 continue;
             }
-            let entries = match list_drive_folder(&fid).await {
-                Ok(e) => e,
-                // An empty subfolder is fine; only the folder itself has to have something in it.
-                Err(e) if listed > 0 && e.starts_with("The Google Drive folder is empty") => Vec::new(),
-                Err(e) => return Err(e),
-            };
-            listed += 1;
-            if listed > 1 {
-                let _ = tx.send(Progress::Status(format!("Reading the Google Drive folder ({listed} folders)..."))).await;
+            let path = dest.join(&rel);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             }
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            for (eid, name, is_folder) in entries {
-                if is_folder {
-                    folders.push((eid, dir.join(&name), d + 1));
-                    continue;
-                }
-                let lower = name.to_ascii_lowercase();
-                if lower == "desktop.ini" || (!keep_video && lower.starts_with("video.")) || !want(&lower) {
-                    continue;
-                }
-                files.push((eid, dir.join(&name)));
-            }
+            files.push((eid, path));
         }
 
         let total = files.len();
@@ -1197,6 +1154,13 @@ fn find_chart_folder(dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Somewhere to send download progress that nobody reads.
+    fn progress_sink() -> Sender<crate::download::Progress> {
+        let (tx, mut rx) = futures::channel::mpsc::channel(256);
+        tokio::spawn(async move { while rx.next().await.is_some() {} });
+        tx
+    }
+
     #[test]
     fn maps_results() {
         let song: Value = serde_json::from_str(r#"{
@@ -1245,8 +1209,7 @@ mod tests {
         let staged = dir.join("rvpage - You Run");
         let rt = tokio::runtime::Runtime::new().unwrap();
         let r = rt.block_on(async {
-            let (mut tx, mut rx) = futures::channel::mpsc::channel(256);
-            tokio::spawn(async move { while rx.next().await.is_some() {} });
+            let mut tx = progress_sink();
             download(&rv, &staged, &dir, "rvpage", false, &mut tx).await
         });
         let files: Vec<String> =
@@ -1301,8 +1264,7 @@ mod tests {
                 .into_iter()
                 .find(|c| c.rv.as_ref().and_then(|r| r.download_url.as_deref()).is_some_and(|u| u.ends_with(".7z")))
                 .expect("a .7z on RhythmVerse");
-            let (mut tx, mut rx) = futures::channel::mpsc::channel(256);
-            tokio::spawn(async move { while rx.next().await.is_some() {} });
+            let mut tx = progress_sink();
             let staged = dir.join("7z-test");
             let _ = std::fs::remove_dir_all(&staged);
             download(c.rv.as_ref().unwrap(), &staged, &dir, "7z", false, &mut tx).await.unwrap();
@@ -1340,8 +1302,7 @@ mod tests {
                 }
             }
             for (kind, c) in picked {
-                let (mut tx, mut rx) = futures::channel::mpsc::channel(256);
-                tokio::spawn(async move { while rx.next().await.is_some() {} });
+                let mut tx = progress_sink();
                 let staged = dir.join(format!("{kind} - {}", crate::download::sanitize_filename(c.name.as_deref().unwrap_or("?"))));
                 let t = std::time::Instant::now();
                 let r = download(c.rv.as_ref().unwrap(), &staged, &dir, kind, false, &mut tx).await;

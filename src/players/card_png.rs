@@ -151,17 +151,9 @@ impl Card {
     }
 }
 
-fn num(v: &Value, path: &str) -> Option<f64> {
-    v.pointer(path).and_then(Value::as_f64)
-}
-
-fn word<'a>(v: &'a Value, path: &str) -> &'a str {
-    v.pointer(path).and_then(Value::as_str).unwrap_or("")
-}
-
 /// Draws a player's card: RGBA pixels, `(width, height, data)`.
 pub fn draw(l: &Loaded) -> Option<(u32, u32, Vec<u8>)> {
-    use super::view::{big, hours, instrument, pct, thousands};
+    use super::view::{big, hours, instrument, num, pct, thousands, word};
     let s = &l.stats;
     let mut c = Card { pix: Pixmap::new((W * SCALE) as u32, (H * SCALE) as u32)? };
     let count = |v: Option<f64>| v.map_or("–".to_string(), thousands);
